@@ -1,0 +1,287 @@
+paths:
+  /api/admin/users:
+    post:
+      tags:
+        - Admin Workers
+      summary: สร้างบัญชี Worker
+      description: Admin สร้าง account, profile, ตารางกะเริ่มต้น และรูปโปรไฟล์ของ Worker ใหม่
+      operationId: createUser
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/CreateUserMultipartRequest"
+      responses:
+        "201":
+          description: สร้างบัญชี Worker สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionMessageResponse"
+        "400":
+          description: Request body ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ access token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่ใช่ Admin หรือไม่มี permission workers:create
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: worker_code นี้ถูกใช้ไปแล้ว (worker_code มาจาก username ที่ส่งมาถ้ามี หรือสร้างอัตโนมัติจาก nationality + shirt_type + shirt_number)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      tags:
+        - Admin Workers
+      summary: ดูรายการบัญชี Worker
+      description: คืนรายการ Worker แบบแบ่งหน้า พร้อมค้นหาจากรหัสหรือชื่อ และกรองสถานะ active/inactive ได้
+      operationId: listUsers
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: เลขหน้า
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: จำนวนรายการต่อหน้า
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: ค้นหาจากรหัส Worker หรือชื่อ
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum:
+              - active
+              - inactive
+          description: กรองตามสถานะบัญชี
+        - in: query
+          name: worker_code
+          schema:
+            type: string
+          description: กรองแบบ partial match (ไม่สนตัวพิมพ์เล็ก/ใหญ่) ตามรหัส Worker
+        - in: query
+          name: full_name
+          schema:
+            type: string
+          description: กรองแบบ partial match (ไม่สนตัวพิมพ์เล็ก/ใหญ่) ตามชื่อ-นามสกุล
+        - in: query
+          name: shirt_number
+          schema:
+            type: string
+          description: กรองแบบ partial match (ไม่สนตัวพิมพ์เล็ก/ใหญ่) ตามหมายเลขเสื้อ
+        - in: query
+          name: shift
+          schema:
+            type: string
+            enum:
+              - MORNING
+              - EVENING
+          description: กรองตามกะทำงาน
+      responses:
+        "200":
+          description: รายการ Worker แบบแบ่งหน้า
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+        "400":
+          description: Query parameter ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ access token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่ใช่ Admin หรือไม่มี permission workers:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/users/{workerCode}:
+    get:
+      tags:
+        - Admin Workers
+      summary: ดูรายละเอียด Worker หนึ่งคน
+      description: ดึงข้อมูล account, profile และตารางกะล่าสุดของ Worker ตาม WorkerCode
+      operationId: getUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: workerCode
+          required: true
+          schema:
+            type: string
+          description: WorkerCode เช่น MN000115
+      responses:
+        "200":
+          description: รายละเอียดบัญชี Worker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDetailResponse"
+        "401":
+          description: ไม่มี หรือ access token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่ใช่ Admin หรือไม่มี permission workers:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบบัญชี Worker นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags:
+        - Admin Workers
+      summary: แก้ไขข้อมูล Worker
+      description: Admin แก้ข้อมูล account, profile, สถานะ และตารางกะปัจจุบันของ Worker ตาม WorkerCode
+      operationId: updateUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: workerCode
+          required: true
+          schema:
+            type: string
+          description: WorkerCode เช่น MN000115
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          description: แก้ไขบัญชี Worker สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDetailResponse"
+        "400":
+          description: Request body หรือเวลากะไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ access token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่ใช่ Admin หรือไม่มี permission workers:update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบบัญชี Worker นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: worker_code นี้ถูกใช้ไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/users/{workerCode}/password:
+    patch:
+      tags:
+        - Admin Workers
+      summary: รีเซ็ตรหัสผ่าน Worker
+      description: ตั้งรหัสผ่านใหม่ให้ Worker และยกเลิก session ที่ยังใช้งานอยู่ทั้งหมดของ Worker คนนั้น
+      operationId: resetUserPassword
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: workerCode
+          required: true
+          schema:
+            type: string
+          description: WorkerCode เช่น MN000115
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: รีเซ็ตรหัสผ่านสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionMessageResponse"
+        "400":
+          description: Request body ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ access token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่ใช่ Admin หรือไม่มี permission workers:reset_password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบบัญชี Worker นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

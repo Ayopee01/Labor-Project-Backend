@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: labor_project_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d labor_project_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/labor_project_test
+      REDIS_URL: redis://localhost:6379/15
+      REDIS_WORKER_QUEUE_KEY: "ci:worker:queue"
+      REDIS_WORKER_STATUS_KEY_PREFIX: "ci:worker:status:"
+      REDIS_WORKER_PRESENCE_KEY_PREFIX: "ci:worker:presence:"
+      REDIS_WORKER_BREAK_COUNT_KEY_PREFIX: "ci:worker:break-count:"
+      WORKER_PRESENCE_STALE_SECONDS: 90
+      BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE: ci-assignment-timeouts
+      BULLMQ_WORKER_BREAK_RETURN_QUEUE: ci-worker-break-returns
+      BULLMQ_LINE_MESSAGE_QUEUE: ci-line-messages
+      JWT_ACCESS_SECRET: ci-access-secret-ci-access-secret
+      JWT_REFRESH_SECRET: ci-refresh-secret-ci-refresh-secret
+      JWT_LOGIN_CHALLENGE_SECRET: ci-login-challenge-secret-ci-login
+      REFRESH_TOKEN_HASH_SECRET: ci-refresh-hash-secret-ci-refresh-hash
+      CORS_ORIGIN: http://localhost:3000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Setup npm
+        run: npm install -g npm@11.1.0
+
+      - name: Verify toolchain
+        run: |
+          test "$(node --version)" = "v22.14.0"
+          test "$(npm --version)" = "11.1.0"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit and route tests
+        run: npm test
+
+      - name: Deploy test migrations
+        run: npm run db:deploy
+
+      - name: Seed test system settings
+        run: npm run db:seed:test-settings
+
+      - name: Integration tests
+        run: RUN_DB_TESTS=1 npm run test:integration
+
+      - name: Concurrency tests
+        run: RUN_DB_TESTS=1 npm run test:concurrency
+
+      - name: End-to-end tests
+        run: RUN_DB_TESTS=1 npm run test:e2e
+
+      - name: Realtime tests
+        run: RUN_DB_TESTS=1 npm run test:realtime
+
+  deploy:
+    name: Deploy to DigitalOcean droplet
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+    steps:
+      - name: SSH deploy
+        # ข้าม step นี้ (ไม่ fail job) ถ้ายังไม่ได้ตั้ง DEPLOY_HOST secret — กันไม่ให้ push main
+        # ล้มเหลวก่อน droplet พร้อม ตั้ง secret ครบเมื่อไร step นี้จะรันจริงเองอัตโนมัติโดยไม่ต้องแก้ไฟล์นี้ซ้ำ
+        # (if: ใช้ secrets ตรงๆ ไม่ได้ ต้องผ่าน env ก่อนตามที่ GitHub Actions กำหนด)
+        if: env.DEPLOY_HOST != ''
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            cd ${{ secrets.DEPLOY_PATH }}
+            git fetch origin main
+            git reset --hard origin/main
+            docker compose --profile production up -d --build redis api-prod

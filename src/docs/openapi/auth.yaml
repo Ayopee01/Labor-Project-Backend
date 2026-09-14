@@ -1,0 +1,356 @@
+paths:
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: Login และ Create Session ผู้ใช้
+      description: |
+        Login Authenticates username/password แล้วออก Access Token และ Refresh Token พร้อมบันทึก Session ของอุปกรณ์
+        Worker Mobile ส่ง DeviceId/DeviceName และแนบ FCM Token ได้ทันทีถ้ามี เพื่อให้ Backend ใช้ส่ง Push Notification
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSuccessResponse"
+        "400":
+          description: Request body ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: มี session ที่ active อยู่แล้วบนอุปกรณ์อื่น
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginConflictResponse"
+        "423":
+          description: บัญชีถูกปิดใช้งานหรือถูกล็อก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/login/confirm-force:
+    post:
+      tags:
+        - Auth
+      summary: Force login และแทนที่ session เดิม
+      description: |
+        ใช้ต่อจาก login ที่เจอ ACTIVE_SESSION_EXISTS เพื่อปิด session อุปกรณ์เดิมและสร้าง session ใหม่
+        แนบ FCM token ของอุปกรณ์ใหม่ได้ ถ้ายังไม่มีให้เรียก /api/auth/push-token ภายหลัง
+        การแจ้งเตือน push ไปยังอุปกรณ์เดิม (ว่าถูกดีดออก) เป็น best-effort เท่านั้น — ถ้าส่งไม่สำเร็จ
+        (Firebase/network ผิดพลาด, credential ไม่ถูกต้อง ฯลฯ) request นี้ยังตอบ 200 ตามปกติ ไม่ทำให้
+        การ revoke session เดิม/สร้าง session ใหม่ล้มเหลวไปด้วย
+      operationId: confirmForceLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmForceLoginRequest"
+      responses:
+        "200":
+          description: ยืนยัน force login และสร้าง session ใหม่สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSuccessResponse"
+        "400":
+          description: Request body หรือข้อมูล challenge ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Login challenge ไม่ถูกต้องหรือหมดอายุ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "423":
+          description: บัญชีถูกปิดใช้งานหรือถูกล็อก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: ต่ออายุ Token ด้วย Refresh Token
+      description: ใช้ refresh token ที่ยังไม่หมดอายุเพื่อออก access token และ refresh token ชุดใหม่ พร้อมยกเลิก refresh token เดิม
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RefreshRequest"
+      responses:
+        "200":
+          description: ต่ออายุ token สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RefreshSuccessResponse"
+        "400":
+          description: Request body ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Refresh token ไม่ถูกต้อง หมดอายุ หรือถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout จากระบบ session ปัจจุบัน
+      description: ยกเลิก session จาก access token ที่ใช้อยู่ เพื่อไม่ให้ token ชุดนี้ใช้งานต่อได้
+      operationId: logout
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Logout สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogoutSuccessResponse"
+        "401":
+          description: Access token ไม่ถูกต้อง หมดอายุ หรือ session ถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/push-token:
+    post:
+      tags:
+        - Auth
+      summary: บันทึกหรืออัปเดต FCM token ของ Worker
+      description: |
+        ใช้เมื่อ Worker Mobile ได้ FCM token หลัง login หรือ token ถูก refresh จาก Firebase
+        Backend เก็บ token ตาม WorkerCode, DeviceId และ Platform เพื่อใช้ส่ง push notification และไม่ส่ง raw token กลับใน response
+      operationId: registerAuthPushToken
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerPushTokenRequest"
+      responses:
+        "200":
+          description: บันทึก push token ของ Worker สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerPushTokenResponse"
+        "400":
+          description: Request body ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Access token ไม่ถูกต้อง หมดอายุ หรือ session ถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: เฉพาะบัญชี Worker เท่านั้นที่บันทึก push token ของ Worker ได้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: ดูข้อมูลผู้ใช้ที่ login อยู่
+      description: คืนข้อมูล account, role, profile, permission และข้อมูล session จาก access token ปัจจุบัน
+      operationId: getCurrentAccount
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ข้อมูลบัญชีปัจจุบัน
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticatedAccount"
+        "401":
+          description: Access token ไม่ถูกต้อง หมดอายุ หรือ session ถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags:
+        - Auth
+      summary: แก้ไขข้อมูลส่วนตัวของ Admin ที่ login อยู่
+      description: ให้ Admin แก้ full_name, email และ phone ของตัวเอง แล้วคืนข้อมูล account ล่าสุด
+      operationId: updateOwnProfile
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOwnProfileRequest"
+      responses:
+        "200":
+          description: อัปเดต profile สำเร็จ คืนรูปแบบข้อมูลเดียวกับ GET /api/auth/me
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticatedAccount"
+        "401":
+          description: Access token ไม่ถูกต้อง หมดอายุ หรือ session ถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ผู้เรียกไม่ใช่ Admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/upload-image:
+    post:
+      tags:
+        - Auth
+      summary: อัปโหลดรูปโปรไฟล์ของ Admin ที่ login อยู่
+      description: รับไฟล์รูปของ Admin ปัจจุบัน ตรวจชนิดไฟล์ แล้วบันทึก image_url กลับเข้า account
+      operationId: uploadOwnProfileImage
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: ไฟล์ jpg, png หรือ webp ขนาดไม่เกิน 5MB
+      responses:
+        "200":
+          description: อัปโหลดรูปสำเร็จ และบันทึก image_url ลงบัญชีแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadOwnProfileImageResponse"
+        "400":
+          description: ไม่ได้ส่งไฟล์มา หรือชนิดไฟล์ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Access token ไม่ถูกต้อง หมดอายุ หรือ session ถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ผู้เรียกไม่ใช่ Admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/password:
+    patch:
+      tags:
+        - Auth
+      summary: เปลี่ยนรหัสผ่านของผู้ใช้ปัจจุบัน
+      description: ใช้ได้เฉพาะบัญชี Admin เท่านั้น ตรวจรหัสผ่านเดิมก่อนตั้งรหัสใหม่ และยกเลิก session อื่นของ account เดียวกัน
+      operationId: changeOwnPassword
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangeOwnPasswordRequest"
+      responses:
+        "200":
+          description: เปลี่ยนรหัสผ่านสำเร็จ session ปัจจุบันยังใช้งานต่อได้ ส่วน session อื่นของ account นี้จะถูกยกเลิกทั้งหมด
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChangeOwnPasswordResponse"
+        "400":
+          description: Request body ไม่ถูกต้อง หรือรหัสผ่านเดิมไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Access token ไม่ถูกต้อง หมดอายุ หรือ session ถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ผู้เรียกไม่ใช่ Admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/auth/me/lang:
+    patch:
+      tags:
+        - Auth
+      summary: เปลี่ยนภาษาที่ผู้ใช้เลือก
+      description: บันทึกค่า lang ของ account ปัจจุบันเพื่อให้ระบบเลือกข้อความตอบกลับหรือ notification ได้ตรงภาษา
+      operationId: updateOwnLang
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAccountLangRequest"
+      responses:
+        "200":
+          description: อัปเดตภาษาที่เลือกสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateAccountLangResponse"
+        "400":
+          description: ข้อมูลภาษาที่ส่งมาไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Access token ไม่ถูกต้อง หมดอายุ หรือ session ถูกยกเลิกไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

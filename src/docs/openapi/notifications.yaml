@@ -1,0 +1,40 @@
+﻿paths:
+  /api/admin/events:
+    get:
+      tags:
+        - Admin Realtime
+      summary: เปิด SSE สำหรับ realtime event ของ Admin
+      description: |
+        Admin dashboard เปิด connection นี้ค้างไว้เพื่อรับ `text/event-stream`
+        Backend ส่ง event เมื่อสถานะ Worker, queue, assignment หรือ vehicle job เปลี่ยน เพื่อให้หน้าจอ refresh ได้ทันที
+      operationId: subscribeAdminEvents
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: >-
+            Stream แบบ Server-Sent Events ไม่ใช่ JSON list เดียวแบบ response ทั่วไป เมื่อเปิด connection
+            จะได้ event ชื่อ `connected` ก่อนทันที 1 ครั้ง จากนั้น backend จะส่ง event ตามชื่อ Type จริง
+            (เช่น WORKER_STATUS_CHANGED, GATE_ARRIVAL, TICKET_COMPLETION_RESULT, ASSIGNMENT_CREATED_BY_ADMIN,
+            ASSIGNMENT_CANCELLED, VEHICLE_JOB_CANCELLED_AND_REQUEUED, TICKET_WORKER_CANCELLED,
+            TICKET_WORKER_CANCELLED_FROM_BOOTH และอื่นๆ อีกหลายชนิดตามเหตุการณ์ที่เกิดขึ้นจริงในระบบ)
+            มี comment line `: heartbeat ...` แทรกมาทุก 25 วินาทีเพื่อกัน connection ถูกตัด ไม่ต้อง parse เป็น event
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: TICKET_COMPLETION_RESULT
+                  data: {"Type":"TICKET_COMPLETION_RESULT","Title":"Ticket completion confirmed","Message":"Vendor confirmed ticket B-018.","Payload":{"TicketNo":"TKT-20260723-000125","BoothCode":"B-018","Status":"COMPLETED"},"OccurredAt":"2026-07-08T09:00:00.000Z"}
+        "401":
+          description: ไม่มี access token หรือ session ไม่ถูกต้อง/หมดอายุ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่ใช่ Admin หรือไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

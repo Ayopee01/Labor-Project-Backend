@@ -1,0 +1,140 @@
+﻿paths:
+  /api/line/webhook:
+    post:
+      tags:
+        - LINE
+      summary: รับ webhook จาก LINE ของ Vendor
+      description: รับ postback จากปุ่ม confirm, reject และ rating ใน LINE Flex message แล้วอัปเดตสถานะ ticket ตาม token ที่แนบมา ถ้างานครบทุก ticket ระบบจะปิดงานที่เกี่ยวข้องและคืน Worker ไปงานถัดไป
+      operationId: handleLineWebhook
+      parameters:
+        - in: header
+          name: x-line-signature
+          schema:
+            type: string
+          required: false
+          description: ต้องส่งมาถ้าตั้งค่า LINE_CHANNEL_SECRET ไว้
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LineWebhookRequest"
+      responses:
+        "200":
+          description: ประมวลผล LINE webhook สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineWebhookResponse"
+        "401":
+          description: ไม่ได้ส่ง header x-line-signature มา หรือค่าลายเซ็นไม่ตรงกับที่คำนวณจาก LINE_CHANNEL_SECRET
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: ยังไม่ได้ตั้งค่า LINE_CHANNEL_SECRET ไว้บน server นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/line/dev:
+    get:
+      tags:
+        - LINE
+      summary: หน้าเว็บ LINE dev tester
+      description: หน้า HTML แบบ standalone สำหรับยืนยัน/ปฏิเสธยอดส่งงานแทนการกดปุ่มจาก LINE จริง ใช้เป็นทางสำรองเมื่อ LINE Messaging API ติด rate limit ไม่ต้องยืนยันตัวตนและเปิดใช้งานได้ทั้งใน production
+      operationId: getLineDevPage
+      responses:
+        "200":
+          description: หน้า LINE dev tester
+          content:
+            text/html:
+              schema:
+                type: string
+  /api/line/dev/submissions:
+    get:
+      tags:
+        - LINE
+      summary: ดึงรายการ Submission สำหรับหน้า LINE dev tester
+      description: คืนรายการ ticket completion submission ทั้งหมดพร้อมสถานะว่ารายการไหนสามารถกด confirm/reject ได้ ไม่ต้องยืนยันตัวตนและเปิดใช้งานได้ทั้งใน production
+      operationId: listLineDevSubmissions
+      responses:
+        "200":
+          description: รายการ submission สำหรับ LINE dev tester
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineDevSubmissionListResponse"
+  /api/line/dev/submissions/{submissionId}/confirm:
+    post:
+      tags:
+        - LINE
+      summary: ยืนยันยอดส่งงานจากหน้า LINE dev tester
+      description: ยืนยัน ticket completion submission ด้วย flow เดียวกับตอน vendor กดปุ่ม confirm ใน LINE แต่จะไม่ส่งข้อความผ่าน LINE Messaging API ไม่ต้องยืนยันตัวตนและเปิดใช้งานได้ทั้งใน production
+      operationId: confirmLineDevSubmission
+      parameters:
+        - in: path
+          name: submissionId
+          required: true
+          schema:
+            type: integer
+          example: 501
+      responses:
+        "200":
+          description: ยืนยัน submission สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineDevCompletionResult"
+        "404":
+          description: ไม่พบ ticket completion submission นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Submission นี้ถูกยืนยัน ปฏิเสธ หรือถูกแทนที่ด้วยรายการอื่นไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/line/dev/submissions/{submissionId}/reject:
+    post:
+      tags:
+        - LINE
+      summary: ปฏิเสธยอดส่งงานจากหน้า LINE dev tester
+      description: ปฏิเสธ ticket completion submission ด้วย flow เดียวกับตอน vendor กดปุ่ม reject ใน LINE แต่จะไม่ส่งข้อความผ่าน LINE Messaging API ไม่ต้องยืนยันตัวตนและเปิดใช้งานได้ทั้งใน production
+      operationId: rejectLineDevSubmission
+      parameters:
+        - in: path
+          name: submissionId
+          required: true
+          schema:
+            type: integer
+          example: 501
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LineDevRejectRequest"
+      responses:
+        "200":
+          description: ปฏิเสธ submission สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineDevCompletionResult"
+        "404":
+          description: ไม่พบ ticket completion submission นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Submission นี้ถูกยืนยัน ปฏิเสธ หรือถูกแทนที่ด้วยรายการอื่นไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

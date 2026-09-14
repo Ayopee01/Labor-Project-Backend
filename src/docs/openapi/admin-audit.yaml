@@ -1,0 +1,298 @@
+paths:
+  /api/admin/audit/workers/performance:
+    get:
+      tags:
+        - Admin Audit
+      summary: ดูสถิติ performance การรับงานของ Worker
+      description: |
+        ใช้สำหรับหน้า Admin Audit เพื่อสรุปจำนวนงานที่ assign, accept, timeout, complete และ cancel ของ Worker
+        ช่วงวันที่อิง TicketJobAssignment.CreatedAt ตามวันทำงาน Asia/Bangkok และคำนวณ AcceptRate จากงานที่ accept เทียบกับ accept timeout
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: worker_code
+          schema:
+            type: string
+          description: กรองตาม WorkerCode (ไม่บังคับ) ถ้าไม่ส่งมาจะรวม Worker ทุกคนที่มีประวัติ assignment ในช่วงเวลานี้
+        - in: query
+          name: date_from
+          schema:
+            type: string
+            format: date
+            example: "2026-08-01"
+          description: วันเริ่มต้นตามวันทำงาน Bangkok ต้องส่งคู่กับ DateTo
+        - in: query
+          name: date_to
+          schema:
+            type: string
+            format: date
+            example: "2026-08-31"
+          description: วันสิ้นสุดตามวันทำงาน Bangkok (รวมวันนี้ด้วย) ต้องส่งคู่กับ DateFrom
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - in: query
+          name: sort_by
+          schema:
+            type: string
+            enum:
+              - accept_rate
+              - total_assigned
+              - accepted
+              - accept_timeout
+              - scan_timeout
+              - completed
+              - admin_cancelled
+              - worker_code
+          description: คอลัมน์ที่ใช้เรียง DataTable (ไม่บังคับ) ค่าเริ่มต้นคือ AcceptRate
+        - in: query
+          name: sort_order
+          schema:
+            type: string
+            enum:
+              - asc
+              - desc
+            default: desc
+      responses:
+        "200":
+          description: สรุป performance ของ Worker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuditWorkerPerformanceResponse"
+              example:
+                Period:
+                  DateFrom: "2026-08-11"
+                  DateTo: "2026-08-11"
+                  Timezone: Asia/Bangkok
+                Pagination:
+                  Page: 1
+                  Limit: 20
+                  Total: 2
+                  TotalPages: 1
+                Data:
+                  - WorkerCode: "002"
+                    FullName: Worker B
+                    TotalAssignedJobCount: 8
+                    AcceptedJobCount: 7
+                    AcceptTimeoutJobCount: 1
+                    ScanTimeoutJobCount: 2
+                    CompletedJobCount: 5
+                    AdminCancelledJobCount: 0
+                    AcceptRate: "87.50"
+                  - WorkerCode: "001"
+                    FullName: Worker A
+                    TotalAssignedJobCount: 12
+                    AcceptedJobCount: 10
+                    AcceptTimeoutJobCount: 2
+                    ScanTimeoutJobCount: 1
+                    CompletedJobCount: 8
+                    AdminCancelledJobCount: 1
+                    AcceptRate: "83.33"
+        "400":
+          description: ข้อมูลที่ส่งมาไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ต้องยืนยันตัวตนก่อน
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ต้องเป็น Admin ที่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/audit/events:
+    get:
+      tags:
+        - Admin Audit
+      summary: ดู Audit Event timeline รวมของระบบ
+      description: |
+        รวม event จากข้อมูลเดิมที่มีอยู่แล้ว (VehicleJob, GateRequestLog, DriverSession,
+        WorkerAssignmentEvent, TicketCompletionSubmission, TicketRating, MessageDeliveryLog,
+        AdminActionLog) เป็น timeline เดียว โดยไม่มีตาราง audit_events กลาง — ไม่กระทบ
+        /api/admin/audit/workers/performance หรือ /api/admin/vehicle-jobs/history
+        เพราะเป็น endpoint คนละก้อนกันโดยสิ้นเชิง (event รายตัว vs สรุปผลงานรายคน)
+        Summary คำนวณจากชุดข้อมูลหลัง filter จากแถบค้นหา (search/actor_type/event_type/date_from/
+        date_to) แต่ก่อน quick_filter และก่อน pagination เสมอ (27.15.1) — เปลี่ยน quick_filter โดย
+        filter แถบค้นหาชุดเดิม Summary ต้องเหมือนเดิมทุก field เสมอ มีแค่ Data/Pagination ที่เปลี่ยน
+        ส่วนใหญ่ event ส่งเฉพาะ Metadata — Before/After เป็น field เสริมที่มีเฉพาะ event ที่ source เก็บ
+        สถานะก่อนหน้าไว้จริง (worker_force_status_changed และ mutation event กลุ่ม 27.12 ด้านล่างที่มี
+        field เปลี่ยนจริง) ห้ามถือว่า field หายไปคือ "ไม่มีการเปลี่ยนแปลง"
+
+        27.12: เพิ่ม auth/security/account/settings event จาก SecurityAuditLog เป็น source ที่ 9 —
+        event กลุ่มนี้เห็นได้เฉพาะ caller ที่มี permission `audit:read` เพิ่มจาก `jobs:read` เท่านั้น
+        (caller ที่ไม่มี audit:read ยังเรียก endpoint นี้ได้ปกติ แค่ไม่เห็น event กลุ่มนี้ปนมาใน
+        Data/Summary/Pagination ไม่ใช่ 403) เพราะเนื้อหามี IP/User-Agent และ username ที่พยายาม login
+        แต่ผิดพลาด ซึ่ง sensitive กว่า event operational เดิม EventType ที่มี ได้แก่
+        auth_login_succeeded, auth_login_failed, auth_logout, auth_force_login,
+        auth_session_revoked (27.14.1, written in the same transaction as auth_force_login,
+        referencing the revoked old session — trace it back to its auth_force_login via the same
+        request_id),
+        account_password_changed, account_password_reset, admin_account_created,
+        admin_account_updated, admin_permissions_changed, admin_status_changed,
+        worker_account_created, worker_account_updated, system_settings_updated,
+        gate_client_created, gate_client_updated, gate_client_secret_rotated,
+        mobile_app_version_created, mobile_app_version_updated, admin_profile_updated
+
+        `audit:read` เป็น owner-only permission (เหมือน mobile_app_versions:*) — owner ได้ default
+        มาจาก seed เท่านั้น manager/supervisor ไม่ได้ default และมีแต่ owner grant ให้คนอื่นต่อได้
+        SecurityAuditLog แถวเก่ากว่า SECURITY_AUDIT_LOG_RETENTION_DAYS วัน (ตั้งค่าใน .env) ถูกลบทิ้ง
+        โดย cleanup job รายวัน ไม่ retain ตลอดไป
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: ค้น EventId, event type, TicketNumber/TicketNo/BoothCode/BoothName/WorkerCode ใน Metadata, actor username/name, reason code/text
+        - in: query
+          name: actor_type
+          schema:
+            type: string
+            enum:
+              - system
+              - admin
+              - worker
+              - driver
+              - vendor
+              - gate
+          description: >-
+            เป็น filter ของแถบค้นหา (ไม่ใช่ quick filter) จะทำให้ Summary แคบลงด้วยเช่นเดียวกับ Data/Pagination
+            ถ้าต้องการแคบเฉพาะ Data/Pagination ตาม actor admin/system โดยไม่กระทบ Summary ให้ใช้
+            quick_filter=admin|system แทน (27.15.1)
+        - in: query
+          name: event_type
+          schema:
+            type: string
+          description: รหัส event คงที่หนึ่งค่า เช่น worker_assigned, vendor_confirmed, admin_override
+        - in: query
+          name: date_from
+          schema:
+            type: string
+            format: date
+            example: "2026-08-01"
+          description: วันเริ่มต้นตามวันทำงาน Bangkok ต้องส่งคู่กับ DateTo ถ้าไม่ส่งเลยจะ default เป็นวันนี้ (Bangkok)
+        - in: query
+          name: date_to
+          schema:
+            type: string
+            format: date
+            example: "2026-08-31"
+          description: วันสิ้นสุดตามวันทำงาน Bangkok (รวมวันนี้ด้วย) ห่างจาก DateFrom ได้ไม่เกิน 92 วัน
+        - in: query
+          name: quick_filter
+          schema:
+            type: string
+            enum:
+              - has_vehicle
+              - system
+              - critical
+              - admin
+              - has_reason
+          description: >-
+            27.15.1 — quick-filter card เดียว แทนที่ has_vehicle/has_reason/severity แบบเดิมทั้งหมด
+            (เอาออกไปแล้ว) คำนวณหลัง Summary เสมอ กล่าวคือ Summary จะสะท้อนเฉพาะ filter ของแถบค้นหา
+            (search/actor_type/event_type/date_from/date_to) เท่านั้น ไม่เกี่ยวกับ quick_filter — มีแค่
+            Data กับ Pagination เท่านั้นที่แคบลงอีกเมื่อส่ง quick_filter มา เพราะฉะนั้นสลับค่า quick_filter
+            ไปมาโดย filter ของแถบค้นหาชุดเดิม Summary ต้องเหมือนเดิมทุก byte เสมอ ไม่ส่งมาคือไม่มี quick
+            filter has_vehicle คือ VehicleJobId ไม่เป็น null system / admin คือ actor_type ตรงกับค่านั้น
+            — ใช้ตัวนี้แทน param actor_type ด้านบนสำหรับ "แท็บด่วน" ที่ต้องไม่ทำให้ Summary แคบลง critical
+            คือ EventType เป็นหนึ่งใน message_delivery_failed, worker_accept_timeout, worker_scan_timeout,
+            vendor_rejected, vehicle_cancelled, market_cancelled, ticket_cancelled,
+            worker_assignment_cancelled, ticket_worker_cancelled, booth_worker_cancelled — ต้องตรงกับ
+            กฎ severity ของฝั่ง Frontend สำหรับการ์ดเดียวกัน has_reason คือ ReasonCode หรือ ReasonText
+            มีค่า — เงื่อนไขเดียวกับที่ Summary.with_reason_count ใช้ (27.15.2) เพื่อให้ผู้ที่ filter
+            has_reason กับผู้ที่นับ with_reason_count ได้ผลลัพธ์ตรงกันเสมอว่า event ไหนเข้าเงื่อนไข
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Timeline ของ audit event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAuditEventsResponse"
+              example:
+                Data:
+                  - EventId: "admin_action:982"
+                    EventType: scan_timer_extended
+                    ActorType: admin
+                    ActorId: "15"
+                    VehicleJobId: "120"
+                    MarketJobId: null
+                    TicketId: null
+                    AssignmentId: "455"
+                    WorkerId: null
+                    ReasonCode: WORKER_ISSUE
+                    ReasonText: "QR หน้างานเสียหาย"
+                    Metadata:
+                      minutes: 15
+                      assignment_ids: [455]
+                      ticketNumber: "20261234567890"
+                    OccurredAt: "2026-08-31T03:15:00.000Z"
+                Pagination:
+                  Page: 1
+                  Limit: 20
+                  Total: 145
+                  TotalPages: 8
+                Summary:
+                  UniqueVehicleCount: 18
+                  WithReasonCount: 12
+                  ActorTypeCounts:
+                    system: 70
+                    admin: 20
+                    worker: 45
+                    driver: 4
+                    vendor: 5
+                    gate: 1
+                  EventTypeCounts:
+                    worker_assigned: 30
+                    worker_accepted: 25
+                    worker_accept_timeout: 5
+        "400":
+          description: ข้อมูลที่ส่งมาไม่ถูกต้อง (เช่น ส่ง DateFrom/DateTo ไม่ครบคู่ หรือช่วงวันที่เกิน 92 วัน)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ต้องยืนยันตัวตนก่อน
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ต้องเป็น Admin ที่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

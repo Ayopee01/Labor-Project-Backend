@@ -1,0 +1,148 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: labor-postgres
+    profiles:
+      - local-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: labor_project
+    ports:
+      - "${POSTGRES_HOST_PORT:-5434}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d labor_project" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: labor-redis
+    ports:
+      - "${REDIS_HOST_PORT:-6380}:6379"
+    command: [ "redis-server", "--appendonly", "yes" ]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: dev
+    container_name: labor-api
+    env_file:
+      - .env
+    environment:
+      PORT: 8080
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://postgres:password@postgres:5432/labor_project}
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - api_node_modules:/app/node_modules
+    command: sh -c "npm run db:generate && npm run dev"
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Production variant สำหรับ self-managed droplet (DigitalOcean ฯลฯ) — gate ด้วย profile "production"
+  # เหมือน postgres ใช้ "local-db" ข้างบน `docker compose up` เฉยๆ (local dev) จะไม่แตะ service นี้เลย
+  #
+  # ทำไมต้องแยก service แทนสลับแค่ NODE_ENV/target ผ่าน env var บน service `api` เดิม: `api` เดิม bind
+  # mount `.:/app` ทั้งโปรเจกต์ (จำเป็นสำหรับ tsx watch live-reload ตอน dev) ถ้าเอา image ที่ build จาก
+  # target: production (ซึ่งมีแค่ dist/ + node_modules แบบ production เท่านั้น ไม่มี src/ เต็ม) มา bind
+  # mount ทับแบบเดียวกัน จะเขียนทับ dist/ ที่ build ไว้ในอิมเมจด้วยของบน host ที่ไม่มี dist/ จริง ทำให้
+  # container พังทันที — ต้องเป็น service คนละตัวที่ไม่มี bind mount source เลย
+  api-prod:
+    build:
+      context: .
+      target: production
+    container_name: labor-api-prod
+    profiles:
+      - production
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8080
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://postgres:password@postgres:5432/labor_project}
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # --- Log stack (Loki + Promtail + Grafana) — gate ด้วย profile "logging" เหมือนกัน ไม่กระทบ
+  # `docker compose up` เฉยๆ ตอน local dev เลย เปิดใช้เฉพาะตอนต้องการจริง (เช่นบน droplet) ด้วย
+  # `docker compose --profile production --profile logging up -d`
+
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: labor-loki
+    profiles:
+      - logging
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yaml
+    volumes:
+      - ./monitoring/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    # ไม่ expose port ออก host เลยตั้งใจ — Grafana เข้าถึงผ่าน network ภายในของ compose (http://loki:3100)
+    # เท่านั้น ลด attack surface บน droplet ที่เปิด public
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    container_name: labor-promtail
+    profiles:
+      - logging
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    volumes:
+      - ./monitoring/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      # Requirement มาตรฐานของ Promtail เองสำหรับอ่าน container log ผ่าน Docker service discovery — ไม่ใช่
+      # การ mount log file ของแอปเพิ่มเติม แอปยัง log ออก stdout เป็น JSON เหมือนเดิมทุกอย่าง
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana-oss:11.1.0
+    container_name: labor-grafana
+    profiles:
+      - logging
+    restart: unless-stopped
+    # GF_SECURITY_ADMIN_USER/PASSWORD มาจาก .env ล้วนๆ (ไม่มี password hardcode ในไฟล์นี้เลย) — ใช้
+    # env_file แทน ${VAR:?...} ตั้งใจ เพราะ Compose validate/interpolate ${VAR:?...} ของทุก service ใน
+    # ไฟล์ทันทีไม่ว่า profile จะ active หรือไม่ ถ้าใช้ ${VAR:?...} ตรงนี้ จะทำให้ `docker compose up`
+    # ธรรมดา (local dev ไม่เปิด profile logging เลย) พังทันทีเพราะ GRAFANA_ADMIN_USER ไม่ได้ตั้งไว้ — ถ้า
+    # ไม่ตั้งค่าใน .env จริง Grafana จะ fallback เป็น admin/admin เอง (ต้องเปลี่ยนก่อนเปิด port 3000 จริง
+    # ดู README เรื่อง UFW rule ด้วย)
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./monitoring/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - loki
+
+volumes:
+  postgres_data:
+  redis_data:
+  api_node_modules:
+  loki_data:
+  grafana_data:

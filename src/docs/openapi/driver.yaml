@@ -1,0 +1,113 @@
+paths:
+  /api/driver/qr-sessions:
+    post:
+      tags:
+        - Driver
+      summary: สร้าง session ชั่วคราวให้ Driver จาก QR
+      description: ตรวจ driver QR token แล้วออก session token อายุ 24 ชั่วโมงสำหรับดูงานของรถคันนั้น
+      operationId: createDriverQrSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - qr_token
+              properties:
+                qr_token:
+                  type: string
+      responses:
+        "201":
+          description: สร้าง driver session สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverSessionResponse"
+        "404":
+          description: Driver QR token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: งานรถนี้ปิดไปแล้ว (สถานะเป็น COMPLETED หรือ CANCELLED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/driver/jobs/current:
+    get:
+      tags:
+        - Driver
+      summary: ดูงานปัจจุบันของ Driver
+      description: ใช้ driver session token เพื่อดึงข้อมูลงานรถที่ผูกกับ QR session ปัจจุบัน
+      operationId: getDriverCurrentJob
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: รายละเอียดงานรถ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverVehicleJobDetailResponse"
+        "401":
+          description: ไม่มี driver session token หรือ token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถที่ผูกกับ session นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/driver/jobs/{ticketNumber}/ready:
+    post:
+      tags:
+        - Driver
+      summary: แจ้งว่ารถพร้อมเรียก Worker
+      description: Driver กดยืนยันรถพร้อมลงสินค้า ระบบเปลี่ยนงานเป็นพร้อมทำงานและเริ่ม dispatch Worker จาก Redis FIFO queue
+      operationId: markDriverJobReady
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+      responses:
+        "200":
+          description: ยืนยันงานรถพร้อมแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverJobReadyResponse"
+        "401":
+          description: ไม่มี driver session token หรือ token ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Driver session นี้ไม่ได้ผูกกับงานรถนี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถนี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: งานรถนี้ไม่ได้อยู่สถานะ WAIT จึงกดพร้อมไม่ได้ (เช่น ถูก release-workers ปล่อยทีมกลับคิวไปแล้ว)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
