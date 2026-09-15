@@ -30,6 +30,54 @@ export async function countActiveAssignments(
   });
 }
 
+// Type รายการ assignment ที่เลย deadline มาแล้วแต่ยังไม่ถูกเปลี่ยนเป็น TIMEOUT — ใช้โดย assignment-timeout-sweep
+export type OverdueAssignmentDto = {
+  id: number;
+  worker_id: number;
+  kind: "accept" | "scan";
+};
+
+// Function หา assignment ที่เลย accept/scan deadline มาแล้ว graceMs แต่สถานะยังไม่ถูกเปลี่ยนเป็น TIMEOUT
+// (เผื่อกรณี BullMQ timeout job ของ assignment นั้นพังไปหมด retry แล้วไม่มีอะไรมาประมวลผลซ้ำ) — เป็นตาข่าย
+// สำรอง ไม่ใช่ทางหลัก จึงเว้น graceMs ให้ BullMQ job ปกติมีเวลาทำงานก่อนเสมอ กันแย่งประมวลผลซ้ำกันเปล่าๆ
+export async function listOverdueAssignments(
+  graceMs: number,
+  connection?: DbConnection
+): Promise<OverdueAssignmentDto[]> {
+  const db = client(connection);
+  const cutoff = new Date(Date.now() - graceMs);
+
+  const [overdueAccepts, overdueScans] = await Promise.all([
+    db.ticketJobAssignment.findMany({
+      where: {
+        status: ASSIGNMENT_STATUS.PENDING,
+        acceptDeadlineAt: { lte: cutoff },
+      },
+      select: { id: true, workerId: true },
+    }),
+    db.ticketJobAssignment.findMany({
+      where: {
+        status: ASSIGNMENT_STATUS.ACCEPTED,
+        scanDeadlineAt: { lte: cutoff },
+      },
+      select: { id: true, workerId: true },
+    }),
+  ]);
+
+  return [
+    ...overdueAccepts.map((assignment) => ({
+      id: assignment.id,
+      worker_id: assignment.workerId,
+      kind: "accept" as const,
+    })),
+    ...overdueScans.map((assignment) => ({
+      id: assignment.id,
+      worker_id: assignment.workerId,
+      kind: "scan" as const,
+    })),
+  ];
+}
+
 // Function นับจำนวนงานของ worker ในวันที่ระบุ (ไม่นับ TIMEOUT) และจำนวนที่ทำเสร็จแล้ว
 export async function getWorkerDailyAssignmentCounts(
   workerId: number,

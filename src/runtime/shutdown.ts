@@ -19,6 +19,8 @@ type ShutdownDependencies = {
   // Optional เพราะเป็น housekeeping เสริม ไม่ใช่ core flow ที่ caller ทุกตัวต้องระบุ
   closeSecurityAuditLogCleanupConnections?: () => Promise<void>;
   // Optional ด้วยเหตุผลเดียวกับ closeSecurityAuditLogCleanupConnections ด้านบน
+  closeAssignmentTimeoutSweepConnections?: () => Promise<void>;
+  // Optional ด้วยเหตุผลเดียวกับ closeSecurityAuditLogCleanupConnections ด้านบน
   closeHealthCheckRedisConnections?: () => Promise<void>;
   closePrisma: () => Promise<void>;
   stopRateLimitCleanupTimer: () => void;
@@ -52,6 +54,10 @@ const defaultShutdownDependencies: ShutdownDependencies = {
   closeSecurityAuditLogCleanupConnections: async () => {
     const securityAuditLogCleanup = await import("../queues/security-audit-log-cleanup");
     await securityAuditLogCleanup.closeSecurityAuditLogCleanupConnections();
+  },
+  closeAssignmentTimeoutSweepConnections: async () => {
+    const assignmentTimeoutSweep = await import("../queues/assignment-timeout-sweep");
+    await assignmentTimeoutSweep.closeAssignmentTimeoutSweepConnections();
   },
   closeHealthCheckRedisConnections: async () => {
     const healthService = await import("../services/health.service");
@@ -134,6 +140,7 @@ export function createGracefulShutdownHandler(
       await dependencies.closeWorkerQueueConnections();
       await dependencies.closeRuntimeSettingsSyncConnections();
       await dependencies.closeSecurityAuditLogCleanupConnections?.();
+      await dependencies.closeAssignmentTimeoutSweepConnections?.();
       await dependencies.closeHealthCheckRedisConnections?.();
       await dependencies.closePrisma();
       dependencies.stopRateLimitCleanupTimer();

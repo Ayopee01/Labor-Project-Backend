@@ -10,6 +10,7 @@ const { startAssignmentTimeoutProcessing } = require("./src/queues/worker-dispat
 const { startLineMessageWorker } = require("./src/queues/line-message-queue");
 const { startRuntimeSettingsSync } = require("./src/queues/runtime-settings-sync");
 const { scheduleSecurityAuditLogCleanup, startSecurityAuditLogCleanupWorker } = require("./src/queues/security-audit-log-cleanup");
+const { scheduleAssignmentTimeoutSweep, startAssignmentTimeoutSweepWorker } = require("./src/queues/assignment-timeout-sweep");
 const { registerGracefulShutdown } = require("./src/runtime/shutdown");
 const { setupWorkerWebSocket } = require("./src/websockets/worker.socket");
 const { reconcileOrphanedTicketSubmissions } = require("./src/services/shared/ticket-completion.service");
@@ -25,6 +26,10 @@ startRuntimeSettingsSync();
 startSecurityAuditLogCleanupWorker();
 void scheduleSecurityAuditLogCleanup().catch((error: unknown) => {
   logger.error("Failed to schedule security audit log cleanup job.", { error });
+});
+startAssignmentTimeoutSweepWorker();
+void scheduleAssignmentTimeoutSweep().catch((error: unknown) => {
+  logger.error("Failed to schedule assignment timeout sweep job.", { error });
 });
 setupWorkerWebSocket(server);
 registerGracefulShutdown(server);

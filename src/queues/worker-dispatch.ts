@@ -19,7 +19,7 @@ import { applyVendorTicketCompletionResult } from "../services/shared/ticket-com
 import { sendMobileAppForceUpdateNotification, sendMobileAppReleaseNotification } from "../services/shared/mobile-app-version.service";
 // Import Types
 import type { DbConnection } from "../types/shared/common.type";
-import type { AssignmentAcceptTimeoutResult, CompletedWorkerQueueResult, TicketJobAssignmentDto, TicketJobDto } from "../types/worker.type";
+import type { AssignmentAcceptTimeoutResult, AssignmentTimeoutJobData, AssignmentTimeoutQueueAction, CompletedWorkerQueueResult, TicketJobAssignmentDto, TicketJobDto, WorkerQueueEntryDto } from "../types/worker.type";
 import type { WorkScheduleDto } from "../types/admin-workers.type";
 import { ADMIN_ACTION_TYPE } from "../types/shared/admin-action-log.type";
 import { WORKER_ASSIGNMENT_EVENT_TYPE } from "../types/shared/worker-assignment-event.type";
@@ -214,7 +214,7 @@ export async function handleAssignmentAcceptTimeout(input: {
   const hasActiveSchedule =
     currentSchedule !== null && isTimeInWorkSchedule(currentSchedule);
   let timeoutCount = 1;
-  let queue: AssignmentAcceptTimeoutResult["queue"];
+  let queueAction: AssignmentTimeoutQueueAction;
   let reason = "assignment_timeout_requeue";
   let closedShift = false;
 
@@ -246,25 +246,36 @@ export async function handleAssignmentAcceptTimeout(input: {
         },
         input.connection
       );
-      queue = await markWorkerOpenApp(input.workerId);
+      queueAction = "open_app";
       reason = "assignment_timeout_limit_reached";
       closedShift = true;
     } else {
-      queue = await enqueueWorker(input.workerId);
+      queueAction = "requeue";
     }
   } else {
-    queue = await markWorkerOpenApp(input.workerId);
+    queueAction = "open_app";
     reason = "assignment_timeout_shift_unavailable";
   }
 
-  // ส่ง notification ไปยัง Worker และ Admin หลังจากจัดการ assignment accept timeout
+  // หมายเหตุ: ไม่เรียก Redis (enqueueWorker/markWorkerOpenApp) ที่นี่ตรงๆ เพราะ function นี้ถูกเรียกจากใน
+  // ทรานแซกชัน DB เสมอ — ให้ผู้เรียกเป็นคนเรียก applyAssignmentTimeoutQueueAction ทีหลัง commit แล้วแทน
+  // กันทรานแซกชันถือ connection ค้างนานจน Prisma interactive transaction หมดเวลา (default 5000ms)
   return {
-    queue,
+    queue_action: queueAction,
     reason,
     timeout_count: timeoutCount,
     timeout_limit: settings.worker_accept_timeout_limit,
     closed_shift: closedShift,
   };
+}
+
+// Function แปลง queue action ที่ handleAssignmentAcceptTimeout ตัดสินใจไว้ ให้เป็นการเขียนคิวจริงใน Redis
+// ต้องเรียกหลัง transaction ของ DB commit แล้วเสมอ
+export async function applyAssignmentTimeoutQueueAction(
+  action: AssignmentTimeoutQueueAction,
+  workerId: number
+): Promise<WorkerQueueEntryDto> {
+  return action === "requeue" ? enqueueWorker(workerId) : markWorkerOpenApp(workerId);
 }
 
 // Function จัดการ assignment scan timeout แบบกัน race
@@ -306,11 +317,6 @@ async function handleAssignmentScanTimeout(input: {
     return false;
   }
 
-  const ticketJob = await ticketJobRepository.findTicketJobById(
-    input.assignment.vehicle_job_id,
-    input.connection
-  );
-  const workerCode = await profileRepository.findWorkerCodeByAccountId(input.workerId);
   const teamScan = await assignmentRepository.getTicketJobTeamScanReadiness(
     input.assignment.vehicle_job_id,
     input.connection,
@@ -322,41 +328,11 @@ async function handleAssignmentScanTimeout(input: {
       input.connection,
     );
   }
-  await removeScanWarning(input.assignment.id);
-  const queue = await markWorkerOpenApp(input.workerId);
-  const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
-    input.assignment.vehicle_job_id,
-    input.connection,
-  );
 
-  sendWorkerSocketEvent(input.workerId, "ASSIGNMENT_TIMEOUT", {
-    ticketNumber: ticketJob?.ticket_number ?? null,
-    ticketNos,
-    reason: "scan_timeout",
-    status: WORKER_WORK_STATUS.OPEN_APP,
-  });
-  publishAdminWorkerStatusChanged({
-    title: "Worker returned to open app",
-    message: `Worker ${workerCode ?? input.workerId} missed QR check-in and returned to open app.`,
-    workerCode,
-    queue,
-    reason: "scan_timeout_open_app",
-  });
-  publishNotification({
-    type: "ASSIGNMENT_TIMEOUT",
-    title: "Assignment scan timed out",
-    message: `Worker ${workerCode ?? input.workerId} did not scan QR for vehicle job ${ticketJob?.ticket_number ?? "-"}.`,
-    payload: {
-      ticketNumber: ticketJob?.ticket_number ?? null,
-      worker_code: workerCode,
-      status: ASSIGNMENT_STATUS.TIMEOUT,
-      reason: "scan_timeout",
-    },
-    audience: {
-      roles: ["admin"],
-    },
-  });
-
+  // หมายเหตุ: ไม่ทำ Redis call/notification ที่นี่ตรงๆ (ย้ายไปทำหลัง transaction commit ใน
+  // startAssignmentTimeoutProcessing แทน) เพื่อลดเวลาที่ทรานแซกชันถือ connection ค้างไว้ — เป็นจุดที่
+  // เคยทำให้ query ถัดไปชน "Transaction API error: query cannot be executed on an expired transaction"
+  // แล้วทำให้ทั้งทรานแซกชัน rollback จนสถานะ assignment ค้างที่ ACCEPTED ถาวร
   return true;
 }
 
@@ -882,146 +858,211 @@ async function handleWorkerBreakReturn(input: {
   });
 }
 
-// Function เริ่ม BullMQ worker กลางสำหรับงาน timeout, accept, scan, warning, vendor และ shift งาน
-export function startAssignmentTimeoutProcessing(): void {
-  startAssignmentTimeoutWorker(async ({ assignmentId, workerId, ticketId, submissionId, mobileAppVersionId, kind }) => {
-    if (kind === "mobile_app_release_notification") {
-      if (mobileAppVersionId) {
-        await sendMobileAppReleaseNotification(mobileAppVersionId);
-      }
+// Function ประมวลผล assignment timeout job หนึ่งตัว (accept/scan/scan_warning/vendor_confirm/mobile_app_*)
+// แยกออกมาจาก startAssignmentTimeoutProcessing เพื่อให้ assignment-timeout-sweep (ตาข่ายกันงานที่ค้างเพราะ
+// BullMQ job พังไปโดยไม่มี retry) เรียกใช้ตรรกะเดียวกันซ้ำได้อย่างปลอดภัย — safe จะเรียกซ้ำเพราะ
+// timeoutAssignment เป็น conditional update (เช็ค status เดิมก่อนเปลี่ยน) ถ้าถูกประมวลผลไปแล้วจะ no-op เฉยๆ
+export async function processAssignmentTimeoutJob({
+  assignmentId,
+  workerId,
+  ticketId,
+  submissionId,
+  mobileAppVersionId,
+  kind,
+}: AssignmentTimeoutJobData): Promise<void> {
+  if (kind === "mobile_app_release_notification") {
+    if (mobileAppVersionId) {
+      await sendMobileAppReleaseNotification(mobileAppVersionId);
+    }
+    return;
+  }
+
+  if (kind === "mobile_app_force_update_notification") {
+    if (mobileAppVersionId) {
+      await sendMobileAppForceUpdateNotification(mobileAppVersionId);
+    }
+    return;
+  }
+
+  if (kind === "vendor_confirm") {
+    await handleVendorConfirmationTimeout({ ticketId, submissionId });
+    return;
+  }
+
+  if (!assignmentId || !workerId) {
+    return;
+  }
+
+  let shouldDispatch = false;
+  let capturedAssignment: TicketJobAssignmentDto | null = null;
+  let acceptTimeoutResult: AssignmentAcceptTimeoutResult | null = null;
+  let scanTimedOut = false;
+
+  // ในทรานแซกชันนี้ทำเฉพาะส่วนที่ต้อง atomic กับการเปลี่ยนสถานะ assignment เท่านั้น (เขียน DB + อ่านที่ใช้
+  // ตัดสินใจเขียนต่อ) ส่วน Redis call/notification/การอ่านข้อมูลไปแสดงผลย้ายไปทำหลัง commit ทั้งหมด กันทราน
+  // แซกชันถือ connection นานจน Prisma interactive transaction หมดเวลา (ดู incident: getTicketJobTeamScanReadiness
+  // ชนกับ transaction timeout ค่า default 5000ms แล้วทำให้ทั้งทรานแซกชัน rollback จนสถานะค้างที่ ACCEPTED)
+  await withTransaction(async (transaction) => {
+    const assignment = await assignmentRepository.findAssignmentById(
+      assignmentId,
+      transaction
+    );
+
+    if (!assignment) {
       return;
     }
 
-    if (kind === "mobile_app_force_update_notification") {
-      if (mobileAppVersionId) {
-        await sendMobileAppForceUpdateNotification(mobileAppVersionId);
-      }
-      return;
-    }
+    capturedAssignment = assignment;
 
-    if (kind === "vendor_confirm") {
-      await handleVendorConfirmationTimeout({ ticketId, submissionId });
-      return;
-    }
-
-    if (!assignmentId || !workerId) {
-      return;
-    }
-
-    let shouldDispatch = false;
-
-    await withTransaction(async (transaction) => {
-      const assignment = await assignmentRepository.findAssignmentById(
-        assignmentId,
-        transaction
-      );
-
-      if (!assignment) {
-        return;
-      }
-
-      if (kind === "scan") {
-        shouldDispatch = await handleAssignmentScanTimeout({
-          assignment,
-          workerId,
-          connection: transaction,
-        });
-        return;
-      }
-
-      if (kind === "scan_warning") {
-        await handleAssignmentScanWarning({
-          assignment,
-          workerId,
-          connection: transaction,
-        });
-        return;
-      }
-
-      if (assignment.status !== ASSIGNMENT_STATUS.PENDING) {
-        return;
-      }
-
-      const ticketJob = await ticketJobRepository.findTicketJobById(
-        assignment.vehicle_job_id,
-        transaction
-      );
-      const workerCode = await profileRepository.findWorkerCodeByAccountId(workerId);
-      const timeoutResult = await handleAssignmentAcceptTimeout({
+    if (kind === "scan") {
+      scanTimedOut = await handleAssignmentScanTimeout({
         assignment,
         workerId,
         connection: transaction,
       });
+      shouldDispatch = scanTimedOut;
+      return;
+    }
 
-      if (!timeoutResult) {
-        // ถ้า assignment ถูก accept หรือ complete ไปแล้วก่อนหน้านี้ ให้ return เพราะไม่ต้องทำอะไรต่อ
-        return;
-      }
-
-      shouldDispatch = true;
-
-      const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
-        assignment.vehicle_job_id,
-        transaction,
-      );
-
-      sendWorkerSocketEvent(workerId, "ASSIGNMENT_TIMEOUT", {
-        ticketNumber: ticketJob?.ticket_number ?? null,
-        ticketNos,
-        reason: timeoutResult.reason,
-        timeout_count: timeoutResult.timeout_count,
-        timeout_limit: timeoutResult.timeout_limit,
+    if (kind === "scan_warning") {
+      await handleAssignmentScanWarning({
+        assignment,
+        workerId,
+        connection: transaction,
       });
-      publishAdminWorkerStatusChanged({
-        title: timeoutResult.closed_shift
-          ? "Worker shift closed"
-          : timeoutResult.reason === "assignment_timeout_requeue"
-            ? "Worker returned to queue"
-            : "Worker moved to open_app",
-        message: timeoutResult.closed_shift
-          ? `Worker ${workerCode ?? workerId} moved to open_app after reaching the assignment timeout limit.`
-          : timeoutResult.reason === "assignment_timeout_requeue"
-            ? `Worker ${workerCode ?? workerId} returned to queue after assignment timeout.`
-            : `Worker ${workerCode ?? workerId} moved to open_app after assignment timeout.`,
-        workerCode,
-        queue: timeoutResult.queue,
-        reason: timeoutResult.reason,
-        extraPayload: {
-          timeout_count: timeoutResult.timeout_count,
-          timeout_limit: timeoutResult.timeout_limit,
-        },
-      });
-      publishNotification({
-        type: "ASSIGNMENT_TIMEOUT",
-        title: "Assignment timed out",
-        message: `Worker ${workerCode ?? workerId} did not accept vehicle job ${ticketJob?.ticket_number ?? "-"}.`,
-        payload: {
-          ticketNumber: ticketJob?.ticket_number ?? null,
-          worker_code: workerCode,
-          status: ASSIGNMENT_STATUS.TIMEOUT,
-          reason: timeoutResult.reason,
-          timeout_count: timeoutResult.timeout_count,
-          timeout_limit: timeoutResult.timeout_limit,
-        },
-        audience: {
-          roles: ["admin"],
-        },
-      });
+      return;
+    }
+
+    if (assignment.status !== ASSIGNMENT_STATUS.PENDING) {
+      return;
+    }
+
+    const timeoutResult = await handleAssignmentAcceptTimeout({
+      assignment,
+      workerId,
+      connection: transaction,
     });
 
-    if (shouldDispatch) {
-      try {
-        await dispatchReadyWorkers();
-      } catch (error) {
-        logger.error("Dispatch after assignment timeout job failed.", {
-          assignmentId,
-          workerId,
-          kind,
-          error,
-        });
-      }
+    if (!timeoutResult) {
+      // ถ้า assignment ถูก accept หรือ complete ไปแล้วก่อนหน้านี้ ให้ return เพราะไม่ต้องทำอะไรต่อ
+      return;
     }
+
+    shouldDispatch = true;
+    acceptTimeoutResult = timeoutResult;
   });
+
+  if (shouldDispatch) {
+    try {
+      await dispatchReadyWorkers();
+    } catch (error) {
+      logger.error("Dispatch after assignment timeout job failed.", {
+        assignmentId,
+        workerId,
+        kind,
+        error,
+      });
+    }
+  }
+
+  // ---- ส่วนหลัง transaction commit แล้ว: Redis queue action + notification ----
+  if (acceptTimeoutResult && capturedAssignment) {
+    const assignment: TicketJobAssignmentDto = capturedAssignment;
+    const result: AssignmentAcceptTimeoutResult = acceptTimeoutResult;
+    const queue = await applyAssignmentTimeoutQueueAction(result.queue_action, workerId);
+    const ticketJob = await ticketJobRepository.findTicketJobById(assignment.vehicle_job_id);
+    const workerCode = await profileRepository.findWorkerCodeByAccountId(workerId);
+    const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
+      assignment.vehicle_job_id,
+    );
+
+    sendWorkerSocketEvent(workerId, "ASSIGNMENT_TIMEOUT", {
+      ticketNumber: ticketJob?.ticket_number ?? null,
+      ticketNos,
+      reason: result.reason,
+      timeout_count: result.timeout_count,
+      timeout_limit: result.timeout_limit,
+    });
+    publishAdminWorkerStatusChanged({
+      title: result.closed_shift
+        ? "Worker shift closed"
+        : result.reason === "assignment_timeout_requeue"
+          ? "Worker returned to queue"
+          : "Worker moved to open_app",
+      message: result.closed_shift
+        ? `Worker ${workerCode ?? workerId} moved to open_app after reaching the assignment timeout limit.`
+        : result.reason === "assignment_timeout_requeue"
+          ? `Worker ${workerCode ?? workerId} returned to queue after assignment timeout.`
+          : `Worker ${workerCode ?? workerId} moved to open_app after assignment timeout.`,
+      workerCode,
+      queue,
+      reason: result.reason,
+      extraPayload: {
+        timeout_count: result.timeout_count,
+        timeout_limit: result.timeout_limit,
+      },
+    });
+    publishNotification({
+      type: "ASSIGNMENT_TIMEOUT",
+      title: "Assignment timed out",
+      message: `Worker ${workerCode ?? workerId} did not accept vehicle job ${ticketJob?.ticket_number ?? "-"}.`,
+      payload: {
+        ticketNumber: ticketJob?.ticket_number ?? null,
+        worker_code: workerCode,
+        status: ASSIGNMENT_STATUS.TIMEOUT,
+        reason: result.reason,
+        timeout_count: result.timeout_count,
+        timeout_limit: result.timeout_limit,
+      },
+      audience: {
+        roles: ["admin"],
+      },
+    });
+  }
+
+  if (scanTimedOut && capturedAssignment) {
+    const assignment: TicketJobAssignmentDto = capturedAssignment;
+    await removeScanWarning(assignment.id);
+    const queue = await markWorkerOpenApp(workerId);
+    const ticketJob = await ticketJobRepository.findTicketJobById(assignment.vehicle_job_id);
+    const workerCode = await profileRepository.findWorkerCodeByAccountId(workerId);
+    const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
+      assignment.vehicle_job_id,
+    );
+
+    sendWorkerSocketEvent(workerId, "ASSIGNMENT_TIMEOUT", {
+      ticketNumber: ticketJob?.ticket_number ?? null,
+      ticketNos,
+      reason: "scan_timeout",
+      status: WORKER_WORK_STATUS.OPEN_APP,
+    });
+    publishAdminWorkerStatusChanged({
+      title: "Worker returned to open app",
+      message: `Worker ${workerCode ?? workerId} missed QR check-in and returned to open app.`,
+      workerCode,
+      queue,
+      reason: "scan_timeout_open_app",
+    });
+    publishNotification({
+      type: "ASSIGNMENT_TIMEOUT",
+      title: "Assignment scan timed out",
+      message: `Worker ${workerCode ?? workerId} did not scan QR for vehicle job ${ticketJob?.ticket_number ?? "-"}.`,
+      payload: {
+        ticketNumber: ticketJob?.ticket_number ?? null,
+        worker_code: workerCode,
+        status: ASSIGNMENT_STATUS.TIMEOUT,
+        reason: "scan_timeout",
+      },
+      audience: {
+        roles: ["admin"],
+      },
+    });
+  }
+}
+
+// Function เริ่ม BullMQ worker กลางสำหรับงาน timeout, accept, scan, warning, vendor และ shift งาน
+export function startAssignmentTimeoutProcessing(): void {
+  startAssignmentTimeoutWorker(processAssignmentTimeoutJob);
 
   startWorkerBreakReturnWorker(async ({ workerId, scheduleId, shiftInstanceKey, kind }) => {
     if (kind === "shift_end") {

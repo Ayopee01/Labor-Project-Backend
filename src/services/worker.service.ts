@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { withTransaction } from "../db/prisma";
 // Import Queues
 import { claimWorkerFromReadyQueue, decrementWorkerBreakCount, enqueueWorker, getWorkerQueueStatus, incrementWorkerBreakCount, markWorkerBreak, markWorkerOpenApp, removeAssignmentTimeout, removeScanTimeout, removeScanWarning, removeWorkerBreakReturn, scheduleScanTimeout, scheduleScanWarning, scheduleWorkerBreakReturn } from "../queues/worker-queue";
-import { autoReleaseTicketJobWorkersIfShiftEnded, dispatchReadyWorkers, handleAssignmentAcceptTimeout } from "../queues/worker-dispatch";
+import { applyAssignmentTimeoutQueueAction, autoReleaseTicketJobWorkersIfShiftEnded, dispatchReadyWorkers, handleAssignmentAcceptTimeout } from "../queues/worker-dispatch";
 // Import Utils
 import { isWorkerSocketConnected, sendWorkerSocketEvent } from "../websockets/worker.socket";
 // Import Repositories
@@ -1255,6 +1255,9 @@ export async function acceptWorkerAssignment(
       });
     }
 
+    // เช่นเดียวกับ dispatchReadyWorkers — เรียก Redis queue action แยกหลัง transaction commit แล้วเสมอ
+    const queue = await applyAssignmentTimeoutQueueAction(timeoutResult.queue_action, account.id);
+
     const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
       assignment.vehicle_job_id,
     );
@@ -1274,7 +1277,7 @@ export async function acceptWorkerAssignment(
         ticketNumber: ticketJob?.ticket_number ?? null,
         worker_code: workerCode,
         status: ASSIGNMENT_STATUS.TIMEOUT,
-        queue: buildWorkerQueueSocketPayload(timeoutResult.queue, workerCode),
+        queue: buildWorkerQueueSocketPayload(queue, workerCode),
         reason: timeoutResult.reason,
         timeout_count: timeoutResult.timeout_count,
         timeout_limit: timeoutResult.timeout_limit,

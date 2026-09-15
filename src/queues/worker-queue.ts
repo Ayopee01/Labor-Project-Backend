@@ -32,6 +32,15 @@ const workerBreakReturnQueue = new Queue(REDIS_CONFIG.workerBreakReturnQueueName
   connection: bullConnection,
 });
 
+// Retry option สำหรับ accept/scan timeout job เท่านั้น (ต่างจาก job อื่นในไฟล์นี้ที่ไม่ retry) เพราะ job สอง
+// ตัวนี้เขียนเปลี่ยนสถานะ assignment ที่ถ้าพลาดแล้วไม่มีอะไรมาประมวลผลซ้ำ จะค้างสถานะถาวร (ดู incident ที่
+// interactive transaction หมดเวลา 5000ms เป็นครั้งคราวภายใต้โหลดพร้อมกัน) — retry แบบ exponential backoff
+// ให้โอกาสความผิดพลาดชั่ววูบสำเร็จเองในรอบถัดไปโดยไม่ต้องรอ sweep job (ทุก 2 นาที) มาช่วย
+const ASSIGNMENT_TIMEOUT_RETRY_OPTIONS = {
+  attempts: 3,
+  backoff: { type: "exponential", delay: 1000 },
+} as const;
+
 let timeoutWorker: Worker | null = null; // Worker สำหรับจัดการ delayed job ของ assignment timeout, scan, warning, vendor และ mobile app release/force update
 let breakReturnWorker: Worker | null = null; // Worker สำหรับจัดการ delayed job ของ worker break return และ shift end
 
@@ -431,6 +440,7 @@ export async function scheduleAssignmentTimeout(
       jobId: `assignment-timeout-${assignmentId}`,
       removeOnComplete: true,
       removeOnFail: 100,
+      ...ASSIGNMENT_TIMEOUT_RETRY_OPTIONS,
     }
   );
 }
@@ -463,6 +473,7 @@ export async function scheduleScanTimeout(
       jobId: `assignment-scan-timeout-${assignmentId}`,
       removeOnComplete: true,
       removeOnFail: 100,
+      ...ASSIGNMENT_TIMEOUT_RETRY_OPTIONS,
     }
   );
 }
@@ -728,8 +739,14 @@ export function startAssignmentTimeoutWorker(
     }
   );
 
-  timeoutWorker.on("failed", (_job, error) => {
-    logger.error("Assignment timeout job failed.", { error });
+  timeoutWorker.on("failed", (job, error) => {
+    logger.error("Assignment timeout job failed.", {
+      jobId: job?.id,
+      kind: job?.data?.kind,
+      attemptsMade: job?.attemptsMade,
+      attempts: job?.opts?.attempts,
+      error,
+    });
   });
 }
 

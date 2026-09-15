@@ -29,9 +29,13 @@ export type WorkerScheduleJobData = {
   kind?: "break_return" | "shift_end";
 };
 
+// Type การเปลี่ยนคิวที่ต้องทำหลัง accept-timeout ตัดสินใจแล้ว — แยกจาก AssignmentAcceptTimeoutResult
+// เพื่อให้ผู้เรียกเป็นคนสั่ง Redis เอง "หลัง" commit ทรานแซกชัน DB เสมอ ไม่ใช่ระหว่างทรานแซกชันยังเปิดอยู่
+export type AssignmentTimeoutQueueAction = "requeue" | "open_app";
+
 // Type ผลลัพธ์เมื่อ worker ไม่ accept งานจน timeout
 export type AssignmentAcceptTimeoutResult = {
-  queue: WorkerQueueEntryDto;
+  queue_action: AssignmentTimeoutQueueAction;
   reason: string;
   timeout_count: number;
   timeout_limit: number;

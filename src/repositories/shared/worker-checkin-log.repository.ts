@@ -143,9 +143,11 @@ export async function closeWorkerShift(
 
   // ปิดแบบมีเงื่อนไข (closedAt: null) กัน Double-submit เขียนทับกัน — เรียกซ้ำต้องได้ค่าของครั้งแรก
   // ที่ปิดจริงเสมอ ไม่ใช่ค่าจาก Reason ล่าสุด
+  // หมายเหตุ: updateMany ไม่รองรับ compound-unique shorthand (buildCheckinLogKeyWhere) ต้องระบุ field ตรงๆ
   const closedNow = await db.workerCheckinLog.updateMany({
     where: {
-      ...buildCheckinLogKeyWhere(input),
+      workerId: input.worker_id,
+      shiftInstanceKey: input.shift_instance_key,
       closedAt: null,
     },
     data: closeData,
