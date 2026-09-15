@@ -25,6 +25,7 @@ import { publishRealtimeEvent } from "./shared/realtime-notification.service";
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import * as ticketJobLifecycleService from "./shared/ticket-job-lifecycle.service";
 import * as ticketCompletionService from "./shared/ticket-completion.service";
+import { notifyVendorBoothCancelled, notifyVendorBoothDispatchResumed, notifyVendorBoothWait } from "./shared/vendor-line-notification.service";
 import { notifyTicketJobTeamScanReadiness } from "./worker.service";
 // Import Utils
 import { buildVehicleOperationSummary, formatVehicleOperationItem } from "../utils/admin-job-operations.formatter";
@@ -1544,7 +1545,7 @@ async function performTicketJobCancellation(
   const ticketJobId = existingTicketJob.id;
   const input = parseWithSchema(adminCancelBodySchema, body ?? {});
 
-  const { ticketJob, activeAssignments, ticketNos } = await withTransaction(
+  const { ticketJob, activeAssignments, ticketNos, activeBooths } = await withTransaction(
     async (transaction) => {
       // Lock แถวรถก่อนอ่าน/ยกเลิก กัน race กับ closeCompletedTicketJobIfReady ที่อาจปิดรถพร้อมกันคนละ transaction
       await transaction.$queryRaw`SELECT id FROM ticket_jobs WHERE id = ${ticketJobId} FOR UPDATE`;
@@ -1577,6 +1578,11 @@ async function performTicketJobCancellation(
           ticketJobId,
           transaction,
         );
+      // ดึงก่อน cancelTicketJob เช่นกัน เพราะ cascade จะทำให้ทุกแผงใต้รถคันนี้กลายเป็น CANCELLED ไปด้วย — ใช้แจ้ง LINE แผงหลัง commit
+      const activeBooths = await boothJobRepository.listActiveBoothsByTicketJobId(
+        ticketJobId,
+        transaction,
+      );
 
       const cancelled = await ticketJobLifecycleService.cancelTicketJob(
         ticketJobId,
@@ -1600,7 +1606,7 @@ async function performTicketJobCancellation(
         transaction,
       );
 
-      return { ticketJob: cancelled, activeAssignments, ticketNos };
+      return { ticketJob: cancelled, activeAssignments, ticketNos, activeBooths };
     },
   );
 
@@ -1612,7 +1618,7 @@ async function performTicketJobCancellation(
     ]),
   );
 
-  return { ticketJob, activeAssignments, ticketNos };
+  return { ticketJob, activeAssignments, ticketNos, activeBooths };
 }
 
 // Function ยกเลิก vehicle job และ requeue ใน service flow
@@ -1622,8 +1628,19 @@ async function cancelTicketJobAndRequeue(
   auth?: AccessTokenPayload,
 ): Promise<AdminCancelTicketJobAndRequeueResponse> {
   const actorId = requireActorId(auth);
-  const { ticketJob, activeAssignments, ticketNos } =
+  const { ticketJob, activeAssignments, ticketNos, activeBooths } =
     await performTicketJobCancellation(idParam, body, actorId);
+
+  for (const booth of activeBooths) {
+    await notifyVendorBoothCancelled({
+      ticketId: booth.id,
+      ticketNo: booth.ticketNo,
+      marketName: booth.marketName,
+      boothCode: booth.boothCode,
+      boothName: booth.boothName,
+      licensePlate: ticketJob.license_plate,
+    });
+  }
 
   const sortedAssignments =
     sortAssignmentsByAcceptedAt(activeAssignments);
@@ -2295,7 +2312,7 @@ async function cancelMarketJobById(
   reasonText: string | null,
   actorId: number,
 ): Promise<AdminMarketJobActionResponse> {
-  const { marketJob, completedTicketJob } = await withTransaction(async (transaction) => {
+  const { marketJob, completedTicketJob, activeBooths } = await withTransaction(async (transaction) => {
     await transaction.$queryRaw`SELECT id FROM market_jobs WHERE id = ${marketJobId} FOR UPDATE`;
 
     const current = await marketJobRepository.findMarketJobById(
@@ -2335,6 +2352,12 @@ async function cancelMarketJobById(
       );
     }
 
+    // ต้องดึงก่อน cancelMarketJob เท่านั้น เพราะ cascade จะทำให้ทุกแผงใต้ Business Ticket นี้กลายเป็น CANCELLED ไปด้วย — ใช้แจ้ง LINE แผงหลัง commit
+    const activeBooths = await boothJobRepository.listActiveBoothsByMarketJobId(
+      marketJobId,
+      transaction,
+    );
+
     const cancelled = await ticketJobLifecycleService.cancelMarketJob(marketJobId, transaction);
 
     // Audit log สำหรับ actor/reason ของการยกเลิก TicketNo นี้ — ใช้เป็น source ของ
@@ -2358,7 +2381,7 @@ async function cancelMarketJobById(
         transaction,
       );
 
-    return { marketJob: cancelled, completedTicketJob };
+    return { marketJob: cancelled, completedTicketJob, activeBooths };
   });
   const ticketJob = await ticketJobRepository.findTicketJobById(
     marketJob.vehicle_job_id,
@@ -2381,6 +2404,17 @@ async function cancelMarketJobById(
     admin: true,
     worker_ids: await listTicketJobWorkerIds(marketJob.vehicle_job_id),
   });
+
+  for (const booth of activeBooths) {
+    await notifyVendorBoothCancelled({
+      ticketId: booth.id,
+      ticketNo: marketJob.ticket_no,
+      marketName: marketJob.marketName,
+      boothCode: booth.boothCode,
+      boothName: booth.boothName,
+      licensePlate: ticketJob?.license_plate ?? "",
+    });
+  }
 
   await handleTicketJobClosedByCascadeCancellation(completedTicketJob);
 
@@ -2545,6 +2579,15 @@ async function cancelStallJobById(
     },
     admin: true,
     worker_ids: await listStallJobWorkerIds(ticket),
+  });
+
+  await notifyVendorBoothCancelled({
+    ticketId: ticket.id,
+    ticketNo: marketJob?.ticket_no ?? "",
+    marketName: marketJob?.marketName ?? "",
+    boothCode: ticket.boothCode,
+    boothName: ticket.boothName,
+    licensePlate: ticketJob?.license_plate ?? "",
   });
 
   await handleTicketJobClosedByCascadeCancellation(completedTicketJob);
@@ -2856,6 +2899,15 @@ async function cancelTicketWorkerFromBooth(
       worker_ids: await listStallJobWorkerIds(ticket),
     });
 
+    await notifyVendorBoothCancelled({
+      ticketId: ticket.id,
+      ticketNo: marketJob?.ticket_no ?? "",
+      marketName: marketJob?.marketName ?? "",
+      boothCode,
+      boothName: ticket.boothName,
+      licensePlate: cancelledTicketJob?.license_plate ?? ticketJob.license_plate,
+    });
+
     await handleTicketJobClosedByCascadeCancellation(completedTicketJob ?? null);
   }
 
@@ -3141,6 +3193,29 @@ export async function changeTicketJobToWait(
     },
     admin: true,
   });
+
+  {
+    const activeBooths = await boothJobRepository.listActiveBoothsByTicketJobId(
+      ticketJob.id,
+    );
+
+    for (const booth of activeBooths) {
+      const notifyInput = {
+        ticketId: booth.id,
+        ticketNo: booth.ticketNo,
+        marketName: booth.marketName,
+        boothCode: booth.boothCode,
+        boothName: booth.boothName,
+        licensePlate: ticketJob.license_plate,
+      };
+
+      if (input.dispatch) {
+        await notifyVendorBoothDispatchResumed(notifyInput);
+      } else {
+        await notifyVendorBoothWait(notifyInput);
+      }
+    }
+  }
 
   return {
     message: input.dispatch

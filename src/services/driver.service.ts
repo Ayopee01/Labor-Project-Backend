@@ -1,6 +1,6 @@
 // Import Config
 import { withTransaction } from "../db/prisma";
-import { VEHICLE_JOB_STATUS } from "../constants/status";
+import { TERMINAL_TICKET_STATUSES, VEHICLE_JOB_STATUS } from "../constants/status";
 // Import Repositories
 import * as driverRepository from "../repositories/driver.repository";
 import * as ticketJobRepository from "../repositories/shared/ticket-job.repository";
@@ -9,6 +9,7 @@ import { dispatchReadyWorkers } from "../queues/worker-dispatch";
 // Import Services
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import { publishNotification } from "./notifications.service";
+import { notifyVendorBoothDispatchResumed } from "./shared/vendor-line-notification.service";
 // Import Types
 import type { DriverJobReadyResponse, DriverSessionDto, DriverSessionResponse, DriverTicketJobDetailResponse, DriverTicketJobResponse } from "../types/driver.type";
 import type { TicketJobDetailResponse, TicketJobDto } from "../types/worker.type";
@@ -223,6 +224,24 @@ export async function markDriverJobReady(
       "VEHICLE_JOB_NOT_FOUND",
       "Vehicle job not found.",
     );
+  }
+
+  // แจ้ง LINE แผงว่าทีมงานถูกจัดส่งอีกครั้ง — เหมือนตอน Admin สั่งรถกลับจาก "รอลง" เป็น "ลงเลย" เพราะความหมายเดียวกันคือทีมเริ่มถูกจัดส่งจริง
+  for (const market of detail.markets) {
+    for (const booth of market.booths) {
+      if (TERMINAL_TICKET_STATUSES.includes(booth.status)) {
+        continue;
+      }
+
+      await notifyVendorBoothDispatchResumed({
+        ticketId: booth.id,
+        ticketNo: market.ticket_no,
+        marketName: market.marketName,
+        boothCode: booth.boothCode,
+        boothName: booth.boothName,
+        licensePlate: detail.vehicle_job.license_plate,
+      });
+    }
   }
 
   publishNotification({

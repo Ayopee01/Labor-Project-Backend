@@ -1,5 +1,5 @@
 // Import Config
-import { MASTER_MARKET_ACTIVE_STATUS, MASTER_OWNER_STALL_ACTIVE_STATUS, SCANNED_ASSIGNMENT_STATUSES, TICKET_STATUS, TICKET_SUBMITTER_ROLE, TICKET_WORKER_STATUS } from "../../constants/status";
+import { MASTER_MARKET_ACTIVE_STATUS, MASTER_OWNER_STALL_ACTIVE_STATUS, SCANNED_ASSIGNMENT_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_STATUS, TICKET_SUBMITTER_ROLE, TICKET_WORKER_STATUS } from "../../constants/status";
 // Import Mappers
 import { mapBoothJob, mapTicketCompletionSubmission, mapTicketProduct } from "./mappers";
 import { client, requireDto } from "./repository-utils";
@@ -276,6 +276,76 @@ export async function listActiveVendorLineTargetsByMarketAndBooth(
   }
 
   return targets;
+}
+
+// Function ดึงแผงที่ยัง active (ไม่ COMPLETED/CANCELLED) ทั้งหมดของ Business Ticket (MarketJob) นี้
+// เรียกก่อนสั่ง cancelMarketJob เสมอ เพราะ cascade จะทำให้ทุกแผงกลายเป็น CANCELLED ไปด้วย ถ้าไม่ snapshot ไว้ก่อนจะไม่รู้ว่าต้องแจ้ง LINE แผงไหนบ้าง
+export async function listActiveBoothsByMarketJobId(
+  marketJobId: number,
+  connection?: DbConnection
+): Promise<Array<{ id: number; boothCode: string; boothName: string | null }>> {
+  const db = client(connection);
+
+  return db.boothJob.findMany({
+    where: {
+      marketJobId,
+      status: {
+        notIn: TERMINAL_TICKET_STATUSES,
+      },
+    },
+    orderBy: {
+      id: "asc",
+    },
+    select: {
+      id: true,
+      boothCode: true,
+      boothName: true,
+    },
+  });
+}
+
+// Function ดึงแผงที่ยัง active ทั้งหมดของ TicketJob (รถทั้งคัน) นี้ พร้อม ticket_no/marketName ของ Business Ticket ที่แผงนั้นสังกัดอยู่
+// เรียกก่อนสั่ง cancelTicketJob เสมอ ด้วยเหตุผลเดียวกับ listActiveBoothsByMarketJobId
+export async function listActiveBoothsByTicketJobId(
+  ticketJobId: number,
+  connection?: DbConnection
+): Promise<
+  Array<{
+    id: number;
+    boothCode: string;
+    boothName: string | null;
+    ticketNo: string;
+    marketName: string;
+  }>
+> {
+  const db = client(connection);
+  const booths = await db.boothJob.findMany({
+    where: {
+      ticketJobId,
+      status: {
+        notIn: TERMINAL_TICKET_STATUSES,
+      },
+    },
+    orderBy: {
+      id: "asc",
+    },
+    include: {
+      marketJob: {
+        select: {
+          ticketNo: true,
+          marketName: true,
+        },
+      },
+    },
+  });
+
+  return booths.map((booth) => ({
+    id: booth.id,
+    boothCode: booth.boothCode,
+    boothName: booth.boothName,
+    ticketNo: booth.marketJob.ticketNo,
+    marketName: booth.marketJob.marketName,
+  }));
 }
 
 // Function ดึงรายการสินค้าในตั๋ว

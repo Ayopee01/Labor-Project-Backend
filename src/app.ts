@@ -37,10 +37,16 @@ if (!corsOrigin) {
   throw new Error("CORS_ORIGIN is required.");
 }
 
+// รองรับหลาย origin คั่นด้วย comma
+const corsOrigins =
+  corsOrigin === "*"
+    ? corsOrigin
+    : corsOrigin.split(",").map((origin) => origin.trim()).filter(Boolean);
+
 // CORS Configuration
 app.use(
   cors({
-    origin: corsOrigin,
+    origin: corsOrigins,
   })
 );
 // Body Parser Configuration

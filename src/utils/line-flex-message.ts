@@ -331,6 +331,186 @@ export function buildBoothJobCreatedFlexMessage(
   };
 }
 
+// Function สร้างข้อความแจ้งยกเลิกงานของแผง — ใช้ทั้งยกเลิกแผงเดียวตรงๆ และยกเลิกทางอ้อมจาก Market/Vehicle
+export function buildBoothJobCancelledFlexMessage(input: {
+  ticketNo: string;
+  marketName: string;
+  boothCode: string;
+  boothName: string | null;
+  licensePlate: string;
+}): LineMessage {
+  return {
+    type: "flex",
+
+    altText:
+      `แจ้งยกเลิกงาน ${input.ticketNo} ` +
+      `${input.boothCode}`,
+
+    contents: buildBubble(
+      "แจ้งยกเลิกงาน",
+      [
+        fieldRow(
+          "เลขที่งาน:",
+          input.ticketNo
+        ),
+
+        fieldRow(
+          "ตลาด:",
+          input.marketName
+        ),
+
+        fieldRow(
+          "รหัสแผง:",
+          input.boothCode
+        ),
+
+        fieldRow(
+          "ชื่อแผง:",
+          input.boothName
+        ),
+
+        fieldRow(
+          "ทะเบียนรถ:",
+          input.licensePlate
+        ),
+
+        separator(),
+
+        {
+          type: "text",
+          text:
+            "งานลงสินค้าของแผงนี้ถูกยกเลิกโดยเจ้าหน้าที่ หากมีข้อสงสัยกรุณาติดต่อเจ้าหน้าที่",
+          size: "xs",
+          color: TEXT_COLOR,
+          weight: "bold",
+          margin: "md",
+          wrap: true,
+        },
+      ]
+    ),
+  };
+}
+
+// Function สร้างข้อความแจ้งว่างานของแผงถูกดึงทีมกลับไปรอจัดทีมใหม่ (Admin สั่งรถกลับไป "รอลง")
+export function buildBoothJobWaitFlexMessage(input: {
+  ticketNo: string;
+  marketName: string;
+  boothCode: string;
+  boothName: string | null;
+  licensePlate: string;
+}): LineMessage {
+  return {
+    type: "flex",
+
+    altText:
+      `แจ้งรอจัดทีมใหม่ ${input.ticketNo} ` +
+      `${input.boothCode}`,
+
+    contents: buildBubble(
+      "แจ้งรอจัดทีมงานใหม่",
+      [
+        fieldRow(
+          "เลขที่งาน:",
+          input.ticketNo
+        ),
+
+        fieldRow(
+          "ตลาด:",
+          input.marketName
+        ),
+
+        fieldRow(
+          "รหัสแผง:",
+          input.boothCode
+        ),
+
+        fieldRow(
+          "ชื่อแผง:",
+          input.boothName
+        ),
+
+        fieldRow(
+          "ทะเบียนรถ:",
+          input.licensePlate
+        ),
+
+        separator(),
+
+        {
+          type: "text",
+          text:
+            "ทีมงานสำหรับรถคันนี้ถูกดึงกลับเข้าคิว งานลงสินค้าของแผงนี้จะรอจัดทีมใหม่",
+          size: "xs",
+          color: TEXT_COLOR,
+          weight: "bold",
+          margin: "md",
+          wrap: true,
+        },
+      ]
+    ),
+  };
+}
+
+// Function สร้างข้อความแจ้งว่างานของแผงถูกจัดทีมส่งงานอีกครั้ง (Admin สั่งรถกลับจาก "รอลง" เป็น "ลงเลย")
+export function buildBoothJobDispatchResumedFlexMessage(input: {
+  ticketNo: string;
+  marketName: string;
+  boothCode: string;
+  boothName: string | null;
+  licensePlate: string;
+}): LineMessage {
+  return {
+    type: "flex",
+
+    altText:
+      `แจ้งเริ่มจัดทีมงาน ${input.ticketNo} ` +
+      `${input.boothCode}`,
+
+    contents: buildBubble(
+      "แจ้งเริ่มจัดทีมงาน",
+      [
+        fieldRow(
+          "เลขที่งาน:",
+          input.ticketNo
+        ),
+
+        fieldRow(
+          "ตลาด:",
+          input.marketName
+        ),
+
+        fieldRow(
+          "รหัสแผง:",
+          input.boothCode
+        ),
+
+        fieldRow(
+          "ชื่อแผง:",
+          input.boothName
+        ),
+
+        fieldRow(
+          "ทะเบียนรถ:",
+          input.licensePlate
+        ),
+
+        separator(),
+
+        {
+          type: "text",
+          text:
+            "ทีมงานสำหรับรถคันนี้ถูกจัดส่งอีกครั้ง งานลงสินค้าของแผงนี้จะเริ่มดำเนินการตามปกติ",
+          size: "xs",
+          color: TEXT_COLOR,
+          weight: "bold",
+          margin: "md",
+          wrap: true,
+        },
+      ]
+    ),
+  };
+}
+
 // Function สร้างข้อความให้ Vendor ตรวจสอบยอด
 export function buildVendorCompletionReviewFlexMessage(input: {
   ticket: BoothJobDto;
