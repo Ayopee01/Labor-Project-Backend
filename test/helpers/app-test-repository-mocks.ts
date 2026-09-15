@@ -2253,6 +2253,44 @@ export const boothJobRepositoryMock = {
   confirmTicketCompletion,
   rejectTicketCompletion,
   TicketSubmissionAlreadyResolvedError,
+  // Function ดึงแผงที่ยัง active (ไม่ COMPLETED/CANCELLED) ทั้งหมดของ Business Ticket (MarketJob) นี้ — คู่กับ boothJobRepository.listActiveBoothsByMarketJobId ตัวจริง
+  listActiveBoothsByMarketJobId: async (marketJobId: number) =>
+    state.boothJobs
+      .filter(
+        (ticket) =>
+          ticket.market_job_id === marketJobId &&
+          ticket.status !== "COMPLETED" &&
+          ticket.status !== "CANCELLED",
+      )
+      .sort((a, b) => a.id - b.id)
+      .map((ticket) => ({
+        id: ticket.id,
+        boothCode: ticket.boothCode,
+        boothName: ticket.boothName,
+      })),
+  // Function ดึงแผงที่ยัง active ทั้งหมดของ TicketJob (รถทั้งคัน) นี้ พร้อม ticketNo/marketName ของ Business Ticket ที่แผงนั้นสังกัดอยู่ — คู่กับ boothJobRepository.listActiveBoothsByTicketJobId ตัวจริง
+  listActiveBoothsByTicketJobId: async (ticketJobId: number) =>
+    state.boothJobs
+      .filter(
+        (ticket) =>
+          ticket.vehicle_job_id === ticketJobId &&
+          ticket.status !== "COMPLETED" &&
+          ticket.status !== "CANCELLED",
+      )
+      .sort((a, b) => a.id - b.id)
+      .map((ticket) => {
+        const marketJob = state.marketJobs.find(
+          (market) => market.id === ticket.market_job_id,
+        );
+
+        return {
+          id: ticket.id,
+          boothCode: ticket.boothCode,
+          boothName: ticket.boothName,
+          ticketNo: marketJob?.ticket_no,
+          marketName: ticket.marketName,
+        };
+      }),
   // Function ยกเลิก Gate ticket (booth) — ย้ายมาจาก adminJobsRepositoryMock ตาม Fix B
   cancelBoothJob: async (ticketId: number) => {
     const ticket = state.boothJobs.find((item) => item.id === ticketId);
