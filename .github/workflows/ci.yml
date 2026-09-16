@@ -121,7 +121,7 @@ jobs:
         # ล้มเหลวก่อน droplet พร้อม ตั้ง secret ครบเมื่อไร step นี้จะรันจริงเองอัตโนมัติโดยไม่ต้องแก้ไฟล์นี้ซ้ำ
         # (if: ใช้ secrets ตรงๆ ไม่ได้ ต้องผ่าน env ก่อนตามที่ GitHub Actions กำหนด)
         if: env.DEPLOY_HOST != ''
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
