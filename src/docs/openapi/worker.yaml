@@ -7,6 +7,9 @@
       description: >
         Worker Mobile เปิด WebSocket เพื่อรับงานและ event แบบ realtime เช่น งานใหม่ timeout การ check-in
         เตือนใกล้หมดเวลาสแกน QR (ASSIGNMENT_SCAN_DEADLINE_WARNING) และผลยืนยันจาก Vendor โดย action หลักยังเรียกผ่าน REST API
+        นอกจากนี้ยังส่ง event TOKEN_NEARING_EXPIRY (payload: { "type": "TOKEN_NEARING_EXPIRY" }) ให้ก่อน AccessToken
+        ของ connection นี้ใกล้หมดอายุ (threshold เดียวกับ header X-Should-Refresh) ครอบคลุมกรณี Worker เปิดแอปรอรับงาน
+        เฉยๆ ไม่ได้ยิง REST endpoint ใดเลย — Client ต้องเรียก POST /api/auth/refresh ทันทีที่ได้รับ event นี้เช่นกัน
       operationId: connectWorkerWebSocket
       security:
         - bearerAuth: []

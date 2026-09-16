@@ -1,5 +1,7 @@
 // Import Library
 import type { Response } from "express";
+// Import Config
+import { getAccessTokenExpiresInSeconds, getAccessTokenRefreshThresholdSeconds } from "../config/auth.config";
 // Import Middleware
 import { toPascalCasePayload } from "../middlewares/api-case.middleware";
 // Import Utils
@@ -59,13 +61,51 @@ function writeSseEvent(
   }
 }
 
-// Function เคลียร์ client ออกจาก in-memory list เมื่อ connection ปิดหรือหลุด กัน heartbeat interval ค้าง
+// Function เคลียร์ client ออกจาก in-memory list เมื่อ connection ปิดหรือหลุด กัน heartbeat/timer ค้าง
 function removeSseClient(clientId: number): void {
   const client = clients.get(clientId);
 
   if (client) {
     clearInterval(client.heartbeat);
+
+    if (client.tokenRefreshTimer) {
+      clearTimeout(client.tokenRefreshTimer);
+    }
+
     clients.delete(clientId);
+  }
+}
+
+// Function ตั้ง timer ล่วงหน้าครั้งเดียวต่อ SSE connection เพื่อส่งสัญญาณเตือนก่อน access token ของ
+// connection นี้ใกล้หมดอายุ — ใช้ exp ที่รู้อยู่แล้วตอน subscribe ไม่ต้อง poll/query ซ้ำ คู่ขนานกับ
+// scheduleAccessTokenRefreshReminder ของ worker.socket.ts ครอบคลุมเคส Admin เปิดหน้า dashboard
+// ค้างไว้ (SSE ต่ออยู่) นานๆ โดยไม่มี REST call อื่นเกิดขึ้นเลย
+function scheduleAccessTokenRefreshReminder(clientId: number, exp: number | undefined): void {
+  if (typeof exp !== "number") {
+    return;
+  }
+
+  const thresholdSeconds = getAccessTokenRefreshThresholdSeconds();
+  const accessTokenLifetimeMs = getAccessTokenExpiresInSeconds() * 1000;
+
+  const fireReminder = (): void => {
+    const client = clients.get(clientId);
+
+    if (!client) {
+      return;
+    }
+
+    writeSseEvent(client.response, "TOKEN_NEARING_EXPIRY", {});
+    // ยิงซ้ำทุกรอบอายุ access token ต่อไปเรื่อยๆ สมมติว่า client เรียก /refresh ตามสัญญาณทุกครั้ง
+    client.tokenRefreshTimer = setTimeout(fireReminder, accessTokenLifetimeMs);
+  };
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const initialDelayMs = Math.max(0, (exp - nowSeconds - thresholdSeconds) * 1000);
+  const client = clients.get(clientId);
+
+  if (client) {
+    client.tokenRefreshTimer = setTimeout(fireReminder, initialDelayMs);
   }
 }
 
@@ -101,6 +141,8 @@ export function subscribeAdminEvents(
     response,
     heartbeat,
   });
+
+  scheduleAccessTokenRefreshReminder(clientId, auth.exp);
 
   // ดัก "error" ไว้ด้วย ไม่ใช่แค่ "close" — ไม่งั้น error ที่ไม่มี listener จะ throw แบบ uncaught จน crash ทั้ง process
   response.req.on("close", () => removeSseClient(clientId));

@@ -23,6 +23,8 @@ export const AUTH_DEFAULTS = {
   // Worker อายุยาวกว่า admin เพราะใช้งานเป็น mobile app ประจำวัน ไม่ได้ถือสิทธิ์สูงเท่า admin ที่ควร re-authenticate ถี่กว่า
   workerRefreshExpiresInSeconds: 7 * TIME_UNIT_SECONDS.d,
   adminRefreshExpiresInSeconds: 24 * TIME_UNIT_SECONDS.h,
+  // เวลาก่อน access token จะหมดอายุที่เริ่มส่งสัญญาณเตือน (response header / socket event) ให้ client ไป /refresh เอง
+  accessTokenRefreshThresholdSeconds: 2 * TIME_UNIT_SECONDS.m,
 } as const;
 
 /* -------------------------------------- Functions -------------------------------------- */
@@ -76,4 +78,22 @@ export function getAdminRefreshExpiresInSeconds(): number {
     process.env.JWT_REFRESH_EXPIRES_IN_ADMIN,
     AUTH_DEFAULTS.adminRefreshExpiresInSeconds
   );
+}
+
+// Function อ่าน threshold ก่อน access token หมดอายุที่จะเริ่มส่งสัญญาณเตือนให้ client ไป /refresh เอง (ไม่ใช่การเซ็น
+// token ใหม่ให้ตรงๆ) — validate ว่าต้องน้อยกว่าอายุ access token จริงเสมอ กันตั้งค่าผิดจนสัญญาณเตือนทำงานทุก request
+export function getAccessTokenRefreshThresholdSeconds(): number {
+  const thresholdSeconds = parseDurationSeconds(
+    process.env.ACCESS_TOKEN_REFRESH_THRESHOLD,
+    AUTH_DEFAULTS.accessTokenRefreshThresholdSeconds
+  );
+  const accessTokenSeconds = getAccessTokenExpiresInSeconds();
+
+  if (thresholdSeconds <= 0 || thresholdSeconds >= accessTokenSeconds) {
+    throw new Error(
+      `ACCESS_TOKEN_REFRESH_THRESHOLD (${thresholdSeconds}s) must be greater than 0 and less than the access token lifetime (${accessTokenSeconds}s).`
+    );
+  }
+
+  return thresholdSeconds;
 }

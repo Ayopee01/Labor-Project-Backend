@@ -2,7 +2,7 @@
 import jwt, { type SignOptions } from "jsonwebtoken";
 import type { ZodType } from "zod";
 // Import Dependencies
-import { AUTH_DEFAULTS } from "../config/auth.config";
+import { AUTH_DEFAULTS, getAccessTokenRefreshThresholdSeconds } from "../config/auth.config";
 import type { AccessTokenPayload, LoginChallengeTokenPayload, RefreshTokenPayload, TokenConfig, TokenPayloadByType, TokenSignOptions, TokenType } from "../types/auth.type";
 import { parseWithSchema } from "../validation/parser";
 import { accessTokenPayloadSchema, loginChallengeTokenPayloadSchema, refreshTokenPayloadSchema } from "../validation/schemas";
@@ -177,3 +177,17 @@ export const verifyRefreshToken = (token: string): RefreshTokenPayload =>
 export const verifyLoginChallengeToken = (
   token: string
 ): LoginChallengeTokenPayload => verifyTypedToken(token, "login_challenge");
+
+// Function เช็คว่า access token ใกล้หมดอายุตาม threshold ที่ตั้งไว้หรือยัง — ใช้ส่งสัญญาณเตือนให้ client ไป
+// /refresh เอง (ผ่าน response header หรือ socket event) ไม่ได้เซ็น token ใหม่ให้ตรงๆ ตรงนี้ เพื่อไม่ให้ access
+// token ต่ออายุตัวเองได้โดยไม่ผ่านการตรวจ refresh token จริงตามที่ตกลงกันไว้
+export function isAccessTokenNearingExpiry(exp: number | undefined): boolean {
+  if (typeof exp !== "number") {
+    return false;
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const thresholdSeconds = getAccessTokenRefreshThresholdSeconds();
+
+  return exp - nowSeconds <= thresholdSeconds;
+}

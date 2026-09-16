@@ -7,6 +7,9 @@ paths:
       description: |
         Login Authenticates username/password แล้วออก Access Token และ Refresh Token พร้อมบันทึก Session ของอุปกรณ์
         Worker Mobile ส่ง DeviceId/DeviceName และแนบ FCM Token ได้ทันทีถ้ามี เพื่อให้ Backend ใช้ส่ง Push Notification
+
+        Session ที่สร้างมี Absolute Cap นับจาก login ครั้งนี้เสมอ ไม่ต่ออายุแม้ /api/auth/refresh จะสำเร็จซ้ำหลายครั้ง
+        ก็ตาม — Worker: 7 วัน (env JWT_REFRESH_EXPIRES_IN_WORKER) / Admin: 24 ชั่วโมง (env JWT_REFRESH_EXPIRES_IN_ADMIN)
       operationId: login
       requestBody:
         required: true
@@ -49,7 +52,8 @@ paths:
         แนบ FCM token ของอุปกรณ์ใหม่ได้ ถ้ายังไม่มีให้เรียก /api/auth/push-token ภายหลัง
         การแจ้งเตือน push ไปยังอุปกรณ์เดิม (ว่าถูกดีดออก) เป็น best-effort เท่านั้น — ถ้าส่งไม่สำเร็จ
         (Firebase/network ผิดพลาด, credential ไม่ถูกต้อง ฯลฯ) request นี้ยังตอบ 200 ตามปกติ ไม่ทำให้
-        การ revoke session เดิม/สร้าง session ใหม่ล้มเหลวไปด้วย
+        การ revoke session เดิม/สร้าง session ใหม่ล้มเหลวไปด้วย session ใหม่นี้เริ่มนับ Absolute Cap ใหม่ตั้งแต่ต้น
+        (ดูรายละเอียดที่ POST /api/auth/login)
       operationId: confirmForceLogin
       requestBody:
         required: true
@@ -87,7 +91,11 @@ paths:
       tags:
         - Auth
       summary: ต่ออายุ Token ด้วย Refresh Token
-      description: ใช้ refresh token ที่ยังไม่หมดอายุเพื่อออก access token และ refresh token ชุดใหม่ พร้อมยกเลิก refresh token เดิม
+      description: >-
+        ใช้ refresh token ที่ยังไม่หมดอายุเพื่อออก access token และ refresh token ชุดใหม่ พร้อมยกเลิก refresh token เดิม
+        (rotate ทุกครั้ง ตัวเก่าใช้ซ้ำไม่ได้อีก) — เรียก endpoint นี้ทุกครั้งที่เห็น response header X-Should-Refresh:
+        true จาก endpoint ใดก็ตาม หรือได้รับ event TOKEN_NEARING_EXPIRY ผ่าน Worker WebSocket การ refresh สำเร็จ
+        ไม่ทำให้ Absolute Session Cap ของ session นี้ขยับ (ดูรายละเอียดที่ POST /api/auth/login)
       operationId: refreshToken
       requestBody:
         required: true

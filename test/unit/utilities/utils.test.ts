@@ -115,6 +115,35 @@ test("refresh token hash utilities hash and compare safely", () => {
 
 /* -------------------------------------- Auth Config Tests -------------------------------------- */
 
+// Function ตั้งค่า env ชั่วคราวสำหรับ 1 test แล้วคืนค่าเดิมให้เสมอแม้ assertion จะ throw ระหว่างทาง
+function withEnv(overrides: Record<string, string | undefined>, run: () => void): void {
+  const previous: Record<string, string | undefined> = {};
+
+  for (const key of Object.keys(overrides)) {
+    previous[key] = process.env[key];
+  }
+
+  try {
+    for (const [key, value] of Object.entries(overrides)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+
+    run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 test("auth config parses access token expiry units", () => {
   const previousExpiresIn = process.env.JWT_ACCESS_EXPIRES_IN;
 
@@ -140,6 +169,101 @@ test("auth config parses access token expiry units", () => {
       process.env.JWT_ACCESS_EXPIRES_IN = previousExpiresIn;
     }
   }
+});
+
+test("auth config reads refresh token expiry per role from its own env var, not a shared one", () => {
+  withEnv(
+    { JWT_REFRESH_EXPIRES_IN_WORKER: "10d", JWT_REFRESH_EXPIRES_IN_ADMIN: "12h" },
+    () => {
+      assert.equal(authConfig.getWorkerRefreshExpiresInSeconds(), 10 * 24 * 60 * 60);
+      assert.equal(authConfig.getAdminRefreshExpiresInSeconds(), 12 * 60 * 60);
+    }
+  );
+});
+
+test("auth config falls back to its own default per role when the refresh env var is unset or invalid", () => {
+  withEnv(
+    { JWT_REFRESH_EXPIRES_IN_WORKER: undefined, JWT_REFRESH_EXPIRES_IN_ADMIN: "not-a-duration" },
+    () => {
+      assert.equal(
+        authConfig.getWorkerRefreshExpiresInSeconds(),
+        authConfig.AUTH_DEFAULTS.workerRefreshExpiresInSeconds
+      );
+      assert.equal(
+        authConfig.getAdminRefreshExpiresInSeconds(),
+        authConfig.AUTH_DEFAULTS.adminRefreshExpiresInSeconds
+      );
+    }
+  );
+});
+
+test("auth config parses the access-token-refresh-threshold env var and falls back to its default", () => {
+  withEnv(
+    { JWT_ACCESS_EXPIRES_IN: "15m", ACCESS_TOKEN_REFRESH_THRESHOLD: "5m" },
+    () => {
+      assert.equal(authConfig.getAccessTokenRefreshThresholdSeconds(), 5 * 60);
+    }
+  );
+
+  withEnv(
+    { JWT_ACCESS_EXPIRES_IN: "15m", ACCESS_TOKEN_REFRESH_THRESHOLD: undefined },
+    () => {
+      assert.equal(
+        authConfig.getAccessTokenRefreshThresholdSeconds(),
+        authConfig.AUTH_DEFAULTS.accessTokenRefreshThresholdSeconds
+      );
+    }
+  );
+});
+
+test("auth config rejects an access-token-refresh-threshold that is not strictly shorter than the access token lifetime", () => {
+  withEnv(
+    { JWT_ACCESS_EXPIRES_IN: "1m", ACCESS_TOKEN_REFRESH_THRESHOLD: "1m" },
+    () => {
+      assert.throws(
+        () => authConfig.getAccessTokenRefreshThresholdSeconds(),
+        /must be greater than 0 and less than the access token lifetime/
+      );
+    }
+  );
+
+  withEnv(
+    { JWT_ACCESS_EXPIRES_IN: "1m", ACCESS_TOKEN_REFRESH_THRESHOLD: "2m" },
+    () => {
+      assert.throws(
+        () => authConfig.getAccessTokenRefreshThresholdSeconds(),
+        /must be greater than 0 and less than the access token lifetime/
+      );
+    }
+  );
+});
+
+/* -------------------------------------- JWT Token Lifecycle Tests -------------------------------------- */
+
+test("signRefreshToken requires an explicit expiresIn — there is no shared default across roles anymore", () => {
+  assert.throws(
+    () =>
+      jwt.signRefreshToken({
+        account_id: 1,
+        role: "worker",
+        session_id: 2,
+      }),
+    /refresh token requires an expiresIn/
+  );
+});
+
+test("isAccessTokenNearingExpiry flags a token only once it is within the configured threshold", () => {
+  withEnv(
+    { JWT_ACCESS_EXPIRES_IN: "15m", ACCESS_TOKEN_REFRESH_THRESHOLD: "2m" },
+    () => {
+      const nowSeconds = Math.floor(Date.now() / 1000);
+
+      assert.equal(jwt.isAccessTokenNearingExpiry(undefined), false);
+      assert.equal(jwt.isAccessTokenNearingExpiry(nowSeconds + 600), false);
+      assert.equal(jwt.isAccessTokenNearingExpiry(nowSeconds + 60), true);
+      assert.equal(jwt.isAccessTokenNearingExpiry(nowSeconds - 5), true);
+    }
+  );
 });
 
 /* -------------------------------------- Schema Tests -------------------------------------- */

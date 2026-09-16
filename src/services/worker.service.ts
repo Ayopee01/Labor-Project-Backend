@@ -968,11 +968,12 @@ export async function getWorkerStatus(
 ): Promise<WorkerStatusResponse> {
   const account = await requireWorker(auth);
 
-  const [currentSchedule, queueEntry, currentAssignment] =
+  const [currentSchedule, queueEntry, currentAssignment, settings] =
     await Promise.all([
       workScheduleRepository.findCurrentByAccountId(account.id),
       getWorkerQueueStatus(account.id),
       assignmentRepository.findCurrentAssignmentByWorker(account.id),
+      getRuntimeSettings(),
     ]);
   const schedule = formatScheduleWithShift(currentSchedule);
   let status = resolveWorkerWorkStatus(queueEntry, currentAssignment);
@@ -1004,6 +1005,7 @@ export async function getWorkerStatus(
     image_url: account.image_url,
     status,
     ...dailySummary,
+    break_count_limit: settings.worker_break_limit,
     nationality: account.nationality,
     work_start_date: account.work_start_date,
     phone: account.telephone,

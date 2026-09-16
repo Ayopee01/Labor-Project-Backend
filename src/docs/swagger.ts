@@ -343,11 +343,57 @@ function addObservabilityHeaderParameters(spec: Record<string, unknown>): void {
   }
 }
 
+// Config response header ที่ต้องแนบเข้าทุก 2xx response ของ operation ที่ต้องยืนยันตัวตนด้วย bearerAuth
+const SHOULD_REFRESH_RESPONSE_HEADER = {
+  "X-Should-Refresh": { $ref: "#/components/headers/ShouldRefreshHeader" },
+};
+
+// Function เช็คว่า operation ต้องยืนยันตัวตนด้วย bearerAuth หรือไม่ (ไม่นับ gateBasicAuth หรือ public endpoint)
+function requiresBearerAuth(operation: Record<string, unknown>): boolean {
+  if (!Array.isArray(operation.security)) {
+    return false;
+  }
+
+  return operation.security.some((entry) => isObject(entry) && "bearerAuth" in entry);
+}
+
+// Function แนบ X-Should-Refresh response header เข้าทุก 2xx response ของ operation ที่ต้อง bearerAuth แบบ
+// recursive โดยไม่ต้องแก้ทีละไฟล์ YAML — สะท้อนพฤติกรรมจริงของ auth.middleware.ts ที่แนบ header นี้ตอน runtime
+function addShouldRefreshResponseHeader(spec: Record<string, unknown>): void {
+  const paths = spec.paths;
+
+  if (!isObject(paths)) {
+    return;
+  }
+
+  for (const pathItem of Object.values(paths)) {
+    if (!isObject(pathItem)) {
+      continue;
+    }
+
+    for (const operation of Object.values(pathItem)) {
+      if (!isObject(operation) || !requiresBearerAuth(operation) || !isObject(operation.responses)) {
+        continue;
+      }
+
+      for (const [statusCode, response] of Object.entries(operation.responses)) {
+        if (!statusCode.startsWith("2") || !isObject(response)) {
+          continue;
+        }
+
+        const existingHeaders = isObject(response.headers) ? response.headers : {};
+        response.headers = { ...existingHeaders, ...SHOULD_REFRESH_RESPONSE_HEADER };
+      }
+    }
+  }
+}
+
 // Function สร้าง external open API spec สำหรับ Swagger/OpenAPI
 function buildExternalOpenApiSpec(): Record<string, unknown> {
   const externalOpenapi = JSON.parse(JSON.stringify(openapi)) as Record<string, unknown>;
   addServerTimeToResponseSchemas(externalOpenapi);
   addObservabilityHeaderParameters(externalOpenapi);
+  addShouldRefreshResponseHeader(externalOpenapi);
   transformSchemaKeys(externalOpenapi);
 
   return externalOpenapi;

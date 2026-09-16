@@ -36,6 +36,17 @@
       schema:
         type: string
       description: เวอร์ชันของ client app ที่เรียกใช้งาน (ไม่บังคับ) จะถูกบันทึกไว้ใน server log เพื่อใช้ช่วย debug
+  headers:
+    ShouldRefreshHeader:
+      description: >-
+        แนบมาเมื่อ AccessToken ที่ใช้เรียก endpoint นี้เหลือเวลาน้อยกว่า ACCESS_TOKEN_REFRESH_THRESHOLD (default 2
+        นาที) ก่อนหมดอายุ เป็นสัญญาณเตือนเฉยๆ ให้ Client เรียก POST /api/auth/refresh ทันที — Server ไม่ได้ออก
+        AccessToken ใหม่ยัดมาให้ตรงๆ ใน header นี้ ต้องแลกผ่าน RefreshToken จริงเสมอเพื่อความปลอดภัย แนบมาทุก
+        endpoint ที่ต้องยืนยันตัวตนแบบ Bearer Token (ไม่ใช่แค่ Group Auth) — ดูรายละเอียดที่ POST /api/auth/refresh
+      schema:
+        type: string
+        enum:
+          - "true"
   schemas:
     ErrorResponse:
       type: object
@@ -684,11 +695,14 @@
       properties:
         access_token:
           type: string
-          description: Token สำหรับใช้ยืนยันตัวตนเรียก API ครั้งต่อไป
+          description: Token สำหรับใช้ยืนยันตัวตนเรียก API ครั้งต่อไป อายุตาม JWT_ACCESS_EXPIRES_IN (ค่าปัจจุบัน 15 นาที) เท่ากันทุก role
           example: access-jwt-token
         refresh_token:
           type: string
-          description: Token สำหรับขอ AccessToken ใหม่
+          description: >-
+            Token สำหรับขอ AccessToken ใหม่ อายุขึ้นกับ role และเป็น absolute cap นับจาก login ครั้งนี้ ไม่ต่ออายุแม้
+            POST /api/auth/refresh จะสำเร็จซ้ำหลายครั้งก็ตาม — Worker: 7 วัน (env JWT_REFRESH_EXPIRES_IN_WORKER) /
+            Admin: 24 ชั่วโมง (env JWT_REFRESH_EXPIRES_IN_ADMIN) พอถึงกำหนดต้อง login ใหม่เสมอ
           example: refresh-jwt-token
         token_type:
           type: string
@@ -703,11 +717,14 @@
       properties:
         access_token:
           type: string
-          description: Token สำหรับใช้ยืนยันตัวตนเรียก API ครั้งต่อไป
+          description: Token สำหรับใช้ยืนยันตัวตนเรียก API ครั้งต่อไป อายุตาม JWT_ACCESS_EXPIRES_IN (ค่าปัจจุบัน 15 นาที) เท่ากันทุก role — รีเซ็ตอายุใหม่ทุกครั้งที่ /api/auth/refresh สำเร็จ
           example: access-jwt-token
         refresh_token:
           type: string
-          description: Token สำหรับขอ AccessToken ใหม่
+          description: >-
+            Token ชุดใหม่ (rotate ทุกครั้ง ตัวเก่าใช้ซ้ำไม่ได้อีก) อายุ JWT รีเซ็ตเต็มตาม role อีกครั้ง แต่ไม่ทำให้
+            absolute session cap ที่ตั้งไว้ตอน login ครั้งแรกขยับตาม — พอถึงกำหนดจริง (Worker 7 วัน / Admin 24
+            ชั่วโมงนับจาก login ครั้งแรก) endpoint นี้จะตอบ 401 บังคับให้ login ใหม่เสมอไม่ว่าจะ refresh ถี่แค่ไหนก็ตาม
           example: refresh-jwt-token
         token_type:
           type: string
@@ -6529,6 +6546,10 @@
           type: integer
           description: จำนวนครั้งที่ Worker พักไปแล้ว
           example: 1
+        break_count_limit:
+          type: integer
+          description: จำนวนครั้งสูงสุดที่ Worker พักได้ (ค่ามาจาก runtime setting worker_break_limit ที่ Admin ปรับได้)
+          example: 3
         completed_job_count:
           type: integer
           description: จำนวนงานที่ทำเสร็จแล้ว
@@ -6738,6 +6759,10 @@
               type: integer
               description: จำนวน Worker ที่กำลังพักอยู่
           description: สรุปภาพรวม
+        pagination:
+          allOf:
+            - $ref: "#/components/schemas/PaginationMeta"
+          description: มีค่าเฉพาะตอนส่ง page หรือ limit มาใน query
         data:
           type: array
           items:

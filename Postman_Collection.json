@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "0f55f6b6-4a4f-4f5f-8b75-9f5d37a07f38",
     "name": "Labor Project Backend",
-    "description": "Postman collection for Labor Project Backend. baseUrl defaults to http://localhost:8080 for local development — change the baseUrl/wsBaseUrl variables to the shared droplet's domain (see README > Deploying to DigitalOcean) to test against the shared dev/test deployment instead.\nEvery request shows its contract explicitly in that request: method, URL, required headers, query params, and body.\nProtected requests use Header: Authorization: Bearer {{accessToken}}.\nRun Auth > POST /api/auth/login first to get AccessToken and RefreshToken.\nEvery request also accepts optional X-Request-Id and X-Client-Version headers for log correlation/debugging (added automatically below). X-Client-Type is required only on the /api/auth endpoints that run before an access token exists (login, login/confirm-force, refresh) — see each request's Headers line.",
+    "description": "Postman collection for Labor Project Backend. baseUrl defaults to http://localhost:8080 for local development — change the baseUrl/wsBaseUrl variables to the shared droplet's domain (see README > Deploying to DigitalOcean) to test against the shared dev/test deployment instead.\nEvery request shows its contract explicitly in that request: method, URL, required headers, query params, and body.\nProtected requests use Header: Authorization: Bearer {{accessToken}}.\nRun Auth > POST /api/auth/login first to get AccessToken and RefreshToken.\nEvery request also accepts optional X-Request-Id and X-Client-Version headers for log correlation/debugging (added automatically below). X-Client-Type is required only on the /api/auth endpoints that run before an access token exists (login, login/confirm-force, refresh) — see each request's Headers line.\n\nToken lifecycle (added 2026-09-16): Each session has an absolute cap counted from its first login and never extended by /api/auth/refresh no matter how often it succeeds \u2014 Worker: 7 days, Admin: 24 hours. Every protected response also adds header X-Should-Refresh: true once the AccessToken in use is close to expiring (default threshold: 2 minutes) \u2014 call POST /api/auth/refresh right away when you see it. Worker WebSocket connections (GET /ws/workers) get the same signal as a TOKEN_NEARING_EXPIRY event for the case where the app is only listening on the socket and issuing no REST calls at all.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -953,7 +953,7 @@
                 "refresh"
               ]
             },
-            "description": "Method: POST\nURL: {{baseUrl}}/api/auth/refresh\nAuth: No auth required\nHeaders: Content-Type: application/json, X-Client-Type (required, {{clientType}}), X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: JSON: RefreshToken\nNotes: Returns a new AccessToken and RefreshToken."
+            "description": "Method: POST\nURL: {{baseUrl}}/api/auth/refresh\nAuth: No auth required\nHeaders: Content-Type: application/json, X-Client-Type (required, {{clientType}}), X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: JSON: RefreshToken\nNotes: Returns a new AccessToken and RefreshToken (RefreshToken rotates every call; the old one can no longer be used). Call this proactively whenever any response carries header X-Should-Refresh: true, or the worker WebSocket sends a TOKEN_NEARING_EXPIRY event \u2014 don't wait for a 401. This never extends the session's absolute cap (Worker 7d / Admin 24h from first login); once that's reached this call returns 401 and the client must log in again."
           },
           "response": []
         },
@@ -1671,7 +1671,7 @@
               }
             ],
             "url": {
-              "raw": "{{baseUrl}}/api/admin/jobs/workers/status",
+              "raw": "{{baseUrl}}/api/admin/jobs/workers/status?page=&limit=",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -1681,12 +1681,24 @@
                 "jobs",
                 "workers",
                 "status"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "",
+                  "description": "Optional. If omitted, returns the full list unpaginated (unchanged default behavior). If provided, returns only that page plus pagination metadata."
+                },
+                {
+                  "key": "limit",
+                  "value": "",
+                  "description": "Optional. Items per page (max 100). Only used when page is provided."
+                }
               ]
             },
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/jobs/workers/status\nAuth: Admin access token\nBody: None\nNotes: Admin Jobs. Lists active current-shift workers for the worker queue board. Workers with an active queue/assignment remain visible even when their Worker WebSocket is disconnected; use SocketConnected to show the connection state. Response includes FullName, WorkerCode, ShirtNumber, ImageUrl, ShiftName, LatestActivityAt, StatusEnteredAt, QueuePosition, SocketConnected, and one status only. Data is already sorted by board column order and the real order inside each status. Ready workers use Redis QueuePosition. Board status values: open_app, ready, assigned, waiting_team, working, break."
+            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/jobs/workers/status\nAuth: Admin access token\nBody: None\nNotes: Admin Jobs. Lists active current-shift workers for the worker queue board. Workers with an active queue/assignment remain visible even when their Worker WebSocket is disconnected; use SocketConnected to show the connection state. Response includes FullName, WorkerCode, ShirtNumber, ImageUrl, ShiftName, LatestActivityAt, StatusEnteredAt, QueuePosition, SocketConnected, and one status only. Data is already sorted by board column order and the real order inside each status. Ready workers use Redis QueuePosition. Board status values: open_app, ready, assigned, waiting_team, working, break. Optional page/limit query params paginate the result; when provided, response also includes Pagination (Page, Limit, Total, TotalPages). Omit both to keep receiving the full unpaginated list."
           },
           "response": []
         },
@@ -3710,7 +3722,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/events\nAuth: Admin access token\nPermission: jobs:read\nHeaders: Authorization: Bearer {{accessToken}}, Accept: text/event-stream, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nBody: None\nNotes: Admin-only SSE stream. It stays open and receives realtime dashboard events. Snapshot/latest state should still be loaded from Admin REST APIs."
+            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/events\nAuth: Admin access token\nPermission: jobs:read\nHeaders: Authorization: Bearer {{accessToken}}, Accept: text/event-stream, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nBody: None\nNotes: Admin-only SSE stream. It stays open and receives realtime dashboard events. Snapshot/latest state should still be loaded from Admin REST APIs. Also sends a TOKEN_NEARING_EXPIRY event before this connection's AccessToken is close to expiring (same threshold as header X-Should-Refresh on REST calls and the TOKEN_NEARING_EXPIRY event on the worker WebSocket) \u2014 covers the case where the dashboard tab is left open with no other REST calls happening. Call POST /api/auth/refresh right away when you receive it."
           },
           "response": []
         }
@@ -4169,10 +4181,10 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: GET\nURL: {{baseUrl}}/api/workers/me/status\nAuth: Worker access token\nBody: None\nSafe to call any time, including right after the app is closed and reopened, since CurrentJob is always re-derived live from persisted assignment state (not from a one-time push payload).\nResponse: FullName, WorkerCode, ImageUrl, Status, TodayJobCount, BreakCountUsed, CompletedJobCount, Nationality, WorkStartDate, Phone, and Shift name/start/end. Status is one of open_app, ready, assigned, waiting_team, working, break. When Status is break, response includes BreakUntil, BreakUntilUnixMs, and RemainingBreakTime. Status is assigned both while the assignment is still PENDING (worker has not pressed accept yet) and once it is ACCEPTED (waiting to scan) — the two sub-cases are told apart by which deadline pair is non-null: while PENDING, CurrentJob.AcceptDeadlineAt/AcceptDeadlineUnixMs are set and ScanDeadlineAt/ScanDeadlineUnixMs are null; once ACCEPTED, ScanDeadlineAt/ScanDeadlineUnixMs are set and AcceptDeadlineAt/AcceptDeadlineUnixMs are null. When Status is waiting_team or working (worker has already scanned), all four deadline fields are null. When Status is assigned, waiting_team, or working, response includes CurrentJob with TicketNumber, LicensePlate, LicensePlateProvince, VehicleType, TeamScan, Markets[] (each with TicketNo — scan its barcode via check-in-barcode, Booths[].Products[] with Quantity from Gate and ConfirmedQuantity — the worker's latest submitted amount, null until submitted), and Team[].ShirtNumber/FullName/ScanStatus/ScannedAt."
+            "description": "Method: GET\nURL: {{baseUrl}}/api/workers/me/status\nAuth: Worker access token\nBody: None\nSafe to call any time, including right after the app is closed and reopened, since CurrentJob is always re-derived live from persisted assignment state (not from a one-time push payload).\nResponse: FullName, WorkerCode, ImageUrl, Status, TodayJobCount, BreakCountUsed, BreakCountLimit, CompletedJobCount, Nationality, WorkStartDate, Phone, and Shift name/start/end. Status is one of open_app, ready, assigned, waiting_team, working, break. When Status is break, response includes BreakUntil, BreakUntilUnixMs, and RemainingBreakTime. Status is assigned both while the assignment is still PENDING (worker has not pressed accept yet) and once it is ACCEPTED (waiting to scan) — the two sub-cases are told apart by which deadline pair is non-null: while PENDING, CurrentJob.AcceptDeadlineAt/AcceptDeadlineUnixMs are set and ScanDeadlineAt/ScanDeadlineUnixMs are null; once ACCEPTED, ScanDeadlineAt/ScanDeadlineUnixMs are set and AcceptDeadlineAt/AcceptDeadlineUnixMs are null. When Status is waiting_team or working (worker has already scanned), all four deadline fields are null. When Status is assigned, waiting_team, or working, response includes CurrentJob with TicketNumber, LicensePlate, LicensePlateProvince, VehicleType, TeamScan, Markets[] (each with TicketNo — scan its barcode via check-in-barcode, Booths[].Products[] with Quantity from Gate and ConfirmedQuantity — the worker's latest submitted amount, null until submitted), and Team[].ShirtNumber/FullName/ScanStatus/ScannedAt."
           },
           "response": [],
-          "description": "Method: GET\nURL: {{baseUrl}}/api/workers/me/status\nAuth: Worker access token\nBody: None\nResponse: FullName, WorkerCode, ImageUrl, Status, TodayJobCount, BreakCountUsed, CompletedJobCount, Nationality, WorkStartDate, Phone, and Shift name/start/end. Status is one of open_app, ready, assigned, waiting_team, working, break. When Status is break, response includes BreakUntil, BreakUntilUnixMs, and RemainingBreakTime. When Status is assigned, response includes CurrentJob.ScanDeadlineAt and CurrentJob.ScanDeadlineUnixMs. When Status is waiting_team or working, CurrentJob.ScanDeadlineAt and CurrentJob.ScanDeadlineUnixMs are null. When Status is assigned, waiting_team, or working, response includes CurrentJob with TicketNo, LicensePlate, LicensePlateProvince, VehicleType, TeamScan, Markets[].Booths[].Products[] with Quantity from Gate and ConfirmedQuantity — the worker's latest submitted amount, null until submitted, and Team[].ShirtNumber/FullName/ScanStatus/ScannedAt."
+          "description": "Method: GET\nURL: {{baseUrl}}/api/workers/me/status\nAuth: Worker access token\nBody: None\nResponse: FullName, WorkerCode, ImageUrl, Status, TodayJobCount, BreakCountUsed, BreakCountLimit, CompletedJobCount, Nationality, WorkStartDate, Phone, and Shift name/start/end. Status is one of open_app, ready, assigned, waiting_team, working, break. When Status is break, response includes BreakUntil, BreakUntilUnixMs, and RemainingBreakTime. When Status is assigned, response includes CurrentJob.ScanDeadlineAt and CurrentJob.ScanDeadlineUnixMs. When Status is waiting_team or working, CurrentJob.ScanDeadlineAt and CurrentJob.ScanDeadlineUnixMs are null. When Status is assigned, waiting_team, or working, response includes CurrentJob with TicketNo, LicensePlate, LicensePlateProvince, VehicleType, TeamScan, Markets[].Booths[].Products[] with Quantity from Gate and ConfirmedQuantity — the worker's latest submitted amount, null until submitted, and Team[].ShirtNumber/FullName/ScanStatus/ScannedAt."
         },
         {
           "name": "GET /api/workers/me/assignments/history",

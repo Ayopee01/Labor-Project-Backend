@@ -34,6 +34,9 @@ export type NotificationClient = {
   auth: AccessTokenPayload;
   response: Response;
   heartbeat: NodeJS.Timeout;
+  // Timer เตือนล่วงหน้าก่อน access token ของ connection นี้ใกล้หมดอายุ — schedule ตอน subscribe จาก exp
+  // ที่รู้อยู่แล้ว คู่ขนานกับ tokenRefreshTimer ของ WorkerSocket ใน worker.type.ts
+  tokenRefreshTimer?: NodeJS.Timeout;
 };
 
 export interface WorkerNotificationDto {

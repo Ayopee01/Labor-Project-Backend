@@ -3,6 +3,8 @@ import type { IncomingMessage } from "http";
 import type { Server } from "http";
 import type { Duplex } from "stream";
 import { WebSocket, WebSocketServer } from "ws";
+// Import Config
+import { getAccessTokenExpiresInSeconds, getAccessTokenRefreshThresholdSeconds } from "../config/auth.config";
 // Import Repositories
 import * as masterWorkerRepository from "../repositories/shared/master-worker.repository";
 import { findActiveById as findActiveWorkerSessionById } from "../repositories/shared/worker-session.repository";
@@ -155,6 +157,42 @@ function registerWorkerSocket(accountId: number, socket: WorkerSocket): void {
   socket.isAlive = true;
   sockets.add(socket);
   workerSockets.set(accountId, sockets);
+}
+
+// Function ตั้ง timer ล่วงหน้าครั้งเดียวต่อ connection เพื่อส่งสัญญาณเตือนก่อน access token ของ connection นี้
+// ใกล้หมดอายุ — ใช้ exp ที่รู้อยู่แล้วตอน connect ไม่ต้อง poll/query ซ้ำ ครอบคลุมเคส worker ถือ socket รอ
+// งานเฉยๆ ไม่ได้ยิง REST เลย ให้ได้รับสัญญาณไปเรียก /refresh เองก่อน token จะหมดอายุจริง
+function scheduleAccessTokenRefreshReminder(socket: WorkerSocket, exp: number | undefined): void {
+  if (typeof exp !== "number") {
+    return;
+  }
+
+  const thresholdSeconds = getAccessTokenRefreshThresholdSeconds();
+  const accessTokenLifetimeMs = getAccessTokenExpiresInSeconds() * 1000;
+
+  const fireReminder = (): void => {
+    if (socket.readyState !== WebSocket.OPEN || !socket.workerId) {
+      return;
+    }
+
+    sendWorkerSocketEvent(socket.workerId, "TOKEN_NEARING_EXPIRY", {}, { push: false });
+    // ยิงซ้ำทุกรอบอายุ access token ต่อไปเรื่อยๆ สมมติว่า client เรียก /refresh ตามสัญญาณทุกครั้ง
+    // ทำให้ token จริงยังไม่หมดอายุจริง — รอบถัดไปจึงห่างเท่าอายุเต็มของ access token
+    socket.tokenRefreshTimer = setTimeout(fireReminder, accessTokenLifetimeMs);
+  };
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const initialDelayMs = Math.max(0, (exp - nowSeconds - thresholdSeconds) * 1000);
+
+  socket.tokenRefreshTimer = setTimeout(fireReminder, initialDelayMs);
+}
+
+// Function เคลียร์ timer เตือน access token ตอน socket ปิด กันยิงสัญญาณไปหา socket ที่ตายไปแล้ว
+function clearAccessTokenRefreshReminder(socket: WorkerSocket): void {
+  if (socket.tokenRefreshTimer) {
+    clearTimeout(socket.tokenRefreshTimer);
+    socket.tokenRefreshTimer = undefined;
+  }
 }
 
 // Function ลบ socket ออกจาก registry และเริ่ม grace period ก่อนประกาศว่า disconnected
@@ -482,6 +520,7 @@ export function setupWorkerWebSocket(server: Server): void {
     "connection",
     (socket: WorkerSocket, _request: IncomingMessage, auth: AccessTokenPayload) => {
       registerWorkerSocket(auth.account_id, socket);
+      scheduleAccessTokenRefreshReminder(socket, auth.exp);
       void handleWorkerSocketConnected(auth.account_id);
 
       socket.on("pong", () => {
@@ -492,6 +531,7 @@ export function setupWorkerWebSocket(server: Server): void {
       });
 
       socket.on("close", () => {
+        clearAccessTokenRefreshReminder(socket);
         handleWorkerSocketDisconnect(socket);
       });
     }

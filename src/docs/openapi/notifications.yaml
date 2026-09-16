@@ -19,6 +19,9 @@
             ASSIGNMENT_CANCELLED, VEHICLE_JOB_CANCELLED_AND_REQUEUED, TICKET_WORKER_CANCELLED,
             TICKET_WORKER_CANCELLED_FROM_BOOTH และอื่นๆ อีกหลายชนิดตามเหตุการณ์ที่เกิดขึ้นจริงในระบบ)
             มี comment line `: heartbeat ...` แทรกมาทุก 25 วินาทีเพื่อกัน connection ถูกตัด ไม่ต้อง parse เป็น event
+            นอกจากนี้ยังส่ง event TOKEN_NEARING_EXPIRY ให้ก่อน AccessToken ของ connection นี้ใกล้หมดอายุ (threshold
+            เดียวกับ header X-Should-Refresh ของ REST และ event เดียวกันบน Worker WebSocket) ครอบคลุมเคส Admin เปิดหน้า
+            dashboard ค้างไว้โดยไม่มี REST call อื่นเกิดขึ้นเลย — Client ต้องเรียก POST /api/auth/refresh ทันทีที่ได้รับ
           content:
             text/event-stream:
               schema:

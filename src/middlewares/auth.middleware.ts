@@ -1,7 +1,7 @@
 // Import Library
 import type { NextFunction, Request, Response } from "express";
 // Import Utils
-import { verifyAccessToken } from "../utils/jwt";
+import { isAccessTokenNearingExpiry, verifyAccessToken } from "../utils/jwt";
 import { extractBearerToken } from "../utils/bearer-token";
 
 /* -------------------------------------- Functions -------------------------------------- */
@@ -9,7 +9,7 @@ import { extractBearerToken } from "../utils/bearer-token";
 // Function จัดการ auth middleware สำหรับ Express middleware
 export default function authMiddleware(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction
 ): void {
   try {
@@ -20,7 +20,15 @@ export default function authMiddleware(
       invalidMessage: "Invalid authorization format.",
     });
 
-    req.auth = verifyAccessToken(token);
+    const payload = verifyAccessToken(token);
+    req.auth = payload;
+
+    // สัญญาณเตือนเฉยๆ ให้ client ไปเรียก /refresh เอง — ไม่ใช่การเซ็น token ใหม่ยัดใส่ตรงนี้ เพราะจะทำให้
+    // access token ต่ออายุตัวเองได้โดยไม่ต้องพิสูจน์ว่ายังถือ refresh token จริง
+    if (isAccessTokenNearingExpiry(payload.exp)) {
+      res.setHeader("X-Should-Refresh", "true");
+    }
+
     next();
   } catch (error) {
     next(error);

@@ -47,6 +47,8 @@ const corsOrigins =
 app.use(
   cors({
     origin: corsOrigins,
+    // ให้ browser อ่าน header เตือนใกล้หมดอายุ token ได้ ไม่งั้น cross-origin request จะมองไม่เห็น custom header นี้เลย
+    exposedHeaders: ["X-Should-Refresh"],
   })
 );
 // Body Parser Configuration

@@ -495,3 +495,190 @@ test(
     }
   }
 );
+
+test(
+  "TOKEN_NEARING_EXPIRY fires over both the Worker WebSocket and the Admin SSE stream before their connecting access token expires",
+  {
+    skip: runDbTests
+      ? false
+      : "Set RUN_DB_TESTS=1 and run PostgreSQL + Redis before this test.",
+  },
+  async () => {
+    const suffix = `tne-${Date.now().toString(36)}`;
+    const workerPassword = "RT-tne-password-1234";
+    const adminPassword = "RT-tne-admin-password-1234";
+    const schedule = buildAlwaysActiveSchedule();
+
+    let workerId: number | null = null;
+    let adminId: number | null = null;
+    let sse: SseRecorder | null = null;
+    let socket: WebSocket | null = null;
+    let testError: unknown;
+    // ACCESS_TOKEN_REFRESH_THRESHOLD ถูกอ่านสดทุกครั้ง (auth.config.ts) จึง mutate ตอน runtime ได้จริง
+    // ต่างจาก JWT_ACCESS_EXPIRES_IN ที่ jwt.ts cache ไว้ตอน import ครั้งแรก (เหตุผลเดียวกับที่ต้องเซ็น
+    // access token เองด้วย expiresIn สั้นๆ ตรงๆ แทนการพึ่ง env ด้านล่าง)
+    const previousThreshold = process.env.ACCESS_TOKEN_REFRESH_THRESHOLD;
+
+    try {
+      process.env.ACCESS_TOKEN_REFRESH_THRESHOLD = "1s";
+
+      const { prisma } = prismaModule;
+      const { hashPassword } = await import("../../src/utils/password");
+      const { signAccessToken } = await import("../../src/utils/jwt");
+
+      const worker = await prisma.masterWorker.create({
+        data: {
+          laborCode: `RT-WORKER-${suffix}`,
+          status: 1,
+          fullName: "Realtime TNE Test Worker",
+          timeWork: "Morning",
+          timeIn: schedule.time_in,
+          timeOut: schedule.time_out,
+          passwordHash: await hashPassword(workerPassword),
+        },
+      });
+
+      workerId = worker.id;
+
+      const admin = await prisma.account.create({
+        data: {
+          username: `rt-tne-admin-${suffix}`,
+          passwordHash: await hashPassword(adminPassword),
+          role: "admin",
+          status: "active",
+          fullName: "Realtime TNE Test Admin",
+        },
+      });
+
+      adminId = admin.id;
+
+      await prisma.accountPermission.create({
+        data: { accountId: admin.id, permission: "jobs:read" },
+      });
+
+      // Login จริงเพื่อสร้าง session ใน DB ให้ authenticateWorkerSocket/sessionMiddleware เจอ session
+      // active จริง — แต่ access token ที่ login คืนมาอายุยาวตาม JWT_ACCESS_EXPIRES_IN ปกติ (cache ไว้
+      // ตอน import) จึงต้องเซ็น token สั้นๆ เองอีกทีโดยใช้ session_id เดียวกันด้านล่าง
+      const workerLogin = await apiRequest("POST", "/api/auth/login", {
+        body: {
+          username: worker.laborCode,
+          password: workerPassword,
+          device_id: `rt-tne-device-${suffix}`,
+          device_name: "Realtime TNE Test Device",
+        },
+      });
+
+      assert.equal(workerLogin.status, 200, JSON.stringify(workerLogin.body));
+
+      const adminLogin = await apiRequest("POST", "/api/auth/login", {
+        body: {
+          username: admin.username,
+          password: adminPassword,
+          device_id: `rt-tne-admin-device-${suffix}`,
+          device_name: "Realtime TNE Test Admin Device",
+        },
+      });
+
+      assert.equal(adminLogin.status, 200, JSON.stringify(adminLogin.body));
+
+      const decodeSessionId = (accessToken: string): number =>
+        JSON.parse(Buffer.from(accessToken.split(".")[1], "base64url").toString("utf8")).session_id;
+
+      const shortLivedWorkerToken = signAccessToken(
+        {
+          account_id: worker.id,
+          role: "worker",
+          permission_level: null,
+          permissions: [],
+          session_id: decodeSessionId(workerLogin.body.AccessToken),
+        },
+        { expiresIn: "3s" }
+      );
+      const shortLivedAdminToken = signAccessToken(
+        {
+          account_id: admin.id,
+          role: "admin",
+          permission_level: null,
+          permissions: ["jobs:read"],
+          session_id: decodeSessionId(adminLogin.body.AccessToken),
+        },
+        { expiresIn: "3s" }
+      );
+
+      sse = new SseRecorder(`${baseUrl}/api/admin/events`, shortLivedAdminToken);
+      await sse.waitFor((event) => event.event === "connected");
+
+      socket = await connectWorkerSocket(shortLivedWorkerToken);
+
+      const workerReminder = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("Timed out waiting for TOKEN_NEARING_EXPIRY on the worker socket.")),
+          4000
+        );
+
+        socket!.on("message", (raw: WebSocket.RawData) => {
+          const event = JSON.parse(raw.toString());
+
+          if (event.Type === "TOKEN_NEARING_EXPIRY") {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      });
+
+      await workerReminder;
+
+      const adminReminderEvent = await sse.waitFor(
+        (event) => event.event === "TOKEN_NEARING_EXPIRY",
+        4000
+      );
+
+      assert.ok(
+        adminReminderEvent,
+        "Admin SSE must receive TOKEN_NEARING_EXPIRY before its connecting token expires."
+      );
+
+      socket.close();
+      socket = null;
+    } catch (error) {
+      testError = error;
+    } finally {
+      if (previousThreshold === undefined) {
+        delete process.env.ACCESS_TOKEN_REFRESH_THRESHOLD;
+      } else {
+        process.env.ACCESS_TOKEN_REFRESH_THRESHOLD = previousThreshold;
+      }
+
+      try {
+        if (socket) {
+          socket.close();
+        }
+
+        if (sse) {
+          await sse.close();
+        }
+
+        const { prisma } = prismaModule;
+
+        if (workerId !== null) {
+          await workerQueueModule.markWorkerOpenApp(workerId);
+          await prisma.userSession.deleteMany({ where: { workerId } });
+          await prisma.masterWorker.deleteMany({ where: { id: workerId } });
+        }
+
+        if (adminId !== null) {
+          await prisma.accountPermission.deleteMany({ where: { accountId: adminId } });
+          await prisma.userSession.deleteMany({ where: { accountId: adminId } });
+          await prisma.account.deleteMany({ where: { id: adminId } });
+        }
+      } catch (cleanupError) {
+        // eslint-disable-next-line no-console
+        console.error("Realtime TNE test cleanup failed:", cleanupError);
+      }
+    }
+
+    if (testError) {
+      throw testError;
+    }
+  }
+);

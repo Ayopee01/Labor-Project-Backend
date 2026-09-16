@@ -19,9 +19,27 @@ function getDatabaseUrl(): string {
   return process.env.DATABASE_URL;
 }
 
+// Function อ่านขนาด pool สูงสุดจาก DATABASE_POOL_MAX — ปล่อยว่างไว้ก็ยังปลอดภัยเพราะ default เป็นค่าเดิมของ pg เอง (10)
+function getDatabasePoolMax(): number {
+  const raw = process.env.DATABASE_POOL_MAX;
+  if (!raw) {
+    return 10;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error("DATABASE_POOL_MAX must be a positive integer when set.");
+  }
+
+  return parsed;
+}
+
 // Function สร้าง Prisma client พร้อม adapter ของ PostgreSQL
 function createPrismaClient(): PrismaClient {
-  const adapter = new PrismaPg({ connectionString: getDatabaseUrl() });
+  const adapter = new PrismaPg({
+    connectionString: getDatabaseUrl(),
+    max: getDatabasePoolMax(),
+  });
 
   return new PrismaClient({
     adapter,

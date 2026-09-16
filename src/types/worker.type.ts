@@ -59,6 +59,9 @@ export type CompletedTicketJobResult = {
 export type WorkerSocket = WebSocket & {
   workerId?: number;
   isAlive?: boolean;
+  // Timer เตือนล่วงหน้าก่อน access token ของ connection นี้ใกล้หมดอายุ — schedule ตอน connect จาก exp
+  // ที่รู้อยู่แล้ว ไม่ต้อง poll ซ้ำ ต้อง clear ทุกครั้งที่ socket ปิดกันยิงหลัง connection ตายไปแล้ว
+  tokenRefreshTimer?: NodeJS.Timeout;
 };
 
 // Type payload ทั่วไปที่ส่งผ่าน Worker WebSocket
@@ -298,6 +301,7 @@ export interface WorkerStatusResponse {
   status: WorkerWorkStatus;
   today_job_count: number;
   break_count_used: number;
+  break_count_limit: number;
   completed_job_count: number;
   nationality: string | null;
   work_start_date: string | null;
@@ -657,5 +661,6 @@ export type WorkerSocketEventType =
   | "MARKET_JOB_CANCELLED"
   | "VEHICLE_JOB_CANCELLED"
   | "SESSION_REVOKED"
-  | "WORKER_STATUS_CHANGED";
+  | "WORKER_STATUS_CHANGED"
+  | "TOKEN_NEARING_EXPIRY";
 

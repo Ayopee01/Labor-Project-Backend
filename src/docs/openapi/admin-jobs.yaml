@@ -9,6 +9,22 @@
       operationId: listAdminJobWorkerStatuses
       security:
         - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            example: 1
+          description: ไม่บังคับ ถ้าไม่ส่งมาจะคืนรายการทั้งหมดโดยไม่แบ่งหน้าเหมือนเดิม ถ้าส่งมา API จะคืนเฉพาะหน้านั้นพร้อม pagination metadata หลัง filter/sort แล้ว
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            example: 20
+          description: จำนวนรายการต่อหน้า (ไม่บังคับ) ใช้เฉพาะตอนส่ง page มา
       responses:
         "200":
           description: >-

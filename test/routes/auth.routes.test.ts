@@ -1,7 +1,35 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
+import jwt from "jsonwebtoken";
 
 import { addAdmin, addWorker, getPassword, resetRouteTestState, resetSpacesMockState, restoreRouteTestLoader, spacesMockState, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
+
+// Function ตั้งค่า env ชั่วคราวสำหรับ 1 test แล้วคืนค่าเดิมให้เสมอแม้ assertion จะ throw ระหว่างทาง
+function withEnv(overrides: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
+  const previous: Record<string, string | undefined> = {};
+
+  for (const key of Object.keys(overrides)) {
+    previous[key] = process.env[key];
+  }
+
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  return run().finally(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  });
+}
 
 let server: TestServer;
 let password: typeof import("../../src/utils/password");
@@ -708,6 +736,152 @@ test("POST /api/auth/refresh rejects a refresh token once the session's hash has
 
   assert.equal(response.status, 401);
   assert.equal(response.body.code, "INVALID_REFRESH_TOKEN");
+});
+
+test("POST /api/auth/login issues a RefreshToken JWT whose lifetime follows the role-specific env var, not a shared one", async () => {
+  await withEnv(
+    { JWT_REFRESH_EXPIRES_IN_WORKER: "10s", JWT_REFRESH_EXPIRES_IN_ADMIN: "20s" },
+    async () => {
+      const passwordHash = await password.hashPassword("Worker@123456");
+      const worker = addWorker(1050, passwordHash);
+      const workerLogin = await server.request("POST", "/api/auth/login", {
+        body: {
+          username: worker.labor_code,
+          password: "Worker@123456",
+          device_id: "mobile-1050",
+          device_name: "Worker Mobile",
+        },
+      });
+      const workerRefreshPayload = jwt.decode(workerLogin.body.refresh_token) as { iat: number; exp: number };
+
+      assert.equal(workerRefreshPayload.exp - workerRefreshPayload.iat, 10);
+
+      const adminPasswordHash = await password.hashPassword("Admin@123456");
+      const admin = addAdmin(9050, adminPasswordHash);
+      const adminLogin = await server.request("POST", "/api/auth/login", {
+        body: {
+          username: admin.username,
+          password: "Admin@123456",
+        },
+      });
+      const adminRefreshPayload = jwt.decode(adminLogin.body.refresh_token) as { iat: number; exp: number };
+
+      assert.equal(adminRefreshPayload.exp - adminRefreshPayload.iat, 20);
+    }
+  );
+});
+
+test("POST /api/auth/refresh never extends the session's absolute expires_at, even after several successful rotations", async () => {
+  const passwordHash = await password.hashPassword("Worker@123456");
+  const worker = addWorker(1051, passwordHash);
+  const login = await server.request("POST", "/api/auth/login", {
+    body: {
+      username: worker.labor_code,
+      password: "Worker@123456",
+      device_id: "mobile-1051",
+      device_name: "Worker Mobile",
+    },
+  });
+
+  const session = Array.from(state.workerSessions.values()).find(
+    (item) => item.account_id === worker.id,
+  );
+
+  assert.ok(session);
+  const originalExpiresAt = session.expires_at;
+
+  let refreshToken = login.body.refresh_token;
+
+  for (let i = 0; i < 3; i += 1) {
+    const response = await server.request("POST", "/api/auth/refresh", {
+      body: { refresh_token: refreshToken },
+    });
+
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    refreshToken = response.body.refresh_token;
+    assert.equal(
+      session.expires_at,
+      originalExpiresAt,
+      "Absolute session cap must not move just because /refresh keeps succeeding.",
+    );
+  }
+});
+
+test("POST /api/auth/refresh rejects a cryptographically valid refresh token once the session's absolute cap has passed", async () => {
+  const passwordHash = await password.hashPassword("Worker@123456");
+  const worker = addWorker(1052, passwordHash);
+  const login = await server.request("POST", "/api/auth/login", {
+    body: {
+      username: worker.labor_code,
+      password: "Worker@123456",
+      device_id: "mobile-1052",
+      device_name: "Worker Mobile",
+    },
+  });
+
+  // จำลอง session ที่ผ่าน absolute cap (7 วัน) ไปแล้ว โดยที่ RefreshToken JWT เองยัง valid อยู่
+  // (exp เดิมตอนเซ็นยังไม่ถึง) — ต้องถูกปฏิเสธจากการเช็ค expires_at ใน DB โดยตรง ไม่ใช่จาก JWT exp
+  const session = Array.from(state.workerSessions.values()).find(
+    (item) => item.account_id === worker.id,
+  );
+
+  assert.ok(session);
+  session.expires_at = new Date(Date.now() - 1000).toISOString();
+
+  const response = await server.request("POST", "/api/auth/refresh", {
+    body: { refresh_token: login.body.refresh_token },
+  });
+
+  assert.equal(response.status, 401);
+  assert.equal(response.body.code, "INVALID_REFRESH_TOKEN");
+});
+
+test("GET /api/auth/me sets X-Should-Refresh once the access token is within the refresh threshold, and omits it while the token is still fresh", async () => {
+  // ACCESS_TOKEN_REFRESH_THRESHOLD ถูกอ่านสดทุกครั้ง (auth.config.ts) แต่ JWT_ACCESS_EXPIRES_IN ที่ jwt.ts ใช้เซ็น
+  // token จริงถูก cache ไว้ตั้งแต่ตอน import module ครั้งแรก — mutate env นั้นตอน runtime จึงไม่มีผลกับ token ที่
+  // เซ็นใหม่ในเทสนี้ ต้องเซ็น access token เองตรงๆ ด้วย expiresIn สั้นๆ แทนเพื่อคุมอายุ token ให้แน่นอน
+  const jwtUtil = await import("../../src/utils/jwt");
+
+  await withEnv({ ACCESS_TOKEN_REFRESH_THRESHOLD: "1s" }, async () => {
+    const passwordHash = await password.hashPassword("Worker@123456");
+    const worker = addWorker(1053, passwordHash);
+    const login = await server.request("POST", "/api/auth/login", {
+      body: {
+        username: worker.labor_code,
+        password: "Worker@123456",
+        device_id: "mobile-1053",
+        device_name: "Worker Mobile",
+      },
+    });
+
+    const loginPayload = jwt.decode(login.body.access_token) as { session_id: number };
+    const shortLivedToken = jwtUtil.signAccessToken(
+      {
+        account_id: worker.id,
+        role: "worker",
+        permission_level: null,
+        permissions: [],
+        session_id: loginPayload.session_id,
+      },
+      { expiresIn: "3s" }
+    );
+
+    const freshResponse = await server.request("GET", "/api/auth/me", {
+      token: shortLivedToken,
+    });
+
+    assert.equal(freshResponse.status, 200);
+    assert.equal(freshResponse.headers.get("x-should-refresh"), null);
+
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+
+    const nearingExpiryResponse = await server.request("GET", "/api/auth/me", {
+      token: shortLivedToken,
+    });
+
+    assert.equal(nearingExpiryResponse.status, 200);
+    assert.equal(nearingExpiryResponse.headers.get("x-should-refresh"), "true");
+  });
 });
 
 test("POST /api/auth/logout revokes current session and prevents /me reuse", async () => {
