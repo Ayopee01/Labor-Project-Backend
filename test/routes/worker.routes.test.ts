@@ -1127,6 +1127,7 @@ test("GET /api/workers/me/status returns worker profile and shift", async () => 
 
   assert.equal(response.status, 200);
   assert.deepEqual(Object.keys(response.body).sort(), [
+    "break_count_limit",
     "break_count_used",
     "completed_job_count",
     "full_name",
