@@ -14,13 +14,15 @@ type DurationUnit = keyof typeof TIME_UNIT_SECONDS;
 // Config รูปแบบ duration เช่น 15m, 7d หรือเลขวินาที
 const DURATION_PATTERN = /^(\d+)([smhd])?$/;
 
-// Config ค่า default ของ token และ session เมื่อไม่ได้กำหนดผ่าน env
+// Config ค่า default ของ token เมื่อไม่ได้กำหนดผ่าน env
 export const AUTH_DEFAULTS = {
   accessTokenExpiresIn: "15m",
   accessTokenExpiresInSeconds: 15 * TIME_UNIT_SECONDS.m,
-  refreshTokenExpiresIn: "7d",
   loginChallengeExpiresIn: "5m",
-  sessionExpiresInMilliseconds: 7 * TIME_UNIT_SECONDS.d * 1000,
+  // Refresh token อายุนี้ใช้เป็น single source of truth ทั้งอายุ JWT (exp claim) และอายุ session ใน DB (expires_at) —
+  // Worker อายุยาวกว่า admin เพราะใช้งานเป็น mobile app ประจำวัน ไม่ได้ถือสิทธิ์สูงเท่า admin ที่ควร re-authenticate ถี่กว่า
+  workerRefreshExpiresInSeconds: 7 * TIME_UNIT_SECONDS.d,
+  adminRefreshExpiresInSeconds: 24 * TIME_UNIT_SECONDS.h,
 } as const;
 
 /* -------------------------------------- Functions -------------------------------------- */
@@ -55,5 +57,23 @@ export function getAccessTokenExpiresInSeconds(): number {
   return parseDurationSeconds(
     process.env.JWT_ACCESS_EXPIRES_IN,
     AUTH_DEFAULTS.accessTokenExpiresInSeconds
+  );
+}
+
+// Function อ่านอายุ refresh token ของ worker จาก env เป็นวินาที — ใช้ทั้งเซ็น JWT (exp) และตั้ง expires_at
+// ของ session ใน DB จากค่าเดียวกัน กันไม่ให้สอง config หลุด sync กันแบบที่เคยเป็นตอนแยก session cap ไว้ต่างหาก
+export function getWorkerRefreshExpiresInSeconds(): number {
+  return parseDurationSeconds(
+    process.env.JWT_REFRESH_EXPIRES_IN_WORKER,
+    AUTH_DEFAULTS.workerRefreshExpiresInSeconds
+  );
+}
+
+// Function อ่านอายุ refresh token ของ admin จาก env เป็นวินาที — ใช้ทั้งเซ็น JWT (exp) และตั้ง expires_at
+// ของ session ใน DB จากค่าเดียวกัน
+export function getAdminRefreshExpiresInSeconds(): number {
+  return parseDurationSeconds(
+    process.env.JWT_REFRESH_EXPIRES_IN_ADMIN,
+    AUTH_DEFAULTS.adminRefreshExpiresInSeconds
   );
 }

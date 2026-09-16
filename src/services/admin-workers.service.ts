@@ -33,7 +33,7 @@ import type { TicketJobAssignmentDto, VehicleWorkReadinessDto, WorkerPresenceDto
 import type { SecurityAuditRequestContext } from "../types/shared/security-audit-log.type";
 // Import Validation
 import { parseWithSchema } from "../validation/parser";
-import { adminForceWorkerStatusBodySchema, createUserBodySchema, paginationQuerySchema, resetPasswordBodySchema, updateUserBodySchema } from "../validation/schemas";
+import { adminForceWorkerStatusBodySchema, createUserBodySchema, optionalPaginationQuerySchema, paginationQuerySchema, resetPasswordBodySchema, updateUserBodySchema } from "../validation/schemas";
 // Import Utils
 import { requireActorId } from "../utils/actor";
 import ApiError from "../utils/api-error";
@@ -46,6 +46,7 @@ import { buildWorkerCode } from "../utils/worker-code";
 import { resolveWorkerWorkStatus } from "../utils/worker-status";
 // Import Config
 import { ASSIGNMENT_STATUS } from "../constants/status";
+import { DEFAULT_PAGE_LIMIT } from "../constants/pagination";
 // Import Types
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 import { ADMIN_ACTION_TYPE } from "../types/shared/admin-action-log.type";
@@ -918,55 +919,35 @@ async function getAdminWorkerStatus(idParam: unknown): Promise<AdminWorkerStatus
 }
 
 // Function ดึงรายการ admin worker statuses ใน service flow
-export async function listAdminWorkerStatuses(): Promise<{
+// page/limit เป็น opt-in — ไม่ส่งมาเลยจะได้ผลลัพธ์ทั้งหมดเหมือนเดิม (ไม่ breaking กับ frontend เดิม)
+// ต้องแบ่งหน้าหลัง filter/sort เสร็จแล้วเท่านั้น เพราะ hasVisibleWorkerFlow ขึ้นกับ presence/assignment/queue ที่คำนวณ ณ runtime แบ่งที่ query DB ตรงๆ ไม่ได้
+export async function listAdminWorkerStatuses(query: Record<string, unknown> = {}): Promise<{
   summary: ReturnType<typeof buildAdminWorkerStatusSummary>;
   data: AdminWorkerStatusItem[];
+  pagination?: PaginationMeta;
 }> {
+  const { page, limit } = parseWithSchema(optionalPaginationQuerySchema, query);
   const workers = await adminWorkersRepository.listUsers({ offset: 0, limit: Number.MAX_SAFE_INTEGER });
   const workerIds = workers.map((worker) => worker.id);
-  const [queueStatuses, queueRanks, presences, assignments, settings] = await Promise.all([
+  const [queueStatuses, queueRanks, presences, assignmentMap, settings] = await Promise.all([
     getWorkerQueueStatuses(workerIds),
     getWorkerReadyQueueRanks(workerIds),
     getWorkerPresences(workerIds),
-    Promise.all(
-      workerIds.map((workerId) =>
-        assignmentRepository.findCurrentAssignmentByWorker(workerId)
-      )
-    ),
+    assignmentRepository.findCurrentAssignmentsByWorkers(workerIds),
     getRuntimeSettings(),
   ]);
-  const assignmentMap = new Map<number, TicketJobAssignmentDto | null>();
-
-  workerIds.forEach((workerId, index) => {
-    assignmentMap.set(workerId, assignments[index] ?? null);
-  });
   const ticketJobIds = Array.from(
     new Set(
-      assignments
-        .filter(
-          (assignment): assignment is TicketJobAssignmentDto =>
-            assignment !== null,
-        )
-        .map((assignment) => assignment.vehicle_job_id),
+      Array.from(assignmentMap.values()).map((assignment) => assignment.vehicle_job_id),
     ),
   );
-  const teamScanReadinessEntries = await Promise.all(
-    ticketJobIds.map(async (ticketJobId) => [
-      ticketJobId,
-      await assignmentRepository.getTicketJobTeamScanReadiness(ticketJobId),
-    ] as const),
-  );
-  const teamScanReadinessMap = new Map(teamScanReadinessEntries);
-  const ticketJobEntries = await Promise.all(
-    ticketJobIds.map(async (ticketJobId) => [
-      ticketJobId,
-      await ticketJobRepository.findTicketJobById(ticketJobId),
-    ] as const),
+  const teamScanReadinessMap = await assignmentRepository.getTicketJobTeamScanReadinessBatch(
+    ticketJobIds,
   );
   const ticketJobTicketNumberMap = new Map(
-    ticketJobEntries.map(([ticketJobId, ticketJob]) => [
+    Array.from(teamScanReadinessMap.entries()).map(([ticketJobId, readiness]) => [
       ticketJobId,
-      ticketJob?.ticket_number ?? null,
+      readiness.ticket_number,
     ]),
   );
 
@@ -1025,9 +1006,20 @@ export async function listAdminWorkerStatuses(): Promise<{
     .map(({ item }) => item)
     .sort(compareAdminWorkerStatusItems);
 
+  const summary = buildAdminWorkerStatusSummary(data);
+
+  if (page === undefined && limit === undefined) {
+    return { summary, data };
+  }
+
+  const effectivePage = page ?? 1;
+  const effectiveLimit = limit ?? DEFAULT_PAGE_LIMIT;
+  const offset = (effectivePage - 1) * effectiveLimit;
+
   return {
-    summary: buildAdminWorkerStatusSummary(data),
-    data,
+    summary,
+    data: data.slice(offset, offset + effectiveLimit),
+    pagination: buildPaginationMeta(effectivePage, effectiveLimit, data.length),
   };
 }
 

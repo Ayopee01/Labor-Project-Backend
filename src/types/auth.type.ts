@@ -140,10 +140,11 @@ export interface TokenSignOptions {
   expiresIn?: string | number;
 }
 
-// Type config สำหรับตรวจ token แต่ละชนิด
+// Type config สำหรับตรวจ token แต่ละชนิด — expiresIn ไม่บังคับเพราะ refresh token ไม่มีค่า default กลาง
+// (อายุแยกตาม role ต้องส่งผ่าน TokenSignOptions ตอนเซ็นเสมอ ดู signRefreshToken ผู้เรียก)
 export interface TokenConfig {
   secret?: string;
-  expiresIn: string | number;
+  expiresIn?: string | number;
   invalidCode: string;
   expiredCode: string;
 }

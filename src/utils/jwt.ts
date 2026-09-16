@@ -19,7 +19,8 @@ const TOKEN_CONFIG: Record<TokenType, TokenConfig> = {
   },
   refresh: {
     secret: process.env.JWT_REFRESH_SECRET,
-    expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || AUTH_DEFAULTS.refreshTokenExpiresIn,
+    // ไม่มี default กลาง — อายุแยกตาม role (admin/worker) ผู้เรียก signRefreshToken ต้องส่ง
+    // options.expiresIn มาเสมอ ดู getWorkerRefreshExpiresInSeconds/getAdminRefreshExpiresInSeconds
     invalidCode: "INVALID_REFRESH_TOKEN",
     expiredCode: "TOKEN_EXPIRED",
   },
@@ -87,6 +88,11 @@ function signTypedToken<TTokenType extends TokenType>(
   }
 
   const config = getTokenConfig(tokenType);
+  const expiresIn = options.expiresIn ?? config.expiresIn;
+
+  if (expiresIn === undefined) {
+    throw new TypeError(`${tokenType} token requires an expiresIn (no default configured for this type).`);
+  }
 
   return jwt.sign(
     {
@@ -96,7 +102,7 @@ function signTypedToken<TTokenType extends TokenType>(
     config.secret,
     {
       algorithm: "HS256",
-      expiresIn: (options.expiresIn || config.expiresIn) as SignOptions["expiresIn"],
+      expiresIn: expiresIn as SignOptions["expiresIn"],
     }
   );
 }

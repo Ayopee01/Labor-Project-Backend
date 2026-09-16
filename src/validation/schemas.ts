@@ -1112,6 +1112,12 @@ export const paginationQuerySchema = z.object({
   shift: optionalUserListShiftSchema,
 });
 
+// page/limit ไม่มี default ต่างจาก paginationQuerySchema — ไม่ส่งมาเลยต้องหมายถึง "ดึงทั้งหมดเหมือนเดิม" ไม่ใช่ page 1 โดยปริยาย
+export const optionalPaginationQuerySchema = z.object({
+  page: z.preprocess(emptyStringToUndefined, z.coerce.number().int().min(1).optional()),
+  limit: z.preprocess(emptyStringToUndefined, z.coerce.number().int().min(1).max(100).optional()),
+});
+
 /* -------------------------------------- Token Schemas -------------------------------------- */
 
 const tokenTimestampsSchema = {

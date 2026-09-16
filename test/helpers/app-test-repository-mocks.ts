@@ -518,6 +518,20 @@ export const workerApplicationRepositoryMock = {
         assignment.worker_id === workerId &&
         ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status),
     ) ?? null,
+  findCurrentAssignmentsByWorkers: async (workerIds: number[]) => {
+    const map = new Map();
+    for (const workerId of workerIds) {
+      const found = state.assignments.find(
+        (assignment) =>
+          assignment.worker_id === workerId &&
+          ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status),
+      );
+      if (found) {
+        map.set(workerId, found);
+      }
+    }
+    return map;
+  },
   findCurrentAssignmentByTicketJobIdAndWorker: async (
     ticketJobId: number,
     workerId: number,
@@ -819,6 +833,26 @@ export const workerApplicationRepositoryMock = {
       remaining_count: Math.max(0, workersRequired - checkedInCount),
       is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
     };
+  },
+  getTicketJobTeamScanReadinessBatch: async (ticketJobIds: number[]) => {
+    const map = new Map();
+    for (const ticketJobId of ticketJobIds) {
+      const job = state.ticketJobs.find((item) => item.id === ticketJobId);
+      const workersRequired = job?.workers_required ?? 0;
+      const checkedInCount = state.assignments.filter(
+        (assignment) =>
+          assignment.vehicle_job_id === ticketJobId &&
+          SCANNED_ASSIGNMENT_STATUSES.includes(assignment.status),
+      ).length;
+      map.set(ticketJobId, {
+        workers_required: workersRequired,
+        checked_in_count: checkedInCount,
+        remaining_count: Math.max(0, workersRequired - checkedInCount),
+        is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+        ticket_number: job?.ticket_number ?? null,
+      });
+    }
+    return map;
   },
   getTicketJobTeamScanReadiness: async (ticketJobId: number) => {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);
@@ -1931,6 +1965,7 @@ const {
   findCurrentAssignmentByTicketJobRefAndWorker,
   findCurrentAssignmentByTicketJobIdAndWorker,
   findCurrentAssignmentByWorker,
+  findCurrentAssignmentsByWorkers,
   findCurrentOpenTicketByTicketJob,
   findBoothJobForCompletion,
   findBoothJobForCompletionByTicketNumberAndTicketNoAndBoothCode,
@@ -1950,6 +1985,7 @@ const {
   findWaitingTicketCompletionSubmission,
   getTicketJobDetail,
   getTicketJobTeamScanReadiness,
+  getTicketJobTeamScanReadinessBatch,
   getVehicleWorkReadiness,
   findTicketWorkerByMarketJobAndWorkerAccountId,
   getWorkerDailyAssignmentCounts,
@@ -2100,10 +2136,12 @@ export const ticketJobAssignmentRepositoryMock = {
   getWorkerDailyAssignmentCounts,
   createAssignment,
   findCurrentAssignmentByWorker,
+  findCurrentAssignmentsByWorkers,
   findAssignmentById,
   countScannedAssignments,
   countAcceptedAssignments,
   getTicketJobTeamScanReadiness,
+  getTicketJobTeamScanReadinessBatch,
   listTicketJobAssignmentTeam,
   findCurrentAssignmentByTicketJobRefAndWorker,
   findCurrentAssignmentByTicketJobIdAndWorker,

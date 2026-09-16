@@ -18,9 +18,9 @@ router.use(authMiddleware, sessionMiddleware, roleMiddleware(["admin"]));
 router.get(
   "/jobs/workers/status",
   permissionMiddleware(["jobs:read"]),
-  async (_req, res, next) => {
+  async (req, res, next) => {
     try {
-      const result = await adminWorkersService.listAdminWorkerStatuses();
+      const result = await adminWorkersService.listAdminWorkerStatuses(req.query);
       res.json(result);
     } catch (error) {
       next(error);

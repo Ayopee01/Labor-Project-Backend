@@ -23,6 +23,6 @@ test("signAccessToken rejects a known weak/placeholder JWT secret", () => {
 
 test("signRefreshToken still works when only a different token type's secret is weak", () => {
   assert.doesNotThrow(() => {
-    signRefreshToken(SAMPLE_PAYLOAD);
+    signRefreshToken(SAMPLE_PAYLOAD, { expiresIn: "7d" });
   });
 });

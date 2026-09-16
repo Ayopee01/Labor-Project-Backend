@@ -7,7 +7,7 @@ import * as workerSessionRepository from "../repositories/shared/worker-session.
 // Import Queues
 import { getWorkerQueueStatus } from "../queues/worker-queue";
 // Import Config
-import { AUTH_DEFAULTS, getAccessTokenExpiresInSeconds } from "../config/auth.config";
+import { getAccessTokenExpiresInSeconds, getAdminRefreshExpiresInSeconds, getWorkerRefreshExpiresInSeconds } from "../config/auth.config";
 import { EMPTY_SECURITY_AUDIT_CONTEXT } from "../config/security-audit.config";
 // Import Services
 import { getAccountPermissions } from "./shared/account-permission.service";
@@ -245,8 +245,9 @@ async function createAdminSession(
   deviceName: string,
   connection: DbConnection
 ): Promise<AuthTokens> {
+  const adminRefreshExpiresInSeconds = getAdminRefreshExpiresInSeconds();
   const expiresAt = new Date(
-    Date.now() + AUTH_DEFAULTS.sessionExpiresInMilliseconds
+    Date.now() + adminRefreshExpiresInSeconds * 1000
   ).toISOString();
   const session = await createPending(
     {
@@ -265,11 +266,14 @@ async function createAdminSession(
     permissions: accountPermissions.permissions,
     session_id: session.id,
   });
-  const refreshToken = signRefreshToken({
-    account_id: account.id,
-    role: account.role,
-    session_id: session.id,
-  });
+  const refreshToken = signRefreshToken(
+    {
+      account_id: account.id,
+      role: account.role,
+      session_id: session.id,
+    },
+    { expiresIn: adminRefreshExpiresInSeconds }
+  );
 
   await updateRefreshTokenHash(
     session.id,
@@ -292,8 +296,9 @@ async function createWorkerSession(
   deviceName: string,
   connection: DbConnection
 ): Promise<AuthTokens> {
+  const workerRefreshExpiresInSeconds = getWorkerRefreshExpiresInSeconds();
   const expiresAt = new Date(
-    Date.now() + AUTH_DEFAULTS.sessionExpiresInMilliseconds
+    Date.now() + workerRefreshExpiresInSeconds * 1000
   ).toISOString();
   const session = await workerSessionRepository.createPending(
     {
@@ -311,11 +316,14 @@ async function createWorkerSession(
     permissions: [],
     session_id: session.id,
   });
-  const refreshToken = signRefreshToken({
-    account_id: worker.id,
-    role: WORKER_ROLE,
-    session_id: session.id,
-  });
+  const refreshToken = signRefreshToken(
+    {
+      account_id: worker.id,
+      role: WORKER_ROLE,
+      session_id: session.id,
+    },
+    { expiresIn: workerRefreshExpiresInSeconds }
+  );
 
   await workerSessionRepository.updateRefreshTokenHash(
     session.id,
@@ -720,11 +728,14 @@ export async function refresh(body: unknown) {
       permissions: [],
       session_id: session.id,
     });
-    const nextRefreshToken = signRefreshToken({
-      account_id: worker.id,
-      role: WORKER_ROLE,
-      session_id: session.id,
-    });
+    const nextRefreshToken = signRefreshToken(
+      {
+        account_id: worker.id,
+        role: WORKER_ROLE,
+        session_id: session.id,
+      },
+      { expiresIn: getWorkerRefreshExpiresInSeconds() }
+    );
     const rotated = await workerSessionRepository.updateRefreshTokenHash(
       session.id,
       hashRefreshToken(nextRefreshToken),
@@ -778,11 +789,14 @@ export async function refresh(body: unknown) {
     permissions: accountPermissions.permissions,
     session_id: session.id,
   });
-  const nextRefreshToken = signRefreshToken({
-    account_id: account.id,
-    role: account.role,
-    session_id: session.id,
-  });
+  const nextRefreshToken = signRefreshToken(
+    {
+      account_id: account.id,
+      role: account.role,
+      session_id: session.id,
+    },
+    { expiresIn: getAdminRefreshExpiresInSeconds() }
+  );
 
   const rotated = await updateRefreshTokenHash(
     session.id,

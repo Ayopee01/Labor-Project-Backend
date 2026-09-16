@@ -425,6 +425,47 @@ describe("Worker Status Board", () => {
     assert.equal(response.body.data[0].worker_code, worker.labor_code);
     assert.equal(response.body.data[0].assignment, null);
   });
+
+  test("GET /api/admin/jobs/workers/status without page/limit returns everything and omits pagination", async () => {
+    const { token } = await loginJobAdmin(9940);
+    const workerA = addWorker(9941);
+    const workerB = addWorker(9942);
+    await workerQueue.enqueueWorker(workerA.id);
+    await workerQueue.enqueueWorker(workerB.id);
+
+    const response = await server.request("GET", "/api/admin/jobs/workers/status", {
+      token,
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.summary.total, 2);
+    assert.equal(response.body.data.length, 2);
+    assert.equal(response.body.pagination, undefined);
+  });
+
+  test("GET /api/admin/jobs/workers/status paginates when page/limit are given, without changing the summary", async () => {
+    const { token } = await loginJobAdmin(9950);
+    const workerA = addWorker(9951);
+    const workerB = addWorker(9952);
+    await workerQueue.enqueueWorker(workerA.id);
+    await workerQueue.enqueueWorker(workerB.id);
+
+    const response = await server.request(
+      "GET",
+      "/api/admin/jobs/workers/status?page=1&limit=1",
+      { token },
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.summary.total, 2);
+    assert.equal(response.body.data.length, 1);
+    assert.deepEqual(response.body.pagination, {
+      page: 1,
+      limit: 1,
+      total: 2,
+      total_pages: 2,
+    });
+  });
 });
 
 describe("Vehicle Job Financials", () => {

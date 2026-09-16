@@ -186,6 +186,43 @@ export async function findCurrentAssignmentByWorker(
   return mapTicketJobAssignment(assignment);
 }
 
+// Function ค้นหา current assignment ของหลาย worker พร้อมกันเป็น query เดียว (กัน N+1 ตอนดึง worker status board)
+export async function findCurrentAssignmentsByWorkers(
+  workerIds: number[],
+  connection?: DbConnection
+): Promise<Map<number, TicketJobAssignmentDto>> {
+  if (workerIds.length === 0) {
+    return new Map();
+  }
+
+  const db = client(connection);
+  const assignments = await db.ticketJobAssignment.findMany({
+    where: {
+      workerId: { in: workerIds },
+      status: {
+        in: ACTIVE_ASSIGNMENT_STATUSES,
+      },
+    },
+    orderBy: {
+      id: "desc",
+    },
+  });
+
+  const map = new Map<number, TicketJobAssignmentDto>();
+  for (const assignment of assignments) {
+    // orderBy id desc มาแล้ว จึงเจอ assignment ล่าสุดของ worker แต่ละคนก่อนเสมอ เก็บแค่ตัวแรกที่เจอ
+    if (map.has(assignment.workerId)) {
+      continue;
+    }
+    const dto = mapTicketJobAssignment(assignment);
+    if (dto) {
+      map.set(assignment.workerId, dto);
+    }
+  }
+
+  return map;
+}
+
 // Function ค้นหา assignment ตาม ID จาก DB
 export async function findAssignmentById(
   assignmentId: number,
@@ -267,6 +304,63 @@ export async function getTicketJobTeamScanReadiness(
     remaining_count: remainingCount,
     is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
   };
+}
+
+// Function ตรวจความพร้อมของทีมงานของหลาย TicketJob พร้อมทั้งเลข ticket_number เป็น query เดียว (กัน N+1 ตอนดึง worker status board)
+export async function getTicketJobTeamScanReadinessBatch(
+  ticketJobIds: number[],
+  connection?: DbConnection,
+): Promise<Map<number, VehicleWorkReadinessDto & { ticket_number: string | null }>> {
+  if (ticketJobIds.length === 0) {
+    return new Map();
+  }
+
+  const db = client(connection);
+  const [ticketJobs, scannedCounts] = await Promise.all([
+    db.ticketJob.findMany({
+      where: {
+        id: { in: ticketJobIds },
+      },
+      select: {
+        id: true,
+        ticketNumber: true,
+        workersRequired: true,
+      },
+    }),
+    db.ticketJobAssignment.groupBy({
+      by: ["ticketJobId"],
+      where: {
+        ticketJobId: { in: ticketJobIds },
+        status: {
+          in: SCANNED_ASSIGNMENT_STATUSES,
+        },
+      },
+      _count: {
+        _all: true,
+      },
+    }),
+  ]);
+
+  const scannedCountMap = new Map(
+    scannedCounts.map((row) => [row.ticketJobId, row._count._all]),
+  );
+
+  const map = new Map<number, VehicleWorkReadinessDto & { ticket_number: string | null }>();
+  for (const ticketJob of ticketJobs) {
+    const workersRequired = ticketJob.workersRequired ?? 0;
+    const checkedInCount = scannedCountMap.get(ticketJob.id) ?? 0;
+    const remainingCount = Math.max(0, workersRequired - checkedInCount);
+
+    map.set(ticketJob.id, {
+      workers_required: workersRequired,
+      checked_in_count: checkedInCount,
+      remaining_count: remainingCount,
+      is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+      ticket_number: ticketJob.ticketNumber,
+    });
+  }
+
+  return map;
 }
 
 // Function ดึงทีม assignment ของ TicketJob จาก DB ดิบๆ ไม่คำนวณ scan_status ที่นี่ (ดู buildAssignmentScanStatus ใน worker.service.ts)
