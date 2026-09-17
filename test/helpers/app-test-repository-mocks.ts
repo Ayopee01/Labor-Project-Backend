@@ -134,14 +134,6 @@ export const workerApplicationRepositoryMock = {
     },
   },
   profileRepository: {
-    findByAccountId: async (workerId: number) =>
-      state.workers.get(workerId) ?? null,
-    findByAccountIds: async (workerIds: number[]) =>
-      workerIds
-        .map((workerId) => state.workers.get(workerId) ?? null)
-        .filter(
-          (worker): worker is NonNullable<typeof worker> => worker !== null,
-        ),
     findWorkerCodeByAccountId: async (workerId: number) =>
       state.workers.get(workerId)?.labor_code ?? null,
     findWorkerCodeMapByAccountIds: async (workerIds: number[]) =>
@@ -2525,16 +2517,6 @@ export const gateRepositoryMock = {
         market.boothStatus === "Normal" &&
         (market.marketStatus === null || market.marketStatus === "Normal"),
     ) ?? null,
-  findActiveProductByFullCodeAndPackageCode: async (
-    productFullCode: string,
-    packageCode: string,
-  ) =>
-    state.masterProducts.find(
-      (product) =>
-        product.productFullCode === productFullCode &&
-        product.packageCode === packageCode &&
-        product.status === "ACTIVE",
-    ) ?? null,
   listActiveVendorLineTargetsByStall: async (
     _marketCode: string,
     boothCode: string,
@@ -4604,25 +4586,6 @@ function resolveDailyStallFeeChain(financial: (typeof state.ticketProductFinanci
 
 // Mock repository สำหรับ Admin TicketJob Financial route test
 export const adminJobsRepositoryMock = {
-  findTicketJobByRef: async (ticketNumber: string) =>
-    state.ticketJobs.find((job) => job.ticket_number === ticketNumber) ?? null,
-
-  findTicketJobById: async (ticketJobId: number) =>
-    state.ticketJobs.find((job) => job.id === ticketJobId) ?? null,
-
-  findMarketJobById: async (marketJobId: number) =>
-    state.marketJobs.find((market) => market.id === marketJobId) ?? null,
-
-  findMarketJobByRef: async (marketCode: string) =>
-    [...state.marketJobs]
-      .reverse()
-      .find((market) => market.marketCode === marketCode) ?? null,
-
-  findBoothJobByRef: async (boothCode: string) =>
-    [...state.boothJobs]
-      .reverse()
-      .find((ticket) => ticket.boothCode === boothCode) ?? null,
-
   findWorkerByCode: async (workerCode: string) =>
     Array.from(state.workers.values()).find(
       (worker) => worker.labor_code === workerCode,

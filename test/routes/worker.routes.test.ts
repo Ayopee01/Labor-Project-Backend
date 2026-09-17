@@ -709,6 +709,73 @@ test("GET /api/workers/me/notifications returns current worker notification hist
   assert.equal(response.body.data[0].created_at, "2026-08-17T02:00:00.000Z");
 });
 
+test("GET /api/workers/me/notifications re-localizes title/message/lang to the worker's CURRENT language, even for notifications stored under a different language", async () => {
+  const { token, worker } = await loginWorker(121);
+
+  state.workerNotifications.push({
+    id: state.nextWorkerNotificationId++,
+    worker_id: worker.id,
+    type: "TICKET_COMPLETION_RESULT",
+    notification_key: "ticket.completion_confirmed",
+    lang: "TH",
+    title: "แผงค้ายืนยันยอดแล้ว",
+    message: "แผง A01 ยืนยันยอดเรียบร้อยแล้ว",
+    payload: {
+      boothCode: "A01",
+    },
+    read_at: null,
+    created_at: "2026-08-17T02:00:00.000Z",
+    updated_at: "2026-08-17T02:00:00.000Z",
+  });
+
+  // Worker เปลี่ยนภาษาเป็น EN หลังจากที่ notification ถูกสร้างไว้เป็น TH แล้ว
+  worker.lang = "EN";
+
+  const response = await server.request("GET", "/api/workers/me/notifications", {
+    token,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.length, 1);
+  assert.equal(response.body.data[0].lang, "EN");
+  assert.equal(response.body.data[0].title, "Vendor confirmed");
+  assert.equal(response.body.data[0].message, "Booth A01 has been confirmed.");
+  assert.equal(response.body.data[0].notification.lang, "EN");
+  assert.equal(response.body.data[0].notification.title, "Vendor confirmed");
+  assert.equal(response.body.data[0].notification.message, "Booth A01 has been confirmed.");
+});
+
+test("GET /api/workers/me/notifications falls back to the stored title/message/lang when the stored notification_key no longer has a matching template (e.g. renamed/removed in a later release)", async () => {
+  const { token, worker } = await loginWorker(122);
+
+  state.workerNotifications.push({
+    id: state.nextWorkerNotificationId++,
+    worker_id: worker.id,
+    type: "LEGACY_EVENT",
+    notification_key: "legacy.removed_key",
+    lang: "TH",
+    title: "ข้อความเก่าที่บันทึกไว้",
+    message: "เนื้อหาเก่าที่บันทึกไว้ตอนสร้าง",
+    payload: null,
+    read_at: null,
+    created_at: "2026-08-17T02:00:00.000Z",
+    updated_at: "2026-08-17T02:00:00.000Z",
+  });
+
+  // Worker เปลี่ยนภาษาเป็น EN — ถ้า key ยังมี template จริงควร re-localize เป็น EN แต่ key นี้ไม่มีแล้ว
+  worker.lang = "EN";
+
+  const response = await server.request("GET", "/api/workers/me/notifications", {
+    token,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.data.length, 1);
+  assert.equal(response.body.data[0].lang, "TH");
+  assert.equal(response.body.data[0].title, "ข้อความเก่าที่บันทึกไว้");
+  assert.equal(response.body.data[0].message, "เนื้อหาเก่าที่บันทึกไว้ตอนสร้าง");
+});
+
 test("GET /api/workers/me/earnings/summary returns latest 15 completed days from persisted Business Ticket earnings", async () => {
   const { token, worker } = await loginWorker(112);
   const otherWorker = addWorker(212, await password.hashPassword("Worker@123456"));
@@ -3233,6 +3300,200 @@ test("POST /api/workers/me/assignments/tickets/complete rejects incomplete produ
   assert.equal(response.status, 400);
   assert.equal(response.body.code, "INCOMPLETE_TICKET_PRODUCTS");
   assert.equal(ticket.status, "WORKING");
+  assert.equal(state.lineMessages.length, 0);
+});
+
+test("POST /api/workers/me/assignments/tickets/complete rejects with 400 DUPLICATE_TICKET_PRODUCT when the same product+package is sent twice in the same request", async () => {
+  const { token, worker } = await loginWorker(107);
+  const job = addDispatchableJob(9107, 1);
+  const ticket = addTicketForTicketJob(job.id, 91071);
+  const assignment = addPendingAssignment(191071, job.id, worker.id);
+  assignment.status = "SCANNED";
+  const [firstProduct] = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
+  const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+  const response = await server.request("POST", `/api/workers/me/assignments/tickets/complete`, {
+    token,
+    body: {
+      ticket_no: market.ticket_no,
+      boothCode: ticket.boothCode,
+      items: [
+        {
+          productCode: firstProduct.productCode,
+          packageCode: firstProduct.packageCode,
+          confirmed_quantity: 10,
+        },
+        {
+          productCode: firstProduct.productCode,
+          packageCode: firstProduct.packageCode,
+          confirmed_quantity: 10,
+        },
+      ],
+    },
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.code, "DUPLICATE_TICKET_PRODUCT");
+  assert.equal(ticket.status, "WORKING");
+  assert.equal(state.lineMessages.length, 0);
+});
+
+test("POST /api/workers/me/assignments/tickets/complete rejects with 400 DUPLICATE_TICKET_PRODUCT when two different original products are switched to the same resulting product+package", async () => {
+  const { token, worker } = await loginWorker(108);
+  const job = addDispatchableJob(9108, 1);
+  const ticket = addTicketForTicketJob(job.id, 91081);
+  const assignment = addPendingAssignment(191081, job.id, worker.id);
+  assignment.status = "SCANNED";
+  const [firstProduct] = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
+  const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+  // Ticket product ที่ 2 ใช้ productCode เดียวกับตัวแรก (เกิดได้จริงเมื่อสินค้าตัวเดียวกันถูกขายภายใต้คนละ
+  // Package แยกกันเป็นสองรายการในตั๋วเดียวกัน) แต่คนละ original packageCode — ใช้พิสูจน์ finalKeys
+  // collision (สลับ Package ปลายทางไปชนกัน) แยกจาก matchedOriginalKeys collision (ต้นทางซ้ำ) ด้านบน
+  const secondProduct = {
+    ...firstProduct,
+    id: firstProduct.id + 100000,
+    packageCode: `${firstProduct.packageCode}-alt`,
+  };
+
+  state.ticketProducts.push(secondProduct);
+
+  const response = await server.request("POST", `/api/workers/me/assignments/tickets/complete`, {
+    token,
+    body: {
+      ticket_no: market.ticket_no,
+      boothCode: ticket.boothCode,
+      items: [
+        {
+          productCode: firstProduct.productCode,
+          packageCode: "SWITCHED-PACKAGE",
+          original_package_code: firstProduct.packageCode,
+          confirmed_quantity: 5,
+        },
+        {
+          productCode: secondProduct.productCode,
+          packageCode: "SWITCHED-PACKAGE",
+          original_package_code: secondProduct.packageCode,
+          confirmed_quantity: 5,
+        },
+      ],
+    },
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.body.code, "DUPLICATE_TICKET_PRODUCT");
+  assert.equal(ticket.status, "WORKING");
+  assert.equal(state.lineMessages.length, 0);
+});
+
+test("POST /api/workers/me/assignments/tickets/complete rejects with 403 WORKER_NOT_IN_TICKET when the business ticket's worker roster is already locked and the submitter was never on it", async () => {
+  const { token, worker } = await loginWorker(109);
+  const job = addDispatchableJob(9109, 1);
+  const ticket = addTicketForTicketJob(job.id, 91091);
+  const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+  // Lock Roster ไว้ก่อนที่ Worker คนนี้จะเคย sync เข้า roster เลยสักครั้ง (เช่น Roster ถูก Lock ไปแล้วจาก
+  // เหตุการณ์อื่นก่อนหน้า) -> syncTicketWorkerRoster จะคืน roster เดิม (ว่างเปล่า) โดยไม่เพิ่มเขาเข้าไปอีก
+  market.worker_roster_locked_at = new Date().toISOString();
+
+  const assignment = addPendingAssignment(191091, job.id, worker.id);
+  assignment.status = "SCANNED";
+
+  const products = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
+
+  const response = await server.request("POST", `/api/workers/me/assignments/tickets/complete`, {
+    token,
+    body: {
+      ticket_no: market.ticket_no,
+      boothCode: ticket.boothCode,
+      items: products.map((product) => ({
+        productCode: product.productCode,
+        packageCode: product.packageCode,
+        confirmed_quantity: Number(product.quantity),
+      })),
+    },
+  });
+
+  assert.equal(response.status, 403);
+  assert.equal(response.body.code, "WORKER_NOT_IN_TICKET");
+  assert.equal(ticket.status, "WORKING");
+  assert.equal(
+    state.ticketWorkers.some((item) => item.market_job_id === market.id),
+    false,
+  );
+});
+
+test("POST /api/workers/me/assignments/tickets/complete rejects with 409 TICKET_ALREADY_SUBMITTED when the booth is already DELIVERED and waiting for vendor confirmation", async () => {
+  const { token, worker } = await loginWorker(110);
+  const job = addDispatchableJob(9110, 1);
+  const ticket = addTicketForTicketJob(job.id, 91101);
+  const assignment = addPendingAssignment(191101, job.id, worker.id);
+  assignment.status = "SCANNED";
+  const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+  const products = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
+  const requestBody = {
+    ticket_no: market.ticket_no,
+    boothCode: ticket.boothCode,
+    items: products.map((product, index) => ({
+      productCode: product.productCode,
+      packageCode: product.packageCode,
+      confirmed_quantity: index === 0 ? 10 : 4,
+    })),
+  };
+
+  const firstResponse = await server.request(
+    "POST",
+    `/api/workers/me/assignments/tickets/complete`,
+    { token, body: requestBody },
+  );
+
+  assert.equal(firstResponse.status, 200, JSON.stringify(firstResponse.body));
+  assert.equal(ticket.status, "DELIVERED");
+
+  const lineMessageCountAfterFirst = state.lineMessages.length;
+
+  const secondResponse = await server.request(
+    "POST",
+    `/api/workers/me/assignments/tickets/complete`,
+    { token, body: requestBody },
+  );
+
+  assert.equal(secondResponse.status, 409);
+  assert.equal(secondResponse.body.code, "TICKET_ALREADY_SUBMITTED");
+  assert.equal(ticket.status, "DELIVERED");
+  // ห้ามส่ง LINE ข้อความแจ้ง Vendor ซ้ำจากการยิง submit ซ้ำที่ถูกปฏิเสธ
+  assert.equal(state.lineMessages.length, lineMessageCountAfterFirst);
+});
+
+test("POST /api/workers/me/assignments/tickets/complete rejects with 409 TICKET_NOT_READY_FOR_COMPLETION when the booth is in a terminal status other than COMPLETED", async () => {
+  const { token, worker } = await loginWorker(111);
+  const job = addDispatchableJob(9111, 1);
+  const ticket = addTicketForTicketJob(job.id, 91111);
+  const assignment = addPendingAssignment(191111, job.id, worker.id);
+  assignment.status = "SCANNED";
+  const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+  const products = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
+
+  // CANCELLED ไม่ใช่ COMPLETED จึงไม่โดน guard TICKET_ALREADY_CLOSED ด่านแรก แต่ก็ไม่อยู่ใน
+  // [WAIT, WORKING, REJECT] ที่ markTicketDelivered ยอมเปลี่ยนสถานะให้ จึงตกไปที่ TICKET_NOT_READY_FOR_COMPLETION
+  ticket.status = "CANCELLED";
+
+  const response = await server.request("POST", `/api/workers/me/assignments/tickets/complete`, {
+    token,
+    body: {
+      ticket_no: market.ticket_no,
+      boothCode: ticket.boothCode,
+      items: products.map((product, index) => ({
+        productCode: product.productCode,
+        packageCode: product.packageCode,
+        confirmed_quantity: index === 0 ? 10 : 4,
+      })),
+    },
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, "TICKET_NOT_READY_FOR_COMPLETION");
+  assert.equal(ticket.status, "CANCELLED");
   assert.equal(state.lineMessages.length, 0);
 });
 

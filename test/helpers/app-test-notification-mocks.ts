@@ -1,4 +1,5 @@
 import { state } from "./app-test-state";
+import { buildLocalizedNotification, hasNotificationTemplate } from "../../src/utils/notification-localization";
 
 // Function จำลอง resolveTicketResultAudience จริงใน realtime-notification.service.ts — คืนเฉพาะ
 // worker id เท่านั้น (Admin กระจายแยกผ่าน publishRealtimeEvent's admin:true เสมอ ไม่พึ่ง id list นี้
@@ -115,6 +116,8 @@ export const realtimeNotificationServiceMock = {
     }
   },
   // Function จำลอง listWorkerNotifications จริง — ย้ายมาจาก notificationServiceMock ตาม Fix C
+  // Re-localize ตามภาษาปัจจุบันของ worker เหมือน implementation จริงใน realtime-notification.service.ts
+  // (ใช้ hasNotificationTemplate/buildLocalizedNotification ตัวจริงตรงๆ เพราะเป็น pure function ไม่ต้อง mock)
   listWorkerNotifications: async (
     query: { page?: string; limit?: string },
     auth?: { account_id?: number; role?: string },
@@ -126,25 +129,49 @@ export const realtimeNotificationServiceMock = {
       .sort((left, right) =>
         right.created_at.localeCompare(left.created_at) || right.id - left.id
       );
+    const currentLang = auth?.account_id
+      ? state.workers.get(auth.account_id)?.lang
+      : undefined;
 
     return {
-      data: filtered.slice((page - 1) * limit, page * limit).map((item) => ({
-        id: item.id,
-        type: item.type,
-        notification_key: item.notification_key,
-        lang: item.lang,
-        title: item.title,
-        message: item.message,
-        notification: {
-          key: item.notification_key,
-          lang: item.lang,
-          title: item.title,
-          message: item.message,
-        },
-        payload: item.payload,
-        read_at: item.read_at,
-        created_at: item.created_at,
-      })),
+      data: filtered.slice((page - 1) * limit, page * limit).map((item) => {
+        const canRelocalize =
+          Boolean(item.notification_key) &&
+          Boolean(currentLang) &&
+          hasNotificationTemplate(currentLang, item.notification_key as string);
+
+        const localized = canRelocalize
+          ? buildLocalizedNotification({
+              type: item.type,
+              lang: currentLang,
+              key: item.notification_key,
+              params:
+                item.payload && typeof item.payload === "object" && !Array.isArray(item.payload)
+                  ? (item.payload as Record<string, unknown>)
+                  : undefined,
+              fallbackTitle: item.title,
+              fallbackMessage: item.message,
+            })
+          : { key: item.notification_key, lang: item.lang, title: item.title, message: item.message };
+
+        return {
+          id: item.id,
+          type: item.type,
+          notification_key: item.notification_key,
+          lang: localized.lang,
+          title: localized.title,
+          message: localized.message,
+          notification: {
+            key: localized.key,
+            lang: localized.lang,
+            title: localized.title,
+            message: localized.message,
+          },
+          payload: item.payload,
+          read_at: item.read_at,
+          created_at: item.created_at,
+        };
+      }),
       pagination: {
         page,
         limit,
@@ -192,6 +219,17 @@ export const notificationQueueMock = {
       },
     });
     return 1;
+  },
+  // Function จำลอง sendLineReplyMessage จริงใน line-message-queue.ts — ยิงผ่าน Reply API แบบ
+  // synchronous ไม่ผ่าน queue จึงบันทึกลง state.lineMessages ทันทีเหมือน enqueueLoggedLineMessage
+  sendLineReplyMessage: async (replyToken: string, messages: unknown) => {
+    state.lineMessages.push({
+      name: "send-line-reply",
+      data: {
+        replyToken,
+        messages,
+      },
+    });
   },
 };
 

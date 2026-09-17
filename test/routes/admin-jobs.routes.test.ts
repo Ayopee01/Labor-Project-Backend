@@ -117,6 +117,26 @@ async function loginJobAdmin(accountId: number): Promise<{ token: string }> {
   };
 }
 
+// Function เรียก ticketFinancialService.finalizeMarketJobFinancials ตรงๆ (ไม่ผ่าน HTTP route) แล้วตรวจว่า
+// throw ApiError ด้วย statusCode/code ตามที่คาด — ใช้กับ guard ที่ caller เดียว (closeCompletedTicketJobIfReady)
+// รับประกัน precondition ไว้แล้วเสมอจนเรียกผ่าน route จริงไม่ได้ (ดู pattern เดียวกับ "partial financial state" ด้านล่าง)
+async function assertFinalizeRejects(
+  marketJobId: number,
+  statusCode: number,
+  code: string,
+): Promise<void> {
+  await assert.rejects(
+    () => ticketFinancialService.finalizeMarketJobFinancials(marketJobId),
+    (error) =>
+      Boolean(
+        error &&
+        typeof error === "object" &&
+        (error as { statusCode?: number }).statusCode === statusCode &&
+        (error as { code?: string }).code === code,
+      ),
+  );
+}
+
 function bangkokDateKey(value = new Date()): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Asia/Bangkok",
@@ -1499,6 +1519,121 @@ describe("Assign Workers", () => {
 
     assert.equal(assignment, undefined);
   });
+
+  test("POST /api/admin/vehicle-jobs/:ticketNumber/assign-workers returns 404 VEHICLE_JOB_NOT_FOUND when the TicketNumber does not exist", async () => {
+    const { token: adminToken } = await loginJobAdmin(96950);
+    const worker = addWorker(96951);
+
+    const response = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/JOB-DOES-NOT-EXIST/assign-workers",
+      {
+        token: adminToken,
+        body: {
+          worker_codes: [worker.labor_code],
+          reason_code: "MANUAL_ASSIGNMENT",
+        },
+      }
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(response.body.code, "VEHICLE_JOB_NOT_FOUND");
+    assert.equal(state.assignments.length, 0);
+  });
+
+  test("POST /api/admin/vehicle-jobs/:ticketNumber/assign-workers rejects a worker whose MasterWorker.status is not ACTIVE with 403 WORKER_NOT_ACTIVE", async () => {
+    const { token: adminToken } = await loginJobAdmin(96952);
+    const job = addDispatchableJob(96953, 1);
+    const worker = addWorker(96954);
+    worker.status = 0;
+
+    await workerQueue.enqueueWorker(worker.id);
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/vehicle-jobs/${job.ticket_number}/assign-workers`,
+      {
+        token: adminToken,
+        body: {
+          worker_codes: [worker.labor_code],
+          reason_code: "MANUAL_ASSIGNMENT",
+        },
+      }
+    );
+
+    assert.equal(response.status, 403);
+    assert.equal(response.body.code, "WORKER_NOT_ACTIVE");
+
+    const assignment = state.assignments.find(
+      (item) =>
+        item.vehicle_job_id === job.id && item.worker_id === worker.id
+    );
+
+    assert.equal(assignment, undefined);
+  });
+
+  test("POST /api/admin/vehicle-jobs/:ticketNumber/assign-workers rejects a worker who already has an active assignment elsewhere with 409 WORKER_HAS_ACTIVE_ASSIGNMENT", async () => {
+    const { token: adminToken } = await loginJobAdmin(96955);
+    const worker = addWorker(96956);
+    const otherJob = addDispatchableJob(96957, 1);
+    const existingAssignment = addPendingAssignment(196958, otherJob.id, worker.id);
+
+    const job = addDispatchableJob(96959, 1);
+
+    await workerQueue.enqueueWorker(worker.id);
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/vehicle-jobs/${job.ticket_number}/assign-workers`,
+      {
+        token: adminToken,
+        body: {
+          worker_codes: [worker.labor_code],
+          reason_code: "MANUAL_ASSIGNMENT",
+        },
+      }
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "WORKER_HAS_ACTIVE_ASSIGNMENT");
+    // Assignment เดิมของ worker ต้องไม่ถูกแตะ และห้ามมี assignment ใหม่ถูกสร้างบนรถคันใหม่
+    assert.equal(existingAssignment.status, "PENDING");
+    const newAssignment = state.assignments.find(
+      (item) => item.vehicle_job_id === job.id && item.worker_id === worker.id
+    );
+
+    assert.equal(newAssignment, undefined);
+  });
+
+  test("POST /api/admin/vehicle-jobs/:ticketNumber/assign-workers rejects a worker who is not READY in the queue with 409 WORKER_NOT_READY", async () => {
+    const { token: adminToken } = await loginJobAdmin(96960);
+    const job = addDispatchableJob(96961, 1);
+    const worker = addWorker(96962);
+
+    // ไม่เรียก workerQueue.enqueueWorker เลย -> ไม่มี queue entry สำหรับ worker คนนี้เลย
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/vehicle-jobs/${job.ticket_number}/assign-workers`,
+      {
+        token: adminToken,
+        body: {
+          worker_codes: [worker.labor_code],
+          reason_code: "MANUAL_ASSIGNMENT",
+        },
+      }
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "WORKER_NOT_READY");
+
+    const assignment = state.assignments.find(
+      (item) =>
+        item.vehicle_job_id === job.id && item.worker_id === worker.id
+    );
+
+    assert.equal(assignment, undefined);
+  });
 });
 
 describe("Assignment Cancel", () => {
@@ -1743,6 +1878,147 @@ describe("Assignment Cancel", () => {
     assert.equal(response.status, 409);
     assert.equal(response.body.code, "MARKET_JOB_ALREADY_SUBMITTED");
     assert.equal(market.status, "WORKING");
+    assert.equal(booth.status, "REJECT");
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number alone) rejects with 409 if any booth anywhere under the vehicle was already submitted (DELIVERED)", async () => {
+    const { token: adminToken } = await loginJobAdmin(96685);
+
+    const job = addDispatchableJob(96686, 1);
+    const market = addMarketJobForVehicle(job.id, {
+      id: 3966860,
+      ticket_no: "TICKET-96686-3966860",
+      marketCode: "MARKET-96686-A",
+    });
+    const booth = addTicketForTicketJob(job.id, 4966861, market.id);
+    booth.status = "DELIVERED";
+
+    const response = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      {
+        token: adminToken,
+        body: { ticket_number: job.ticket_number, reason_code: "test" },
+      },
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "VEHICLE_JOB_ALREADY_SUBMITTED");
+    assert.equal(job.status, "WORKING");
+    assert.equal(market.status, "WORKING");
+    assert.equal(booth.status, "DELIVERED");
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number alone) rejects with 409 if any booth is stuck in REJECT, even under a different Business Ticket than the one an admin might expect", async () => {
+    const { token: adminToken } = await loginJobAdmin(96687);
+
+    const job = addDispatchableJob(96688, 1);
+    const market = addMarketJobForVehicle(job.id, {
+      id: 3966880,
+      ticket_no: "TICKET-96688-3966880",
+      marketCode: "MARKET-96688-A",
+    });
+    const booth = addTicketForTicketJob(job.id, 4966881, market.id);
+    booth.status = "REJECT";
+
+    const response = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      {
+        token: adminToken,
+        body: { ticket_number: job.ticket_number, reason_code: "test" },
+      },
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "VEHICLE_JOB_ALREADY_SUBMITTED");
+    assert.equal(job.status, "WORKING");
+    assert.equal(booth.status, "REJECT");
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no + worker_code, no boothCode) rejects with 409 if any booth under this Business Ticket was already submitted (DELIVERED) — removing the worker from the roster here would silently drop them from the payout snapshot taken later at vendor confirm time", async () => {
+    const { token: adminToken } = await loginJobAdmin(96689);
+
+    const job = addDispatchableJob(96690, 1);
+    const market = addMarketJobForVehicle(job.id, {
+      id: 3966900,
+      ticket_no: "TICKET-96690-3966900",
+      marketCode: "MARKET-96690-A",
+    });
+    const booth = addTicketForTicketJob(job.id, 4966901, market.id);
+    booth.status = "DELIVERED";
+    const worker = addWorker(96691, await password.hashPassword("Worker@123456"));
+    const ticketWorker = {
+      id: 4966902,
+      market_job_id: market.id,
+      worker_id: worker.id,
+      status: "WORKING",
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    };
+    state.ticketWorkers.push(ticketWorker);
+
+    const response = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      {
+        token: adminToken,
+        body: {
+          ticket_number: job.ticket_number,
+          ticket_no: market.ticket_no,
+          worker_code: worker.labor_code,
+          reason_code: "test",
+        },
+      },
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "MARKET_JOB_ALREADY_SUBMITTED");
+    assert.equal(ticketWorker.status, "WORKING");
+    assert.equal(booth.status, "DELIVERED");
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no + worker_code, no boothCode) rejects with 409 if any booth under this Business Ticket is stuck in REJECT", async () => {
+    const { token: adminToken } = await loginJobAdmin(96692);
+
+    const job = addDispatchableJob(96693, 1);
+    const market = addMarketJobForVehicle(job.id, {
+      id: 3966940,
+      ticket_no: "TICKET-96693-3966940",
+      marketCode: "MARKET-96693-A",
+    });
+    const booth = addTicketForTicketJob(job.id, 4966941, market.id);
+    booth.status = "REJECT";
+    const worker = addWorker(96694, await password.hashPassword("Worker@123456"));
+    const ticketWorker = {
+      id: 4966942,
+      market_job_id: market.id,
+      worker_id: worker.id,
+      status: "WORKING",
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    };
+    state.ticketWorkers.push(ticketWorker);
+
+    const response = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      {
+        token: adminToken,
+        body: {
+          ticket_number: job.ticket_number,
+          ticket_no: market.ticket_no,
+          worker_code: worker.labor_code,
+          reason_code: "test",
+        },
+      },
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "MARKET_JOB_ALREADY_SUBMITTED");
+    assert.equal(ticketWorker.status, "WORKING");
     assert.equal(booth.status, "REJECT");
   });
 
@@ -2397,6 +2673,113 @@ describe("Assignment Cancel", () => {
     assert.equal(response.status, 404);
     assert.equal(response.body.code, "TICKET_WORKER_NOT_FOUND");
   });
+
+  // หมายเหตุ: ไม่มี test สำหรับ 409 ASSIGNMENT_NOT_ACTIVE (ทั้ง pre-check ก่อน transaction และ race
+  // re-check ในนั้น) เพราะทั้งคู่ unreachable ผ่าน route จริง — findActiveAssignmentByTicketJobRefAndWorkerCode
+  // (ทั้งใน src/repositories/admin-jobs.repository.ts ตัวจริงและ mock) กรอง status ใน
+  // ACTIVE_ASSIGNMENT_STATUSES ไว้แล้วตั้งแต่ query เอง (`status: { in: ACTIVE_ASSIGNMENT_STATUSES }`)
+  // จึงคืนได้แค่ null (-> 404 ASSIGNMENT_NOT_FOUND) หรือ assignment ที่ active อยู่แล้วเท่านั้น — pre-check
+  // ที่ line ~2034 ใน cancelAssignment เป็น dead code ที่ไม่มีทาง true ได้ ส่วน race re-check ในทรานแซกชัน
+  // ต้องพึ่งอีก request แข่งกันเปลี่ยนสถานะระหว่างเช็คกับเขียนจริง ซึ่ง mock เป็น single-threaded ไม่มี
+  // concurrency จริงให้จำลอง Race แบบนี้ได้
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no + boothCode, no worker_code) returns 404 STALL_JOB_NOT_FOUND when the boothCode does not exist under that ticket_no", async () => {
+    const { token: adminToken } = await loginJobAdmin(96970);
+
+    const job = addDispatchableJob(96971, 1);
+    const market = addMarketJobForVehicle(job.id, {
+      id: 396972,
+      ticket_no: "TICKET-96971-396972",
+      marketCode: "MARKET-96971-A",
+    });
+    const booth = addTicketForTicketJob(job.id, 496973, market.id);
+
+    const response = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      {
+        token: adminToken,
+        body: {
+          ticket_number: job.ticket_number,
+          ticket_no: market.ticket_no,
+          boothCode: "STALL-DOES-NOT-EXIST",
+          reason_code: "test",
+        },
+      },
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(response.body.code, "STALL_JOB_NOT_FOUND");
+    // Booth ที่มีอยู่จริงของ ticket_no นี้ต้องไม่ถูกแตะเลย
+    assert.equal(booth.status, "WORKING");
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no + boothCode + worker_code) rejects the second exclusion of the same worker from the same booth with 409 WORKER_ALREADY_EXCLUDED_FROM_BOOTH", async () => {
+    const { token: adminToken } = await loginJobAdmin(96975);
+    const worker = addWorker(96976);
+
+    const job = addDispatchableJob(96977, 1);
+    const ticket = addTicketForTicketJob(job.id, 496978);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+    const ticketWorker = {
+      id: state.nextTicketWorkerId++,
+      market_job_id: ticket.market_job_id,
+      worker_id: worker.id,
+      status: "WORKING",
+      final_earning_amount: null,
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    };
+    // Worker อีกคนที่ยังไม่ถูก exclude เลย เพื่อไม่ให้ Booth นี้ถูกยกเลิกอัตโนมัติหลัง exclude ครั้งแรก
+    // (คนสุดท้ายที่ถูกถอดออกจาก Booth เท่านั้นที่ trigger auto-cancel ทั้ง Booth — ดู
+    // countEligibleWorkersForBooth/remainingEligibleWorkers ใน cancelTicketWorkerFromBooth) ซึ่งไม่ใช่สิ่ง
+    // ที่ test นี้ต้องการตรวจ (ต้องการให้ Booth ยังเปิดอยู่ตอนยิง exclude ครั้งที่สอง)
+    const decoyWorker = addWorker(96979);
+    const decoyTicketWorker = {
+      id: state.nextTicketWorkerId++,
+      market_job_id: ticket.market_job_id,
+      worker_id: decoyWorker.id,
+      status: "WORKING",
+      final_earning_amount: null,
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    };
+
+    state.ticketWorkers.push(ticketWorker, decoyTicketWorker);
+
+    const requestBody = {
+      ticket_number: job.ticket_number,
+      ticket_no: market.ticket_no,
+      boothCode: ticket.boothCode,
+      worker_code: worker.labor_code,
+      reason_code: "test",
+    };
+
+    const firstResponse = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      { token: adminToken, body: requestBody },
+    );
+
+    assert.equal(firstResponse.status, 200, JSON.stringify(firstResponse.body));
+
+    const exclusionCountAfterFirst = state.boothJobWorkerExclusions.length;
+
+    const secondResponse = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      { token: adminToken, body: requestBody },
+    );
+
+    assert.equal(secondResponse.status, 409);
+    assert.equal(secondResponse.body.code, "WORKER_ALREADY_EXCLUDED_FROM_BOOTH");
+    // ห้ามมี exclusion record ซ้ำถูกสร้างเพิ่มจากการยิงครั้งที่สอง
+    assert.equal(state.boothJobWorkerExclusions.length, exclusionCountAfterFirst);
+    assert.equal(ticketWorker.status, "WORKING");
+  });
 });
 
 describe("Scan Deadline Extend", () => {
@@ -2515,6 +2898,37 @@ describe("Scan Deadline Extend", () => {
 
     assert.equal(response.status, 400);
     assert.equal(assignment.scan_deadline_at, originalScanDeadlineAt);
+  });
+
+  test("POST /api/admin/vehicle-jobs/:ticketNumber/scan-deadline/extend returns 404 ACCEPTED_ASSIGNMENTS_NOT_FOUND when no accepted assignment still has an active scan deadline", async () => {
+    const { token: adminToken } = await loginJobAdmin(9927);
+    const worker = addWorker(9928);
+    const job = addDispatchableJob(9927, 1);
+    const assignment = addPendingAssignment(199271, job.id, worker.id);
+
+    // ยัง PENDING (ยังไม่กด Accept เลย) -> ไม่เข้าเงื่อนไข listAcceptedAssignmentsByTicketJob
+    assignment.status = "PENDING";
+    assignment.scan_deadline_at = null;
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/vehicle-jobs/${job.ticket_number}/scan-deadline/extend`,
+      {
+        token: adminToken,
+        body: {
+          minutes: 10,
+          reason_code: "ADMIN_EXTEND_VEHICLE_ASSIGNMENT_SCAN_TIMER",
+        },
+      }
+    );
+
+    assert.equal(response.status, 404);
+    assert.equal(response.body.code, "ACCEPTED_ASSIGNMENTS_NOT_FOUND");
+    assert.equal(assignment.scan_deadline_at, null);
+    assert.equal(
+      state.adminActionLogs.some((item) => item.vehicle_job_id === job.id),
+      false,
+    );
   });
 });
 
@@ -4090,6 +4504,183 @@ describe("Financialization Correctness", () => {
   });
 });
 
+// describe นี้ทดสอบ guard เงินภายใน ticketFinancialService.finalizeMarketJobFinancials ตรงๆ (ไม่ผ่าน HTTP
+// route) เหมือน pattern "ticket financialization rejects partial financial state..." ด้านบน เพราะ caller
+// เดียวที่เรียกฟังก์ชันนี้จริง (closeCompletedTicketJobIfReady ใน ticket-job-lifecycle.service.ts) เช็ค
+// precondition ส่วนใหญ่ไว้ก่อนแล้วเสมอในทรานแซกชันเดียวกัน ทำให้ trigger จาก route จริงตรงๆ ไม่ได้ (หรือทำได้
+// ยากมากจนต้องปลอม state จนแทบไม่ต่างจากเรียกฟังก์ชันตรงๆ อยู่ดี)
+describe("Ticket Financial Guards", () => {
+  test("finalizeMarketJobFinancials rejects with 409 MARKET_JOB_NOT_READY_FOR_FINANCIALIZE when not every booth of the business ticket is terminal yet", async () => {
+    const job = addDispatchableJob(99100, 1);
+    const ticket = addTicketForTicketJob(job.id, 199101);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+    // ticket.status ยังเป็น "WORKING" ค่า default จาก fixture (ไม่ terminal เลย)
+    assert.equal(ticket.status, "WORKING");
+
+    await assertFinalizeRejects(market.id, 409, "MARKET_JOB_NOT_READY_FOR_FINANCIALIZE");
+
+    assert.equal(market.financialized_at, null);
+    assert.equal(ticket.final_stall_amount ?? null, null);
+    assert.equal(state.ticketProductFinancials.length, 0);
+  });
+
+  test("finalizeMarketJobFinancials rejects with 409 TICKET_PRODUCTS_NOT_FOUND when the only completed booth has no products", async () => {
+    const job = addDispatchableJob(99102, 1);
+    const ticket = addTicketForTicketJob(job.id, 199103);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+    ticket.status = "COMPLETED";
+    ticket.confirmation_status = "COMPLETED";
+    ticket.completed_at = new Date().toISOString();
+    // Booth นี้ไม่มี Product เลย (เช่น Gate ส่ง Booth มาแบบไม่มีรายการสินค้า)
+    state.ticketProducts = state.ticketProducts.filter(
+      (product) => product.ticket_id !== ticket.id,
+    );
+
+    await assertFinalizeRejects(market.id, 409, "TICKET_PRODUCTS_NOT_FOUND");
+
+    assert.equal(market.financialized_at, null);
+    assert.equal(ticket.final_stall_amount ?? null, null);
+    assert.equal(state.ticketProductFinancials.length, 0);
+  });
+
+  test("finalizeMarketJobFinancials rejects with 409 TICKET_WORKERS_NOT_FOUND when the business ticket roster has no WORKING worker at all", async () => {
+    const job = addDispatchableJob(99104, 1);
+    const ticket = addTicketForTicketJob(job.id, 199105);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+    ticket.status = "COMPLETED";
+    ticket.confirmation_status = "COMPLETED";
+    ticket.completed_at = new Date().toISOString();
+    // ไม่สร้าง TicketWorker ให้ market นี้เลยสักคน
+
+    await assertFinalizeRejects(market.id, 409, "TICKET_WORKERS_NOT_FOUND");
+
+    assert.equal(market.financialized_at, null);
+    assert.equal(ticket.final_stall_amount ?? null, null);
+    assert.equal(state.ticketProductFinancials.length, 0);
+  });
+
+  test("finalizeMarketJobFinancials rejects with 409 TICKET_WORKERS_NOT_FOUND when a specific booth's worker snapshot references a worker no longer on the roster (data-integrity edge case)", async () => {
+    const worker = addWorker(99106);
+    const job = addDispatchableJob(99107, 1);
+    const ticket = addTicketForTicketJob(job.id, 199108);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+    ticket.status = "COMPLETED";
+    ticket.confirmation_status = "COMPLETED";
+    ticket.completed_at = new Date().toISOString();
+
+    // "keeper": ยังอยู่ใน roster จริง WORKING -> ทำให้ actualWorkerCount (เช็คระดับทั้ง Business Ticket)
+    // ผ่าน ไม่ throw ที่ guard ก่อนหน้า (TICKET_WORKERS_NOT_FOUND ระดับ market-wide)
+    const keeper = {
+      id: state.nextTicketWorkerId++,
+      market_job_id: market.id,
+      worker_id: worker.id,
+      status: "WORKING",
+      final_earning_amount: null,
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    };
+
+    state.ticketWorkers.push(keeper);
+
+    // Snapshot ของ Booth นี้อ้างถึง ticket_worker_id ที่ไม่มีอยู่จริงใน roster เลย (ไม่ควรเกิดขึ้นได้จาก
+    // flow ปกติ เพราะ TicketWorker ไม่เคยถูกลบจริง แค่เปลี่ยน status — จำลอง data-integrity edge case
+    // ที่ guard นี้มีไว้ป้องกัน)
+    state.boothJobWorkerSnapshots.push({
+      id: state.nextBoothJobWorkerSnapshotId++,
+      gate_ticket_id: ticket.id,
+      ticket_worker_id: 9_999_999,
+      created_at: new Date().toISOString(),
+    });
+
+    await assertFinalizeRejects(market.id, 409, "TICKET_WORKERS_NOT_FOUND");
+
+    assert.equal(market.financialized_at, null);
+    assert.equal(ticket.final_stall_amount ?? null, null);
+    assert.equal(state.ticketProductFinancials.length, 0);
+  });
+
+  test("finalizeMarketJobFinancials rejects with 409 CONFIRMED_QUANTITY_MISSING when a completed booth's product never received a confirmed quantity", async () => {
+    const worker = addWorker(99109);
+    const job = addDispatchableJob(99110, 1);
+    const ticket = addTicketForTicketJob(job.id, 199111);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+    ticket.status = "COMPLETED";
+    ticket.confirmation_status = "COMPLETED";
+    ticket.completed_at = new Date().toISOString();
+
+    state.ticketWorkers.push({
+      id: state.nextTicketWorkerId++,
+      market_job_id: market.id,
+      worker_id: worker.id,
+      status: "WORKING",
+      final_earning_amount: null,
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    });
+
+    // Product ทั้งสองยัง confirmed_quantity = null ค่า default จาก fixture (ไม่เคยผ่าน submit จริง)
+    const products = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
+
+    assert.ok(products.every((product) => product.confirmed_quantity === null));
+
+    await assertFinalizeRejects(market.id, 409, "CONFIRMED_QUANTITY_MISSING");
+
+    assert.equal(market.financialized_at, null);
+    assert.equal(ticket.final_stall_amount ?? null, null);
+    assert.equal(state.ticketProductFinancials.length, 0);
+  });
+
+  test("finalizeMarketJobFinancials rejects with 409 TICKET_RATE_SNAPSHOT_INCOMPLETE when a completed booth's product is missing a rate snapshot field", async () => {
+    const worker = addWorker(99112);
+    const job = addDispatchableJob(99113, 1);
+    const ticket = addTicketForTicketJob(job.id, 199114);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+
+    ticket.status = "COMPLETED";
+    ticket.confirmation_status = "COMPLETED";
+    ticket.completed_at = new Date().toISOString();
+
+    state.ticketWorkers.push({
+      id: state.nextTicketWorkerId++,
+      market_job_id: market.id,
+      worker_id: worker.id,
+      status: "WORKING",
+      final_earning_amount: null,
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    });
+
+    const products = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
+
+    products.forEach((product, index) => {
+      product.confirmed_quantity = index === 0 ? "10" : "4";
+    });
+    // Product แรกมี confirmed_quantity แล้ว แต่ rate snapshot ไม่ครบ (stall_rate_snapshot หาย) —
+    // เกิดได้จริงกับข้อมูลเก่าก่อน Gate บันทึก Rate Snapshot ครบทุก field
+    products[0].stall_rate_snapshot = null;
+
+    await assertFinalizeRejects(market.id, 409, "TICKET_RATE_SNAPSHOT_INCOMPLETE");
+
+    assert.equal(market.financialized_at, null);
+    assert.equal(ticket.final_stall_amount ?? null, null);
+    assert.equal(state.ticketProductFinancials.length, 0);
+  });
+
+  // หมายเหตุ: hasCompleteRateSnapshot() (บรรทัด ~266 ของ ticket-financial.service.ts) เช็ค
+  // stallRateSnapshot/laborRateSnapshot !== null รวมอยู่แล้วในเงื่อนไขเดียวกับ test ด้านบน ส่วน guard
+  // ที่ซ้ำอีกชั้น (`if (stallRate === null || laborRate === null)`, บรรทัด ~279) ตามคอมเมนต์ในซอร์สเองระบุ
+  // ว่ามีไว้เพื่อ TypeScript narrowing เท่านั้น (หลังผ่าน hasCompleteRateSnapshot แล้ว ค่าสองตัวนี้การันตีว่า
+  // ไม่ null อยู่แล้วเสมอ) จึงเป็น dead code ที่ throw ไม่ได้จริงในทางปฏิบัติ ไม่มี test แยกสำหรับจุดนี้
+});
+
 /* -------------------------------------- Ticket-Level Worker Cancel Route Tests -------------------------------------- */
 
 /* -------------------------------------- Admin Override Count Route Tests -------------------------------------- */
@@ -5039,6 +5630,56 @@ describe("Release Workers", () => {
 
     assert.equal(resubmit.status, 200, JSON.stringify(resubmit.body));
     assert.equal(ticket1.status, "DELIVERED");
+  });
+
+  test("POST /api/admin/vehicle-jobs/:ticketNumber/release-workers returns 409 NO_SUBMITTED_BOOTHS when the vehicle job has no Business Ticket/booth at all yet", async () => {
+    const { token: adminToken } = await loginJobAdmin(99080);
+    // addDispatchableJob เพียงอย่างเดียวไม่สร้าง MarketJob/BoothJob ใดๆ เลย -> tickets ว่างเปล่า
+    const job = addDispatchableJob(99081, 1);
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/vehicle-jobs/${job.ticket_number}/release-workers`,
+      {
+        token: adminToken,
+        body: { reason_code: "R004" },
+      },
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "NO_SUBMITTED_BOOTHS");
+    assert.equal(job.status, "WORKING");
+    assert.equal(
+      state.adminActionLogs.some((item) => item.vehicle_job_id === job.id),
+      false,
+    );
+  });
+
+  test("POST /api/admin/vehicle-jobs/:ticketNumber/release-workers returns 409 NO_RELEASABLE_WORKERS when every booth is resolved but no assignment is in a releasable status", async () => {
+    const { token: adminToken } = await loginJobAdmin(99082);
+    const job = addDispatchableJob(99083, 1);
+    const ticket = addTicketForTicketJob(job.id, 199084);
+
+    // Booth ถูกยกเลิกไปแล้ว (นับเป็น "resolved" ตาม SUBMITTED_TICKET_STATUSES) แต่ไม่มี Worker คนไหน
+    // ถูก Assign เข้ามาเลย -> ไม่มี assignment ให้ release
+    ticket.status = "CANCELLED";
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/vehicle-jobs/${job.ticket_number}/release-workers`,
+      {
+        token: adminToken,
+        body: { reason_code: "R004" },
+      },
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "NO_RELEASABLE_WORKERS");
+    assert.equal(job.status, "WORKING");
+    assert.equal(
+      state.adminActionLogs.some((item) => item.vehicle_job_id === job.id),
+      false,
+    );
   });
 });
 
