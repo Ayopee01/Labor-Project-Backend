@@ -695,7 +695,11 @@
             (เฉพาะขอบเขตทั้งคันเท่านั้น — มีแผงใต้รถคันนี้อย่างน้อยหนึ่งใบส่งยอดรอ Vendor ยืนยัน/ถูก Vendor
             ปฏิเสธอยู่ (DELIVERED/REJECT) ต้องรอ Vendor ยืนยัน/timeout ให้จบก่อนถึงจะยกเลิกทั้งคันได้ — guard
             เดียวกับ MARKET_JOB_ALREADY_SUBMITTED แค่ขยาย scope เป็นทั้งคัน), MARKET_JOB_ALREADY_CLOSED,
-            MARKET_JOB_ALREADY_SUBMITTED, STALL_JOB_ALREADY_CLOSED, STALL_JOB_ALREADY_SUBMITTED,
+            MARKET_JOB_ALREADY_SUBMITTED (ขอบเขตทั้ง Business Ticket ทั้งสองแบบ คือ TicketNo เดี่ยวๆ หรือ
+            TicketNo + WorkerCode ไม่ใส่ BoothCode — มีแผงใต้ Business Ticket นี้อย่างน้อยหนึ่งใบยัง DELIVERED/REJECT
+            อยู่ เพราะ worker snapshot ที่ใช้หารเงินจริงถูกบันทึกตอน Vendor confirm ไม่ใช่ตอนส่งยอด ถอด worker
+            ออกจาก roster ตอนนี้จะทำให้เขาหลุดจากตัวหารเงินไปเงียบๆ ทั้งที่ทำงานแผงนี้จริง จึงบล็อกเหมือนยกเลิกทั้ง
+            Business Ticket), STALL_JOB_ALREADY_CLOSED, STALL_JOB_ALREADY_SUBMITTED,
             ASSIGNMENT_NOT_ACTIVE, WORKER_ALREADY_EXCLUDED_FROM_BOOTH (เฉพาะขอบเขต worker + booth เท่านั้น —
             ดูเอกสารเดิมของ endpoint แยกตามขอบเขตที่ถูกรวมเข้ามาแล้วสำหรับเงื่อนไขที่แต่ละขอบเขตบังคับใช้) การยกเลิก
             Business Ticket หรือ Booth จะไม่เขียนทับ Market/Booth พี่น้องที่ถึง COMPLETED/CANCELLED ไปแล้ว และจะ
