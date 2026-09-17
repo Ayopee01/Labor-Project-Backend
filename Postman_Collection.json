@@ -27,7 +27,7 @@
   "variable": [
     {
       "key": "baseUrl",
-      "value": "http://localhost:8080",
+      "value": "https://labor-project-backend.onrender.com",
       "type": "string",
       "description": "Backend base URL for testing. Set to https://<your-domain> to test against the shared droplet dev/test deployment instead — see README > Deploying to DigitalOcean."
     },
