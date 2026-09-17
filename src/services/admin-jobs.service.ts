@@ -2659,6 +2659,27 @@ async function cancelTicketWorker(
   }
 
   const cancelled = await withTransaction(async (transaction) => {
+    // Lock แถว Business Ticket ก่อนเช็ค guard กัน race กับ worker ที่เพิ่งส่งยอดแผงในใบนี้พร้อมกันคนละ transaction
+    await transaction.$queryRaw`SELECT id FROM market_jobs WHERE id = ${marketJob.id} FOR UPDATE`;
+
+    // ห้ามถอด worker ออกจาก roster ทั้ง Business Ticket ถ้ามีแผงไหนใต้ใบนี้เคยถูกส่งยอดมาแล้ว ไม่ว่าผลจะเป็น
+    // DELIVERED (รอ Vendor) หรือ REJECT (โดนปฏิเสธ) ก็ตาม — เพราะ worker snapshot ที่ใช้หารเงินจริงถูกบันทึก
+    // ตอน Vendor confirm (อ่าน TicketWorker.status สดตอนนั้น) ไม่ใช่ตอนส่งยอด ถอด worker ออกตอนนี้จะทำให้เขา
+    // หลุดจากตัวหารเงินไปเงียบๆ ทั้งที่ทำงานแผงนี้จริง — guard เดียวกับ cancelTicketWorkerFromBooth
+    const hasSubmittedTickets =
+      await boothJobRepository.hasSubmittedActiveTicketsForMarketJob(
+        marketJob.id,
+        transaction,
+      );
+
+    if (hasSubmittedTickets) {
+      throw new ApiError(
+        409,
+        "MARKET_JOB_ALREADY_SUBMITTED",
+        "Worker cannot be removed from this business ticket after a booth has already been submitted.",
+      );
+    }
+
     const result = await ticketJobLifecycleService.cancelTicketWorkerForMarketJob(
       marketJob.id,
       worker.id,
