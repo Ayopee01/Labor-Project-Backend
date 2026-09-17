@@ -4323,7 +4323,7 @@
                 }
               ]
             },
-            "description": "Method: GET\nURL: {{baseUrl}}/api/workers/me/notifications\nAuth: Worker access token\nQuery: page, limit\nBody: None\nResponse: Data[] of {Id, Type, NotificationKey, Lang, Title, Message, Notification: {Key, Lang, Title, Message}, Payload, ReadAt, CreatedAt}, and Pagination."
+            "description": "Method: GET\nURL: {{baseUrl}}/api/workers/me/notifications\nAuth: Worker access token\nQuery: page, limit\nBody: None\nResponse: Data[] of {Id, Type, NotificationKey, Lang, Title, Message, Notification: {Key, Lang, Title, Message}, Payload, ReadAt, CreatedAt}, and Pagination. Lang/Title/Message (including Notification.*) are re-localized to the worker's CURRENT language on every call, not the language the notification was originally sent in — if the worker changed language since, older entries display in the new language too."
           },
           "response": []
         },

@@ -407,6 +407,13 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
   },
 };
 
+// Function เช็คว่า notification_key ที่บันทึกไว้ยังมี template รองรับภาษานั้นอยู่จริงหรือไม่ — ใช้ตอน
+// render ประวัติแจ้งเตือนเก่าใหม่ตามภาษาปัจจุบันของ worker กัน key ที่ถูกลบ/เปลี่ยนชื่อไปแล้วในโค้ดรุ่นหลัง
+// ตกไปโชว์เป็นข้อความ generic "worker.notification" แทนเนื้อหาจริงในอดีต
+export function hasNotificationTemplate(lang: string | null | undefined, key: string): boolean {
+  return Boolean(TEMPLATES[normalizeNotificationLang(lang)][key]);
+}
+
 export function buildLocalizedNotification(input: {
   type: string;
   lang?: string | null;

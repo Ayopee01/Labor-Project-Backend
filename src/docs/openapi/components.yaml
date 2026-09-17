@@ -5425,14 +5425,21 @@
           description: คีย์อ้างอิงเทมเพลตเนื้อหาการแจ้งเตือน
           example: ticket.completion_confirmed
         lang:
-          $ref: "#/components/schemas/AccountLang"
+          allOf:
+            - $ref: "#/components/schemas/AccountLang"
+          description: >
+            ภาษาที่ใช้ render title/message นี้ — คือภาษาปัจจุบันของ Worker ณ ตอนเรียก API นี้
+            (re-localize ใหม่ทุกครั้งที่อ่าน) ไม่ใช่ภาษาที่ใช้ตอน notification ถูกสร้างขึ้นครั้งแรก
+            ถ้า Worker เคยเปลี่ยนภาษาไปแล้ว ค่านี้จะเปลี่ยนตามภาษาปัจจุบันเสมอ
         title:
           type: string
-          description: หัวข้อการแจ้งเตือน (แปลตามภาษาของ Worker)
+          description: >
+            หัวข้อการแจ้งเตือน แปลตามภาษาปัจจุบันของ Worker เสมอ (ไม่ใช่ภาษาตอนสร้าง notification)
           example: แผงค้ายืนยันยอดแล้ว
         message:
           type: string
-          description: ข้อความผลลัพธ์
+          description: >
+            ข้อความผลลัพธ์ แปลตามภาษาปัจจุบันของ Worker เสมอ (ไม่ใช่ภาษาตอนสร้าง notification)
           example: แผง A01 ยืนยันยอดเรียบร้อยแล้ว
         notification:
           type: object
@@ -5443,16 +5450,21 @@
               description: คีย์อ้างอิง
               example: ticket.completion_confirmed
             lang:
-              $ref: "#/components/schemas/AccountLang"
+              allOf:
+                - $ref: "#/components/schemas/AccountLang"
+              description: ภาษาปัจจุบันของ Worker ที่ใช้ render เนื้อหานี้ (เหมือนกับ Data[].Lang ด้านบน)
             title:
               type: string
-              description: หัวข้อการแจ้งเตือน (แปลตามภาษาของ Worker)
+              description: หัวข้อการแจ้งเตือน (แปลตามภาษาปัจจุบันของ Worker)
               example: แผงค้ายืนยันยอดแล้ว
             message:
               type: string
               description: ข้อความผลลัพธ์
               example: แผง A01 ยืนยันยอดเรียบร้อยแล้ว
-          description: เนื้อหาการแจ้งเตือนที่แปลตามภาษาแล้ว
+          description: >
+            เนื้อหาการแจ้งเตือนที่แปลตามภาษาปัจจุบันของ Worker เสมอ — ระบบ re-localize ทุกครั้งที่เรียก API นี้
+            โดยใช้ notification_key + payload เดิมที่บันทึกไว้ ร่วมกับภาษาปัจจุบัน ถ้า key เก่าไม่มี template
+            รองรับแล้ว (เช่น ถูกลบ/เปลี่ยนชื่อในโค้ดรุ่นหลัง) จะ fallback ไปใช้ข้อความที่บันทึกไว้ตอนสร้างแทน
         payload:
           type: object
           nullable: true

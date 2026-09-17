@@ -242,7 +242,9 @@
         - Worker Application
       summary: ดูประวัติ notification ของ Worker
       description: >
-        คืนรายการ notification ที่ backend เคยบันทึกไว้สำหรับ inbox ใน Worker Mobile
+        คืนรายการ notification ที่ backend เคยบันทึกไว้สำหรับ inbox ใน Worker Mobile — title/message/lang
+        ของทุกรายการ (รวมของเก่า) จะถูก render ใหม่ตามภาษาปัจจุบันของ Worker ทุกครั้งที่เรียก API นี้
+        ไม่ได้ค้างเป็นภาษาที่ใช้ตอน notification ถูกสร้างขึ้นครั้งแรก
       operationId: listWorkerNotifications
       security:
         - bearerAuth: []

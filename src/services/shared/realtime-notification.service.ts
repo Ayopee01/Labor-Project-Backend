@@ -9,7 +9,7 @@ import { sendWorkerPushNotificationByWorkerIds } from "./worker-push.service";
 // Import Utils
 import { sendWorkerSocketEvent } from "../../websockets/worker.socket";
 import { logger } from "../../utils/logger";
-import { buildLocalizedNotification } from "../../utils/notification-localization";
+import { buildLocalizedNotification, hasNotificationTemplate } from "../../utils/notification-localization";
 // Import Validation
 import { parseWithSchema } from "../../validation/parser";
 import { paginationQuerySchema } from "../../validation/schemas";
@@ -155,30 +155,54 @@ export async function listWorkerNotifications(
   }
 
   const { page, limit } = parseWithSchema(paginationQuerySchema, query);
-  const result = await workerNotificationRepository.listWorkerNotifications(
-    auth.account_id,
-    page,
-    limit,
-  );
+  const [worker, result] = await Promise.all([
+    masterWorkerRepository.findById(auth.account_id),
+    workerNotificationRepository.listWorkerNotifications(auth.account_id, page, limit),
+  ]);
+  const currentLang = worker?.lang;
 
   return {
-    data: result.items.map((item) => ({
-      id: item.id,
-      type: item.type,
-      notification_key: item.notification_key,
-      lang: item.lang,
-      title: item.title,
-      message: item.message,
-      notification: {
-        key: item.notification_key,
-        lang: item.lang,
-        title: item.title,
-        message: item.message,
-      },
-      payload: item.payload,
-      read_at: item.read_at,
-      created_at: item.created_at,
-    })),
+    data: result.items.map((item) => {
+      // Render ใหม่ตามภาษาปัจจุบันของ worker เฉพาะตอนที่ key ที่บันทึกไว้ยังมี template รองรับอยู่จริง
+      // ถ้า key ถูกลบ/เปลี่ยนชื่อไปแล้วในโค้ดรุ่นหลัง ให้คงข้อความเดิมที่บันทึกไว้ตอนสร้างแทน กัน
+      // ข้อความในอดีตเพี้ยนไปเป็น generic "worker.notification" ที่ไม่ตรงกับเหตุการณ์จริง
+      const canRelocalize =
+        Boolean(item.notification_key) &&
+        Boolean(currentLang) &&
+        hasNotificationTemplate(currentLang, item.notification_key as string);
+
+      const localized = canRelocalize
+        ? buildLocalizedNotification({
+            type: item.type,
+            lang: currentLang,
+            key: item.notification_key,
+            params:
+              item.payload && typeof item.payload === "object" && !Array.isArray(item.payload)
+                ? (item.payload as Record<string, unknown>)
+                : undefined,
+            fallbackTitle: item.title,
+            fallbackMessage: item.message,
+          })
+        : { key: item.notification_key, lang: item.lang, title: item.title, message: item.message };
+
+      return {
+        id: item.id,
+        type: item.type,
+        notification_key: item.notification_key,
+        lang: localized.lang,
+        title: localized.title,
+        message: localized.message,
+        notification: {
+          key: localized.key,
+          lang: localized.lang,
+          title: localized.title,
+          message: localized.message,
+        },
+        payload: item.payload,
+        read_at: item.read_at,
+        created_at: item.created_at,
+      };
+    }),
     pagination: {
       page,
       limit,
