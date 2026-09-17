@@ -4,7 +4,12 @@
       tags:
         - LINE
       summary: รับ webhook จาก LINE ของ Vendor
-      description: รับ postback จากปุ่ม confirm, reject และ rating ใน LINE Flex message แล้วอัปเดตสถานะ ticket ตาม token ที่แนบมา ถ้างานครบทุก ticket ระบบจะปิดงานที่เกี่ยวข้องและคืน Worker ไปงานถัดไป
+      description: >
+        รับ postback จากปุ่ม confirm, reject และ rating ใน LINE Flex message แล้วอัปเดตสถานะ ticket ตาม token ที่แนบมา
+        ถ้างานครบทุก ticket ระบบจะปิดงานที่เกี่ยวข้องและคืน Worker ไปงานถัดไป นอกจากนี้ยังรองรับ event ประเภท message
+        (ข้อความ text) — ถ้าพิมพ์คำว่า "id" มา (ไม่สนตัวพิมพ์เล็ก/ใหญ่) ระบบจะตอบกลับ LINE user id ของผู้พิมพ์ทันทีผ่าน
+        LINE Reply API (ข้อความ "Your user ID: <id>") เพื่อความสะดวกตอน setup ข้อมูลทดสอบ เช่นเอาไปใส่
+        POST /api/line/dev/member-stalls — การตอบแบบนี้ไม่นับรวมโควต้าข้อความ push ฟรีรายเดือนของ LINE OA
       operationId: handleLineWebhook
       parameters:
         - in: header
@@ -99,6 +104,30 @@
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/line/dev/member-stalls:
+    post:
+      tags:
+        - LINE
+      summary: เพิ่ม test member (ลูกน้องแผง) ให้ผูกกับทุก owner stall ที่ active
+      description: >
+        เพิ่ม/อัปเดต (upsert) LINE user id หนึ่งตัวให้เป็น "ลูกน้อง" (member) ของทุก MasterOwnerStall ที่ active
+        อยู่ในระบบ (dedupe ตาม marketCode + ownerIdCard + ownerLineUserId) ใช้สำหรับทดสอบว่า LINE account ที่เพิ่ง
+        เพิ่มเพื่อน OA ทดสอบจะได้รับ push แจ้งเตือน ticket completion ของแผงใดก็ได้ในระบบทันที โดยไม่ต้องรอ sync
+        จากระบบ master ไม่ต้องยืนยันตัวตนและเปิดใช้งานได้ทั้งใน production — เรียกซ้ำได้ ไม่สร้างข้อมูลซ้ำ
+      operationId: addLineDevMemberStall
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LineDevAddMemberStallRequest"
+      responses:
+        "200":
+          description: เพิ่ม/อัปเดต member stall สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LineDevAddMemberStallResult"
   /api/line/dev/submissions/{submissionId}/reject:
     post:
       tags:

@@ -3,6 +3,7 @@
 // Type event จาก LINE webhook ที่ระบบใช้งานจริง
 export type LineWebhookEvent = {
   type?: string;
+  replyToken?: string;
   source?: {
     userId?: string;
     user_id?: string;
@@ -11,6 +12,7 @@ export type LineWebhookEvent = {
     data?: string;
   };
   message?: {
+    type?: string;
     text?: string;
   };
 };
@@ -142,6 +144,12 @@ export interface LineDevSubmissionItem {
     expected_quantity: string;
     submitted_quantity: string | null;
   }>;
+}
+
+// Type ผลลัพธ์หลังเพิ่ม test member stall เข้าทุก MasterOwnerStall ที่ active (ใช้เฉพาะหน้า LINE dev tester)
+export interface LineDevAddMemberStallResult {
+  member_stall_line_user_id: string;
+  owner_stall_count: number;
 }
 
 export interface LineDevCompletionResult {

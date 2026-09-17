@@ -5017,6 +5017,57 @@
             "description": "Method: POST\nURL: {{baseUrl}}/api/line/dev/submissions/{{lineDevSubmissionId}}/reject\nAuth: No auth.\nBody: Optional RejectReason (max 1000 chars).\nRejects the waiting ticket completion submission using the same completion flow as the real LINE vendor reject button, but does not send any LINE message. Fails with 404 SUBMISSION_NOT_FOUND if the id does not exist, or 409 SUBMISSION_ALREADY_HANDLED if it was already confirmed, rejected, or superseded by a newer submission. Fallback tool for when the LINE line is rate-limited; enabled in every environment including production, so treat SubmissionId carefully — this mutates real ticket/vehicle job state."
           },
           "response": []
+        },
+        {
+          "name": "POST /api/line/dev/member-stalls",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "Optional. Correlation id for this request — Postman's {{$guid}} generates a fresh UUID every time this request is sent. Echoed back in the X-Request-Id response header and in every error response body."
+              },
+              {
+                "key": "X-Client-Version",
+                "value": "{{clientVersion}}",
+                "type": "text",
+                "description": "Optional. Version of the calling client app, recorded in server logs for debugging only."
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"member_stall_line_user_id\": \"Uabc123testmember0000000000000001\",\n  \"member_stall_first_name\": \"Test\",\n  \"member_stall_last_name\": \"Member\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/line/dev/member-stalls",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "line",
+                "dev",
+                "member-stalls"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Method: POST\nURL: {{baseUrl}}/api/line/dev/member-stalls\nAuth: No auth.\nBody: Required MemberStallLineUserId, optional MemberStallFirstName/MemberStallLastName/MemberStallIdCard/MemberStallTelephone/MemberStallUserGroup.\nUpserts this LINE user id as a \"member\" (ลูกน้อง) of every active MasterOwnerStall in the system (deduped by marketCode + ownerIdCard + ownerLineUserId), so it immediately receives ticket-completion LINE push notifications for any booth, without waiting for a master data sync. Idempotent — calling again with the same MemberStallLineUserId updates the existing rows instead of duplicating them. Dev/testing tool; enabled in every environment including production, so this mutates real master_member_stalls rows — use a LINE user id you control (e.g. one that already added your test LINE OA as a friend)."
+          },
+          "response": []
         }
       ]
     }

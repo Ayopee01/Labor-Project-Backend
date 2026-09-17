@@ -3,7 +3,7 @@ import crypto from "crypto";
 // Import Config
 import { withTransaction } from "../db/prisma";
 // Import Queues
-import { enqueueLoggedLineMessage } from "../queues/line-message-queue";
+import { enqueueLoggedLineMessage, sendLineReplyMessage } from "../queues/line-message-queue";
 import { returnCompletedWorkersToQueue } from "../queues/worker-dispatch";
 import { removeVendorConfirmationTimeout } from "../queues/worker-queue";
 // Import Repositories
@@ -143,6 +143,26 @@ async function verifyLineActionToken(
 // Function ดึง LINE user ID ใน service flow
 function getLineUserId(event: LineWebhookEvent): string | null {
   return event.source?.userId ?? event.source?.user_id ?? null;
+}
+
+// Function ตอบ LINE user id ของผู้พิมพ์กลับไปในแชท เมื่อพิมพ์คำว่า "id" มา — เพื่อความสะดวกตอน setup ข้อมูล
+// ทดสอบ (เช่น เอาไปใส่ POST /api/line/dev/member-stalls) ไม่ต้องไปเปิด DB/log หา LINE user id เอง
+// ตอบผ่าน Reply API ด้วย replyToken ของ event นั้นโดยตรง ไม่นับรวมโควต้าข้อความ push ฟรีรายเดือนของ LINE OA
+async function handleGetUserIdTextMessage(
+  event: LineWebhookEvent,
+  lineUserId: string
+): Promise<boolean> {
+  const text = event.message?.text?.trim().toLowerCase();
+
+  if (event.type !== "message" || event.message?.type !== "text" || text !== "id" || !event.replyToken) {
+    return false;
+  }
+
+  await sendLineReplyMessage(event.replyToken, [
+    { type: "text", text: `Your user ID: ${lineUserId}` },
+  ]);
+
+  return true;
 }
 
 // Function ตรวจว่า valid rating score ใน service flow
@@ -530,6 +550,11 @@ export async function handleLineWebhook(
     try {
       const { action, token, rejectReason, score } = parseLinePostback(event.postback?.data);
       lineUserId = getLineUserId(event);
+
+      if (lineUserId && (await handleGetUserIdTextMessage(event, lineUserId))) {
+        processed += 1;
+        continue;
+      }
 
       if (
         event.type !== "postback" ||

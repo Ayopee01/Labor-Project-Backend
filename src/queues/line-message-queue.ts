@@ -56,6 +56,39 @@ async function sendLinePushMessage(data: LineMessageJobData): Promise<void> {
   }
 }
 
+// Function ส่ง LINE reply message ผ่าน LINE Messaging API — ตอบกลับด้วย replyToken ของ event นั้นโดยตรง
+// (ไม่ผ่าน queue เพราะ replyToken ใช้ได้ครั้งเดียวและหมดอายุไว ~1 นาที ต้องยิงทันทีแบบ synchronous) และไม่นับ
+// รวมในโควต้าข้อความฟรีรายเดือนของ LINE OA ต่างจาก push message
+export async function sendLineReplyMessage(
+  replyToken: string,
+  messages: LineMessage[]
+): Promise<void> {
+  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+
+  if (!token) {
+    throw new Error(
+      "LINE_CHANNEL_ACCESS_TOKEN is required for LINE reply delivery."
+    );
+  }
+
+  const response = await fetch("https://api.line.me/v2/bot/message/reply", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      replyToken,
+      messages,
+    }),
+  });
+
+  if (!response.ok) {
+    const responseText = await response.text();
+    throw new Error(`LINE reply failed with ${response.status}: ${responseText}`);
+  }
+}
+
 // Function เพิ่มงานเข้า queue LINE message ใน Redis/BullMQ queue
 export async function enqueueLineMessage(
   jobName: string,

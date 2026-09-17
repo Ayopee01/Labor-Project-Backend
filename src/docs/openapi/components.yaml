@@ -2452,8 +2452,13 @@
             properties:
               type:
                 type: string
-                description: ประเภท
+                description: "ประเภท event เช่น postback หรือ message"
                 example: postback
+              replyToken:
+                type: string
+                nullable: true
+                description: token สำหรับตอบกลับผ่าน LINE Reply API ทันที (ใช้ได้ครั้งเดียว หมดอายุไว) มีเฉพาะ event ที่ตอบกลับได้ เช่น message
+                example: nHuyWiB7yP5Zw52FIkcQobQuGDXCTA
               source:
                 type: object
                 properties:
@@ -2469,7 +2474,21 @@
                     type: string
                     description: ปุ่มยืนยัน/ปฏิเสธส่ง `token=<signed-token>` ปุ่มให้คะแนนส่ง `token=<signed-token>&score=<1-5>`
                     example: token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...&score=5
-                description: ข้อมูล postback จาก LINE
+                description: ข้อมูล postback จาก LINE (เฉพาะ event ประเภท postback)
+              message:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    description: ประเภทข้อความ
+                    example: text
+                  text:
+                    type: string
+                    description: >
+                      เนื้อหาข้อความ — ถ้าพิมพ์ "id" มา (ไม่สนตัวพิมพ์เล็ก/ใหญ่) ระบบจะตอบ LINE user id
+                      ของผู้พิมพ์กลับผ่าน Reply API ทันที เพื่อความสะดวกตอน setup ข้อมูลทดสอบ
+                    example: id
+                description: ข้อมูลข้อความจาก LINE (เฉพาะ event ประเภท message)
           description: รายการ event จาก LINE webhook
     LineWebhookResponse:
       type: object
@@ -2654,6 +2673,53 @@
           nullable: true
           description: สถานะของงานรถ
           example: null
+    LineDevAddMemberStallRequest:
+      type: object
+      required:
+        - member_stall_line_user_id
+      properties:
+        member_stall_line_user_id:
+          type: string
+          description: LINE user id ของ "ลูกน้อง" (member) ที่จะเพิ่ม
+          example: Uabc123testmember0000000000000001
+        member_stall_first_name:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: ชื่อ
+          example: Test
+        member_stall_last_name:
+          type: string
+          nullable: true
+          maxLength: 255
+          description: นามสกุล
+          example: Member
+        member_stall_id_card:
+          type: string
+          nullable: true
+          maxLength: 50
+          description: เลขบัตรประชาชน (ถ้ามี)
+        member_stall_telephone:
+          type: string
+          nullable: true
+          maxLength: 50
+          description: เบอร์โทรศัพท์ (ถ้ามี)
+        member_stall_user_group:
+          type: string
+          nullable: true
+          maxLength: 50
+          description: กลุ่มผู้ใช้งาน (ถ้ามี)
+    LineDevAddMemberStallResult:
+      type: object
+      properties:
+        member_stall_line_user_id:
+          type: string
+          description: LINE user id ที่ถูกผูกเข้าไป
+          example: Uabc123testmember0000000000000001
+        owner_stall_count:
+          type: integer
+          description: จำนวน owner stall (marketCode + ownerIdCard + ownerLineUserId ที่ distinct กัน) ที่ผูก member นี้เข้าไปให้
+          example: 59
     TicketProduct:
       type: object
       properties:

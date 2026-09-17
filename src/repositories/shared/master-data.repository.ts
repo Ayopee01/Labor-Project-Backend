@@ -1,5 +1,7 @@
 // Import Library
 import { Prisma, type MasterProduct, type MasterRate } from "@prisma/client";
+// Import Config
+import { MASTER_MARKET_ACTIVE_STATUS, MASTER_OWNER_STALL_ACTIVE_STATUS } from "../../constants/status";
 // Import Utils
 import { client } from "./repository-utils";
 // Import Types
@@ -185,4 +187,95 @@ export async function findMemberStallFullNamesByOwnerAndLineUserId(
   }
 
   return map;
+}
+
+// Function เพิ่ม/อัปเดต test member stall คนเดียวให้ผูกกับทุก owner stall ที่ active (เฉพาะหน้า LINE dev
+// tester ใช้ทดสอบว่า LINE ที่เพิ่งเพิ่มเพื่อน OA ทดสอบ จะได้รับแจ้งเตือน ticket completion จริงไหม โดยไม่ต้อง
+// รอ sync จากระบบ master — dedupe ตาม (marketCode, ownerIdCard, ownerLineUserId) ก่อน เพราะ MasterOwnerStall
+// เก็บแยกรายแผง (booth) แต่ MasterMemberStall ผูกที่ระดับ owner ไม่ใช่ระดับแผง insert ซ้ำต่อแผงจะฟุ่มเฟือยเปล่าๆ
+export async function upsertTestMemberStallAcrossActiveOwners(
+  member: {
+    memberStallLineUserId: string;
+    memberStallFirstName?: string | null;
+    memberStallLastName?: string | null;
+    memberStallIdCard?: string | null;
+    memberStallTelephone?: string | null;
+    memberStallUserGroup?: string | null;
+  },
+  connection?: DbConnection
+): Promise<{ ownerStallCount: number }> {
+  const db = client(connection);
+  const ownerStalls = await db.masterOwnerStall.findMany({
+    where: {
+      status: MASTER_OWNER_STALL_ACTIVE_STATUS,
+      ownerStatus: MASTER_MARKET_ACTIVE_STATUS,
+      lineUserId: { not: null },
+    },
+    select: {
+      marketCode: true,
+      cardId: true,
+      lineUserId: true,
+    },
+  });
+
+  const owners = new Map<
+    string,
+    { marketCode: string; cardId: string; lineUserId: string }
+  >();
+
+  for (const ownerStall of ownerStalls) {
+    if (!ownerStall.lineUserId) {
+      continue;
+    }
+
+    owners.set(
+      `${ownerStall.marketCode}::${ownerStall.cardId}::${ownerStall.lineUserId}`,
+      {
+        marketCode: ownerStall.marketCode,
+        cardId: ownerStall.cardId,
+        lineUserId: ownerStall.lineUserId,
+      }
+    );
+  }
+
+  await Promise.all(
+    Array.from(owners.values()).map((owner) =>
+      db.masterMemberStall.upsert({
+        where: {
+          marketCode_ownerIdCard_ownerLineUserId_memberStallLineUserId: {
+            marketCode: owner.marketCode,
+            ownerIdCard: owner.cardId,
+            ownerLineUserId: owner.lineUserId,
+            memberStallLineUserId: member.memberStallLineUserId,
+          },
+        },
+        create: {
+          marketCode: owner.marketCode,
+          ownerIdCard: owner.cardId,
+          ownerLineUserId: owner.lineUserId,
+          memberStallLineUserId: member.memberStallLineUserId,
+          memberStallFirstName: member.memberStallFirstName ?? null,
+          memberStallLastName: member.memberStallLastName ?? null,
+          memberStallIdCard: member.memberStallIdCard ?? null,
+          memberStallTelephone: member.memberStallTelephone ?? null,
+          memberStallUserGroup: member.memberStallUserGroup ?? null,
+          memberStallStatusOnStall: "1",
+          status: MASTER_OWNER_STALL_ACTIVE_STATUS,
+          syncedAt: new Date(),
+        },
+        update: {
+          memberStallFirstName: member.memberStallFirstName ?? null,
+          memberStallLastName: member.memberStallLastName ?? null,
+          memberStallIdCard: member.memberStallIdCard ?? null,
+          memberStallTelephone: member.memberStallTelephone ?? null,
+          memberStallUserGroup: member.memberStallUserGroup ?? null,
+          memberStallStatusOnStall: "1",
+          status: MASTER_OWNER_STALL_ACTIVE_STATUS,
+          syncedAt: new Date(),
+        },
+      })
+    )
+  );
+
+  return { ownerStallCount: owners.size };
 }

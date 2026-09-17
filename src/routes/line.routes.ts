@@ -52,6 +52,14 @@ router.post("/dev/submissions/:submissionId/reject", async (req, res, next) => {
   }
 });
 
+router.post("/dev/member-stalls", async (req, res, next) => {
+  try {
+    res.json(await lineDevService.addTestMemberStallToAllActiveOwners(req.body));
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post(
   "/webhook",
   async (req, res, next) => {
