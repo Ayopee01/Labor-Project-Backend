@@ -35,6 +35,25 @@ export async function hasSubmittedActiveTicketsForMarketJob(
   return count > 0;
 }
 
+// Function ตรวจว่ารถคันนี้ (ทุก Business Ticket ในคัน) เคยมี Booth ถูกส่งยอดแล้วหรือไม่ — guard เดียวกับ
+// hasSubmittedActiveTicketsForMarketJob แค่ขยาย scope เป็นระดับ TicketJob ใช้กันยกเลิกทั้งรถทับ Booth ที่กำลังรอ Vendor อยู่
+export async function hasSubmittedActiveTicketsForTicketJob(
+  ticketJobId: number,
+  connection?: DbConnection
+): Promise<boolean> {
+  const db = client(connection);
+  const count = await db.boothJob.count({
+    where: {
+      ticketJobId,
+      status: {
+        in: [TICKET_STATUS.DELIVERED, TICKET_STATUS.REJECT],
+      },
+    },
+  });
+
+  return count > 0;
+}
+
 // Function เช็คว่า worker ถูกถอดออกจาก Booth นี้ไปแล้วหรือยัง
 export async function findBoothJobWorkerExclusion(
   boothJobId: number,

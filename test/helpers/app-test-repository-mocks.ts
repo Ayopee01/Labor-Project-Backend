@@ -1085,6 +1085,12 @@ export const workerApplicationRepositoryMock = {
         ticket.market_job_id === marketJobId &&
         (ticket.status === "DELIVERED" || ticket.status === "REJECT"),
     ),
+  hasSubmittedActiveTicketsForTicketJob: async (ticketJobId: number) =>
+    state.boothJobs.some(
+      (ticket) =>
+        ticket.vehicle_job_id === ticketJobId &&
+        (ticket.status === "DELIVERED" || ticket.status === "REJECT"),
+    ),
   findBoothJobWorkerExclusion: async (
     boothJobId: number,
     ticketWorkerId: number,
@@ -1972,6 +1978,7 @@ const {
   findBoothJobForCompletionByTicketJobIdAndTicketNoAndBoothCode,
   findBoothJobForCompletionByWorkerHistoryAndTicketNoAndBoothCode,
   hasSubmittedActiveTicketsForMarketJob,
+  hasSubmittedActiveTicketsForTicketJob,
   findBoothJobWorkerExclusion,
   createBoothJobWorkerExclusion,
   countEligibleWorkersForBooth,
@@ -2276,6 +2283,7 @@ export const boothJobRepositoryMock = {
   findBoothJobForCompletionByTicketJobIdAndTicketNoAndBoothCode,
   findBoothJobForCompletionByWorkerHistoryAndTicketNoAndBoothCode,
   hasSubmittedActiveTicketsForMarketJob,
+  hasSubmittedActiveTicketsForTicketJob,
   findBoothJobWorkerExclusion,
   createBoothJobWorkerExclusion,
   countEligibleWorkersForBooth,

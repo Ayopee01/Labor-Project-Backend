@@ -691,7 +691,10 @@
           description: >-
             เป้าหมายของขอบเขตที่ resolve ได้ปิดไปแล้วหรือส่งยอดไปแล้ว เช่น VEHICLE_JOB_CLOSED (เฉพาะขอบเขตทั้งคัน
             เท่านั้น — รถคันนี้เป็น COMPLETED หรือ CANCELLED ไปแล้ว โดย lock แถวนี้แล้วตรวจสถานะซ้ำในทรานแซกชัน
-            เดียวกับการยกเลิก จึงบล็อกรถที่เพิ่งถูกปิดจาก vendor confirm พร้อมกันได้ด้วย), MARKET_JOB_ALREADY_CLOSED,
+            เดียวกับการยกเลิก จึงบล็อกรถที่เพิ่งถูกปิดจาก vendor confirm พร้อมกันได้ด้วย), VEHICLE_JOB_ALREADY_SUBMITTED
+            (เฉพาะขอบเขตทั้งคันเท่านั้น — มีแผงใต้รถคันนี้อย่างน้อยหนึ่งใบส่งยอดรอ Vendor ยืนยัน/ถูก Vendor
+            ปฏิเสธอยู่ (DELIVERED/REJECT) ต้องรอ Vendor ยืนยัน/timeout ให้จบก่อนถึงจะยกเลิกทั้งคันได้ — guard
+            เดียวกับ MARKET_JOB_ALREADY_SUBMITTED แค่ขยาย scope เป็นทั้งคัน), MARKET_JOB_ALREADY_CLOSED,
             MARKET_JOB_ALREADY_SUBMITTED, STALL_JOB_ALREADY_CLOSED, STALL_JOB_ALREADY_SUBMITTED,
             ASSIGNMENT_NOT_ACTIVE, WORKER_ALREADY_EXCLUDED_FROM_BOOTH (เฉพาะขอบเขต worker + booth เท่านั้น —
             ดูเอกสารเดิมของ endpoint แยกตามขอบเขตที่ถูกรวมเข้ามาแล้วสำหรับเงื่อนไขที่แต่ละขอบเขตบังคับใช้) การยกเลิก

@@ -1567,6 +1567,22 @@ async function performTicketJobCancellation(
         );
       }
 
+      // ห้ามยกเลิกทั้งรถ ถ้ามี Booth ไหนใต้รถคันนี้เคยถูกส่งยอดมาแล้ว ไม่ว่าผลจะเป็น DELIVERED (รอ Vendor)
+      // หรือ REJECT (โดนปฏิเสธ) ก็ตาม — ต้องให้ส่งยอดใหม่จน Vendor ยืนยัน/timeout แทน (guard เดียวกับระดับ Business Ticket)
+      const hasSubmittedTickets =
+        await boothJobRepository.hasSubmittedActiveTicketsForTicketJob(
+          ticketJobId,
+          transaction,
+        );
+
+      if (hasSubmittedTickets) {
+        throw new ApiError(
+          409,
+          "VEHICLE_JOB_ALREADY_SUBMITTED",
+          "Vehicle job cannot be cancelled after a booth has already been submitted.",
+        );
+      }
+
       // ต้องดึงก่อน cancelTicketJob เท่านั้น เพราะ cancel ทำให้ MarketJob ทุกใบกลายเป็น CANCELLED ไปด้วย
       const activeAssignments =
         await assignmentRepository.listActiveAssignmentsByTicketJob(
