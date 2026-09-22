@@ -61,6 +61,18 @@ function writeSseEvent(
   }
 }
 
+// Function หา SSE client ที่ผูกกับ session_id ที่ระบุ — ใช้ตอนต้อง target connection เดียวเจาะจง (เช่น
+// แจ้ง session เดิมว่าถูก revoke) ต่างจาก publishNotification ที่ broadcast กว้างแบบ audience filter
+function findClientBySessionId(sessionId: number): NotificationClient | undefined {
+  for (const client of clients.values()) {
+    if (client.auth.session_id === sessionId) {
+      return client;
+    }
+  }
+
+  return undefined;
+}
+
 // Function เคลียร์ client ออกจาก in-memory list เมื่อ connection ปิดหรือหลุด กัน heartbeat/timer ค้าง
 function removeSseClient(clientId: number): void {
   const client = clients.get(clientId);
@@ -148,6 +160,28 @@ export function subscribeAdminEvents(
   response.req.on("close", () => removeSseClient(clientId));
   response.req.on("error", () => removeSseClient(clientId));
   response.on("error", () => removeSseClient(clientId));
+}
+
+// Function ส่ง event ไปยัง SSE connection ของ session หนึ่งโดยเฉพาะแล้วปิด connection นั้นทันที — ใช้ตอน
+// session ถูก revoke แบบเจาะจง (เช่น login เครื่องใหม่ทับ session เดิม) ให้ Frontend ของเครื่องเดิมรู้ผลทันที
+// ไม่ต้องรอ REST เรียกครั้งถัดไปแล้วโดน 401 คืน false เฉยๆ ถ้าไม่พบ connection ที่ตรงกัน (เช่น เครื่องเดิมไม่ได้เปิด
+// SSE ค้างไว้อยู่แล้ว) เป็น best-effort ไม่ throw
+export function sendAdminSseEventToSession(
+  sessionId: number,
+  eventName: string,
+  data: unknown
+): boolean {
+  const client = findClientBySessionId(sessionId);
+
+  if (!client) {
+    return false;
+  }
+
+  writeSseEvent(client.response, eventName, data);
+  removeSseClient(client.id);
+  client.response.end();
+
+  return true;
 }
 
 // Function กระจาย event notification ใน service flow

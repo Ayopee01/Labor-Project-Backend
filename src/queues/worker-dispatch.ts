@@ -25,8 +25,8 @@ import { ADMIN_ACTION_TYPE } from "../types/shared/admin-action-log.type";
 import { WORKER_ASSIGNMENT_EVENT_TYPE } from "../types/shared/worker-assignment-event.type";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 // Import Utils
-import { isWorkerSocketConnected, sendWorkerSocketEvent } from "../websockets/worker.socket";
-import { enqueueWorker, enqueueWorkersAtFront, getWorkerQueueStatus, markWorkerAssigned, markWorkerOpenApp, popReadyWorkers, removeScanWarning, scheduleAssignmentTimeout, scheduleScanTimeout, scheduleScanWarning, scheduleWorkerShiftEnd, startAssignmentTimeoutWorker, startWorkerBreakReturnWorker } from "./worker-queue";
+import { isWorkerSocketConnected, registerBreakReturnRetryHandler, sendWorkerSocketEvent } from "../websockets/worker.socket";
+import { clearWorkerPendingBreakReturn, enqueueWorker, enqueueWorkersAtFront, getWorkerPendingBreakReturnScheduleId, getWorkerQueueStatus, markWorkerAssigned, markWorkerOpenApp, markWorkerPendingBreakReturn, popReadyWorkers, removeScanWarning, scheduleAssignmentTimeout, scheduleScanTimeout, scheduleScanWarning, scheduleWorkerShiftEnd, startAssignmentTimeoutWorker, startWorkerBreakReturnWorker } from "./worker-queue";
 import { buildWorkScheduleShiftInstanceKey, getWorkScheduleShiftEndDelayMs, isTimeInWorkSchedule } from "../utils/shift";
 import { buildTicketCompletionResultExtraFields, buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { logger } from "../utils/logger";
@@ -827,13 +827,15 @@ async function handleWorkerBreakReturn(input: {
     );
   }
 
-  if (
-    currentSchedule &&
+  // เงื่อนไข "พร้อมกลับเข้าคิวทุกอย่าง" ยกเว้นเรื่อง socket — ใช้แยกสาเหตุ fallback ว่าเกิดจาก socket
+  // ไม่ connected ล้วนๆ หรือเกิดจากกะเปลี่ยน/มี assignment ค้าง (สองกรณีหลังไม่ควร retry ตอน reconnect)
+  const readyToRequeueExceptSocket =
+    currentSchedule !== null &&
     currentSchedule.id === input.scheduleId &&
     isTimeInWorkSchedule(currentSchedule) &&
-    !currentAssignment &&
-    isWorkerSocketConnected(input.workerId)
-  ) {
+    !currentAssignment;
+
+  if (readyToRequeueExceptSocket && isWorkerSocketConnected(input.workerId)) {
     const queue = await enqueueWorker(input.workerId);
     const workerCode = await profileRepository.findWorkerCodeByAccountId(input.workerId);
     publishAdminWorkerStatusChanged({
@@ -849,6 +851,28 @@ async function handleWorkerBreakReturn(input: {
 
   const queue = await markWorkerOpenApp(input.workerId);
   const workerCode = await profileRepository.findWorkerCodeByAccountId(input.workerId);
+
+  // Socket ไม่ connected แต่เงื่อนไขอื่นพร้อมหมด -> ตั้ง pending marker ให้ retry อัตโนมัติตอน worker
+  // ต่อ socket กลับมาภายในหน้าต่างเวลาที่กำหนด (worker_break_retry) และ push แจ้งให้เปิดแอปทันที เพราะ
+  // ไม่รู้ว่า worker จะกลับมาต่อ socket เมื่อไหร่ ยิ่งแจ้งเร็วยิ่งมีโอกาสทันหน้าต่างเวลานี้
+  if (readyToRequeueExceptSocket && currentSchedule) {
+    const settings = await getRuntimeSettings();
+    const retryWindowMs = settings.worker_break_retry * 60 * 1000;
+    const shiftRemainingMs = getWorkScheduleShiftEndDelayMs(currentSchedule);
+    const ttlSeconds = Math.floor(Math.min(retryWindowMs, shiftRemainingMs) / 1000);
+
+    await markWorkerPendingBreakReturn(input.workerId, input.scheduleId, ttlSeconds);
+    sendWorkerSocketEvent(
+      input.workerId,
+      "WORKER_BREAK_RETURN_ACTION_REQUIRED",
+      {
+        queue: buildWorkerQueueSocketPayload(queue, workerCode),
+        reason: "break_finished_not_available",
+      },
+      { push: true }
+    );
+  }
+
   publishAdminWorkerStatusChanged({
     title: "Worker moved to open_app",
     message: `Worker ${workerCode ?? input.workerId} moved to open_app after break.`,
@@ -856,6 +880,59 @@ async function handleWorkerBreakReturn(input: {
     queue,
     reason: "break_finished_not_available",
   });
+}
+
+// Function retry auto break-return ตอน worker ต่อ WebSocket กลับมา — เรียกจาก worker.socket.ts ผ่าน
+// registerBreakReturnRetryHandler ทุกครั้งที่ socket connect เข้ามา (ดู handleWorkerSocketConnected)
+// ทำงานเฉพาะกรณีมี pending marker ค้างอยู่ (ตั้งไว้ตอน handleWorkerBreakReturn fallback เพราะ socket
+// ไม่ connected ล้วนๆ) และยังอยู่ในกะเดิม/เวลากะเดิมเท่านั้น ถ้าเป็นกะอื่นหรือ marker หมดอายุไปแล้ว
+// (เกินหน้าต่างเวลา worker_break_retry) จะไม่ requeue ให้ ปล่อยให้ worker กดออนไลน์เองตาม flow ปกติ
+export async function retryWorkerBreakReturnOnConnect(workerId: number): Promise<void> {
+  const pendingScheduleId = await getWorkerPendingBreakReturnScheduleId(workerId);
+
+  if (pendingScheduleId === null) {
+    return;
+  }
+
+  // เคลียร์ marker ทันทีไม่ว่าผลจะสำเร็จหรือไม่ กัน retry ซ้ำจาก reconnect ครั้งถัดไป (เงื่อนไขด้านล่าง
+  // deterministic อยู่แล้ว ถ้าล้มเหลวรอบนี้ก็จะล้มเหลวซ้ำแบบเดิมทุกรอบ ไม่ใช่ปัญหาชั่ววูบที่ retry ซ้ำแล้วจะผ่าน)
+  await clearWorkerPendingBreakReturn(workerId);
+
+  const queueEntry = await getWorkerQueueStatus(workerId);
+
+  if (!queueEntry || queueEntry.status !== WORKER_WORK_STATUS.OPEN_APP) {
+    return;
+  }
+
+  const [currentSchedule, currentAssignment] = await Promise.all([
+    workScheduleRepository.findCurrentByAccountId(workerId),
+    assignmentRepository.findCurrentAssignmentByWorker(workerId),
+  ]);
+
+  if (
+    !currentSchedule ||
+    currentSchedule.id !== pendingScheduleId ||
+    !isTimeInWorkSchedule(currentSchedule) ||
+    currentAssignment
+  ) {
+    return;
+  }
+
+  const queue = await enqueueWorker(workerId);
+  const workerCode = await profileRepository.findWorkerCodeByAccountId(workerId);
+
+  sendWorkerSocketEvent(workerId, "WORKER_STATUS_CHANGED", {
+    queue: buildWorkerQueueSocketPayload(queue, workerCode),
+    reason: "break_finished_requeue_retry",
+  });
+  publishAdminWorkerStatusChanged({
+    title: "Worker break finished (retry)",
+    message: `Worker ${workerCode ?? workerId} returned to queue after reconnecting within the same shift.`,
+    workerCode,
+    queue,
+    reason: "break_finished_requeue_retry",
+  });
+  await dispatchReadyWorkers();
 }
 
 // Function ประมวลผล assignment timeout job หนึ่งตัว (accept/scan/scan_warning/vendor_confirm/mobile_app_*)
@@ -1072,4 +1149,6 @@ export function startAssignmentTimeoutProcessing(): void {
 
     await handleWorkerBreakReturn({ workerId, scheduleId });
   });
+
+  registerBreakReturnRetryHandler(retryWorkerBreakReturnOnConnect);
 }

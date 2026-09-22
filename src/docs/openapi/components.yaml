@@ -1302,6 +1302,10 @@
           type: integer
           description: จำนวนชั่วโมงที่นับจำนวนครั้งพักสะสมของ Worker ก่อนรีเซ็ต
           example: 48
+        worker_break_retry:
+          type: integer
+          description: จำนวนนาทีสูงสุดหลังพักหมดเวลาที่ยอมให้ Worker ต่อ WebSocket กลับมาแล้ว requeue เข้าคิวอัตโนมัติ (เฉพาะกะเดิม) ถ้าเกินเวลานี้จะค้างสถานะ open_app ต้องกดออนไลน์เอง
+          example: 1
         worker_presence_stale_seconds:
           type: integer
           description: จำนวนวินาทีที่ไม่มี heartbeat แล้วถือว่า Worker ขาดการเชื่อมต่อ
@@ -1371,6 +1375,12 @@
           maximum: 168
           description: จำนวนชั่วโมงที่นับจำนวนครั้งพักสะสมของ Worker ก่อนรีเซ็ต
           example: 48
+        worker_break_retry:
+          type: integer
+          minimum: 1
+          maximum: 240
+          description: จำนวนนาทีสูงสุดหลังพักหมดเวลาที่ยอมให้ Worker ต่อ WebSocket กลับมาแล้ว requeue เข้าคิวอัตโนมัติ (เฉพาะกะเดิม) ถ้าเกินเวลานี้จะค้างสถานะ open_app ต้องกดออนไลน์เอง
+          example: 1
         worker_presence_stale_seconds:
           type: integer
           minimum: 1

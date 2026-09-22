@@ -8,6 +8,7 @@ export const REDIS_CONFIG = {
   workerPresenceKeyPrefix: requiredEnv("REDIS_WORKER_PRESENCE_KEY_PREFIX"),
   workerPresenceStaleSeconds: requiredNumberEnv("WORKER_PRESENCE_STALE_SECONDS"),
   workerBreakCountKeyPrefix: requiredEnv("REDIS_WORKER_BREAK_COUNT_KEY_PREFIX"),
+  workerBreakRetryKeyPrefix: requiredEnv("REDIS_WORKER_BREAK_RETRY_KEY_PREFIX"),
   assignmentTimeoutQueueName: requiredEnv("BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE"),
   workerBreakReturnQueueName: requiredEnv("BULLMQ_WORKER_BREAK_RETURN_QUEUE"),
   lineMessageQueueName: requiredEnv("BULLMQ_LINE_MESSAGE_QUEUE"),
@@ -16,12 +17,13 @@ export const REDIS_CONFIG = {
 /* -------------------------------------- Validation -------------------------------------- */
 
 assertDistinctValues(
-  "REDIS_WORKER_QUEUE_KEY, REDIS_WORKER_STATUS_KEY_PREFIX, REDIS_WORKER_PRESENCE_KEY_PREFIX, REDIS_WORKER_BREAK_COUNT_KEY_PREFIX",
+  "REDIS_WORKER_QUEUE_KEY, REDIS_WORKER_STATUS_KEY_PREFIX, REDIS_WORKER_PRESENCE_KEY_PREFIX, REDIS_WORKER_BREAK_COUNT_KEY_PREFIX, REDIS_WORKER_BREAK_RETRY_KEY_PREFIX",
   [
     REDIS_CONFIG.workerQueueKey,
     REDIS_CONFIG.workerStatusKeyPrefix,
     REDIS_CONFIG.workerPresenceKeyPrefix,
     REDIS_CONFIG.workerBreakCountKeyPrefix,
+    REDIS_CONFIG.workerBreakRetryKeyPrefix,
   ]
 );
 assertDistinctValues(

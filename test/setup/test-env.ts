@@ -48,6 +48,7 @@ export function applyIsolatedTestEnv(prefix = "test"): void {
   process.env.REDIS_WORKER_STATUS_KEY_PREFIX = `${prefix}:worker:status:`;
   process.env.REDIS_WORKER_PRESENCE_KEY_PREFIX = `${prefix}:worker:presence:`;
   process.env.REDIS_WORKER_BREAK_COUNT_KEY_PREFIX = `${prefix}:worker:break:`;
+  process.env.REDIS_WORKER_BREAK_RETRY_KEY_PREFIX = `${prefix}:worker:break-retry:`;
   // BullMQ queue name ห้ามมี ":" (validate จริงใน QueueBase) — route test ใช้ FakeQueue ที่ไม่เช็ค
   // format นี้เลยไม่เคยเจอปัญหา แต่ test ที่ต่อ Redis/BullMQ จริง (เช่น test/concurrency) ต้องใช้ชื่อ
   // ที่ผ่าน validation จริงได้ด้วย จึงใช้ "-" แทน ":" คั่น prefix

@@ -13,6 +13,7 @@ export const SEED_RUNTIME_SETTINGS = {
   worker_break_duration_minutes: 15,
   worker_break_limit: 4,
   worker_break_count_ttl_hours: 48,
+  worker_break_retry: 1,
   worker_presence_stale_seconds: 90,
   vendor_confirm_timeout_hours: 24,
   vendor_reconfirm_timeout_hours: 4,

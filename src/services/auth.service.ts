@@ -13,6 +13,7 @@ import { EMPTY_SECURITY_AUDIT_CONTEXT } from "../config/security-audit.config";
 import { getAccountPermissions } from "./shared/account-permission.service";
 import { performWorkerOfflineCascade } from "./worker.service";
 import { registerWorkerPushToken as registerWorkerPushTokenForSession, registerWorkerPushTokenForAccount, revokeWorkerPushTokensBySession, sendWorkerPushNotificationToSession } from "./shared/worker-push.service";
+import { sendAdminSseEventToSession } from "./notifications.service";
 import { diffChangedFields, writeSecurityAuditLog, writeSecurityAuditLogBestEffort } from "./shared/security-audit-log.service";
 // Import Utils
 import { disconnectWorkerSocket, sendWorkerSocketEvent } from "../websockets/worker.socket";
@@ -427,7 +428,7 @@ export async function login(
       deviceName: getDefaultSessionDeviceName(account),
     };
 
-    return withTransaction(async (transaction) => {
+    const { authResponse, revokedSessionId } = await withTransaction(async (transaction) => {
       // ล็อกแถว Account ก่อนเช็ค Active Session เดิม กัน race ระหว่าง login พร้อมกันสองคำขอที่ต่างฝ่าย
       // ต่างเห็น session เดิมก่อนอีกฝ่าย commit แล้วจบด้วยการมี active session มากกว่า 1 session พร้อมกัน
       await transaction.$queryRaw`SELECT id FROM accounts WHERE id = ${account.id} FOR UPDATE`;
@@ -464,8 +465,31 @@ export async function login(
         transaction
       );
 
-      return buildAuthSuccessResponse(tokens);
+      return {
+        authResponse: buildAuthSuccessResponse(tokens),
+        revokedSessionId: activeSession?.id ?? null,
+      };
     });
+
+    // แจ้ง session เดิมหลัง commit สำเร็จจริงเท่านั้น เพื่อไม่ให้ session เดิมถูกหลอกว่าโดน revoke ไปแล้วทั้งที่
+    // transaction อาจ fail และ session เดิมยังใช้งานได้จริงอยู่ — best-effort ล้วนๆ ห้ามให้ error ตรงนี้ทำให้ login
+    // เครื่องใหม่ล้ม (REST ของ session เดิมยังคง 401 INVALID_TOKEN ตามปกติจาก sessionMiddleware ไม่ว่า SSE จะส่งสำเร็จหรือไม่)
+    if (revokedSessionId) {
+      try {
+        sendAdminSseEventToSession(revokedSessionId, "SESSION_REVOKED", {
+          reason: "LOGIN_FROM_ANOTHER_DEVICE",
+          message: "บัญชีนี้มีการเข้าสู่ระบบจากเครื่องอื่น",
+        });
+      } catch (error) {
+        logger.warn("Failed to notify previous admin session after login.", {
+          error,
+          accountId: account.id,
+          sessionId: revokedSessionId,
+        });
+      }
+    }
+
+    return authResponse;
   }
 
   const matchedWorker = worker as MasterWorkerDto;

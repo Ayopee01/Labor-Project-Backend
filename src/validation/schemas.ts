@@ -942,6 +942,7 @@ export const updateSystemSettingsBodySchema = z
     worker_break_duration_minutes: z.coerce.number().int().positive().max(240).optional(),
     worker_break_limit: z.coerce.number().int().min(0).max(20).optional(),
     worker_break_count_ttl_hours: z.coerce.number().int().positive().max(168).optional(),
+    worker_break_retry: z.coerce.number().int().positive().max(240).optional(),
     worker_presence_stale_seconds: z.coerce.number().int().positive().max(3600).optional(),
     vendor_confirm_timeout_hours: z.coerce.number().int().positive().max(168).optional(),
     vendor_reconfirm_timeout_hours: z.coerce.number().int().positive().max(168).optional(),
@@ -1077,6 +1078,10 @@ export const runtimeSettingsSchema = z.object({
     .int()
     .min(0),
   worker_break_count_ttl_hours: z.coerce
+    .number()
+    .int()
+    .positive(),
+  worker_break_retry: z.coerce
     .number()
     .int()
     .positive(),

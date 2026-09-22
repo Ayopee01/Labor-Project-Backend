@@ -48,6 +48,7 @@ jobs:
       REDIS_WORKER_STATUS_KEY_PREFIX: "ci:worker:status:"
       REDIS_WORKER_PRESENCE_KEY_PREFIX: "ci:worker:presence:"
       REDIS_WORKER_BREAK_COUNT_KEY_PREFIX: "ci:worker:break-count:"
+      REDIS_WORKER_BREAK_RETRY_KEY_PREFIX: "ci:worker:break-retry:"
       WORKER_PRESENCE_STALE_SECONDS: 90
       BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE: ci-assignment-timeouts
       BULLMQ_WORKER_BREAK_RETURN_QUEUE: ci-worker-break-returns

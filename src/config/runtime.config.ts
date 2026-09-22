@@ -18,6 +18,7 @@ export const RUNTIME_SETTING_KEYS = [
   "worker_break_duration_minutes",
   "worker_break_limit",
   "worker_break_count_ttl_hours",
+  "worker_break_retry",
   "worker_presence_stale_seconds",
   "vendor_confirm_timeout_hours",
   "vendor_reconfirm_timeout_hours",

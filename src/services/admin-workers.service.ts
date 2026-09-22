@@ -1178,6 +1178,17 @@ export async function forceAdminWorkerStatus(
     current_assignment: latestAssignmentPayload,
     reason: "admin_force_status",
   });
+  // แจ้ง Worker แยกจาก WORKER_STATUS_CHANGED (event นั้นไม่ push FCM เพราะยิงบ่อยจากหลาย flow) —
+  // เคสนี้ต้องการให้ worker รู้ตัวชัดๆ ว่าแอดมินเปลี่ยนสถานะให้ ไม่ใช่แค่ sync state เงียบๆ
+  sendWorkerSocketEvent(
+    worker.id,
+    "WORKER_STATUS_FORCED_BY_ADMIN",
+    {
+      status: input.status,
+      reason_text: input.reason_text ?? null,
+    },
+    { push: true }
+  );
   publishAdminWorkerStatusChanged({
     title: "Worker status forced",
     message: `Worker ${latest.full_name ?? latest.worker_code} status was forced by admin.`,

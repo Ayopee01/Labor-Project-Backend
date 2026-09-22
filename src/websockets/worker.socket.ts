@@ -48,6 +48,18 @@ const disconnectTimers = new Map<number, NodeJS.Timeout>();
 let workerWebSocketServer: WebSocketServer | null = null;
 let heartbeatInterval: NodeJS.Timeout | null = null;
 
+// Handler สำหรับ retry auto break-return ตอน worker ต่อ socket กลับมา — ลงทะเบียนจาก worker-dispatch.ts
+// ตอน bootstrap แทนการ import ตรงๆ เพราะ worker-dispatch.ts import จากไฟล์นี้อยู่แล้ว (isWorkerSocketConnected,
+// sendWorkerSocketEvent) import ย้อนกลับตรงๆ จะเกิด circular import
+let breakReturnRetryHandler: ((accountId: number) => Promise<void>) | null = null;
+
+// Function ลงทะเบียน handler สำหรับ retry auto break-return ตอน worker ต่อ socket กลับมา
+export function registerBreakReturnRetryHandler(
+  handler: (accountId: number) => Promise<void>
+): void {
+  breakReturnRetryHandler = handler;
+}
+
 // Config event ของ Worker WebSocket ที่ต้องส่ง FCM push เพิ่มด้วย
 const PUSH_WORKER_SOCKET_EVENTS = new Set<WorkerSocketEventType>([
   "WORKER_ASSIGNED",
@@ -62,6 +74,8 @@ const PUSH_WORKER_SOCKET_EVENTS = new Set<WorkerSocketEventType>([
   "STALL_JOB_CANCELLED",
   "MARKET_JOB_CANCELLED",
   "VEHICLE_JOB_CANCELLED",
+  "WORKER_BREAK_RETURN_ACTION_REQUIRED",
+  "WORKER_STATUS_FORCED_BY_ADMIN",
 ]);
 
 /* -------------------------------------- Functions -------------------------------------- */
@@ -410,6 +424,10 @@ function buildWorkerPushTitle(type: WorkerSocketEventType): string {
       return "Ticket result updated";
     case "SESSION_REVOKED":
       return "Signed in on another device";
+    case "WORKER_BREAK_RETURN_ACTION_REQUIRED":
+      return "Open the app to return to the queue";
+    case "WORKER_STATUS_FORCED_BY_ADMIN":
+      return "Your status was changed by admin";
     default:
       return "Worker notification";
   }
@@ -456,6 +474,15 @@ function buildWorkerPushMessage(
       return "Vendor confirmation result is available.";
     case "SESSION_REVOKED":
       return "This session was signed out because login was confirmed on another device.";
+    case "WORKER_BREAK_RETURN_ACTION_REQUIRED":
+      return "Your break has ended. Open the app and go online to return to the queue.";
+    case "WORKER_STATUS_FORCED_BY_ADMIN": {
+      const status = typeof payload.status === "string" ? payload.status : null;
+
+      return status
+        ? `Your status was changed to ${status} by admin.`
+        : "Your status was changed by admin.";
+    }
     default:
       return "A worker notification is available.";
   }
@@ -487,6 +514,12 @@ async function handleWorkerSocketConnected(accountId: number): Promise<void> {
   });
 
   await publishWorkerConnectionChanged(accountId, true, "socket_connected");
+
+  if (breakReturnRetryHandler) {
+    await breakReturnRetryHandler(accountId).catch((error: unknown) => {
+      logger.error("Failed to retry worker break return after reconnect.", { error });
+    });
+  }
 }
 
 // Function ตั้งค่า worker web socket ใน Worker WebSocket

@@ -196,6 +196,9 @@ export const workerSocketMock = {
       payload,
     });
   },
+  // No-op ใน test — retry-on-reconnect จริงถูกทดสอบแยกผ่านการเรียก retryWorkerBreakReturnOnConnect
+  // ตรงๆ ไม่ผ่าน mock socket connection event
+  registerBreakReturnRetryHandler: (_handler: (accountId: number) => Promise<void>) => undefined,
 };
 
 export const notificationQueueMock = {

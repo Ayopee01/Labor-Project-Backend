@@ -64,6 +64,11 @@ function buildWorkerBreakCountKey(accountId: number, shiftInstanceKey: string): 
   return `${REDIS_CONFIG.workerBreakCountKeyPrefix}${accountId}:${shiftInstanceKey}`;
 }
 
+// Function สร้าง worker pending break-retry key ใน Redis/BullMQ queue
+function buildWorkerBreakRetryKey(accountId: number): string {
+  return `${REDIS_CONFIG.workerBreakRetryKeyPrefix}${accountId}`;
+}
+
 // Function แปลง queue status ใน Redis/BullMQ queue
 function mapQueueStatus(
   accountId: number,
@@ -420,6 +425,40 @@ export async function decrementWorkerBreakCount(
   shiftInstanceKey: string
 ): Promise<void> {
   await redis.decr(buildWorkerBreakCountKey(accountId, shiftInstanceKey));
+}
+
+// Function ตั้ง pending marker ไว้ตอน auto break-return fallback เป็น open_app เพราะ socket ไม่ connected
+// เก็บ scheduleId ของกะที่พักอยู่ไว้เทียบตอน worker ต่อ socket กลับมา — TTL จำกัดเป็นหน้าต่างเวลาที่ยอม
+// retry เท่านั้น (ไม่ใช่ทั้งกะ) กันกรณี schedule.id ตรงกันข้ามวันถัดไป (recurring schedule) แต่ไม่ใช่กะเดียวกันจริง
+export async function markWorkerPendingBreakReturn(
+  accountId: number,
+  scheduleId: number,
+  ttlSeconds: number
+): Promise<void> {
+  if (ttlSeconds <= 0) {
+    return;
+  }
+
+  const key = buildWorkerBreakRetryKey(accountId);
+
+  await redis.hset(key, {
+    schedule_id: String(scheduleId),
+  });
+  await redis.expire(key, ttlSeconds);
+}
+
+// Function ดึง scheduleId ที่ค้าง pending break-retry อยู่ของ worker ใน Redis/BullMQ queue
+export async function getWorkerPendingBreakReturnScheduleId(
+  accountId: number
+): Promise<number | null> {
+  const value = await redis.hgetall(buildWorkerBreakRetryKey(accountId));
+
+  return value.schedule_id ? Number(value.schedule_id) : null;
+}
+
+// Function ล้าง pending break-retry ของ worker ใน Redis/BullMQ queue
+export async function clearWorkerPendingBreakReturn(accountId: number): Promise<void> {
+  await redis.del(buildWorkerBreakRetryKey(accountId));
 }
 
 // Function ตั้งเวลา delayed job assignment timeout ใน Redis/BullMQ queue

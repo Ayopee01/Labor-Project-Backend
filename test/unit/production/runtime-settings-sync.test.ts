@@ -33,6 +33,7 @@ const FULL_SETTINGS_ROW = [
   { key: "worker_break_duration_minutes", value: "15" },
   { key: "worker_break_limit", value: "4" },
   { key: "worker_break_count_ttl_hours", value: "48" },
+  { key: "worker_break_retry", value: "1" },
   { key: "worker_presence_stale_seconds", value: "90" },
   { key: "vendor_confirm_timeout_hours", value: "24" },
   { key: "vendor_reconfirm_timeout_hours", value: "4" },

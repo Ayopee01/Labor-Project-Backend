@@ -186,6 +186,7 @@ const requestKeyMap: Record<string, string> = {
   WorkerBreakCountTtlHours: "worker_break_count_ttl_hours",
   WorkerBreakDurationMinutes: "worker_break_duration_minutes",
   WorkerBreakLimit: "worker_break_limit",
+  WorkerBreakRetry: "worker_break_retry",
   WorkerCode: "worker_code",
   WorkerCodes: "worker_codes",
   WorkerPresenceStaleSeconds: "worker_presence_stale_seconds",

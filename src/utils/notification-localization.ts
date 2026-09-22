@@ -32,6 +32,7 @@ const WORKER_NOTIFICATION_KEYS: Record<string, string> = {
   MARKET_JOB_CANCELLED: "job.market_cancelled",
   VEHICLE_JOB_CANCELLED: "job.vehicle_cancelled",
   SESSION_REVOKED: "auth.session_revoked",
+  WORKER_BREAK_RETURN_ACTION_REQUIRED: "worker.break_return_action_required",
   APP_VERSION_UPDATE: "app.version_update",
   APP_VERSION_FORCE_UPDATE: "app.version_force_update",
 };
@@ -66,6 +67,20 @@ function resolveTicketResultKey(params: Record<string, unknown>): string {
   return "ticket.completion_result";
 }
 
+function resolveForcedStatusKey(params: Record<string, unknown>): string {
+  const status = String(params.status ?? "").toLowerCase();
+
+  if (status === "ready") {
+    return "worker.status_forced_ready";
+  }
+
+  if (status === "break") {
+    return "worker.status_forced_break";
+  }
+
+  return "worker.status_forced_open_app";
+}
+
 function normalizeNotificationLang(value?: string | null): NotificationLang {
   const lang = String(value ?? "").trim().toUpperCase();
 
@@ -95,6 +110,10 @@ function resolveWorkerNotificationKey(
 
   if (type === "TICKET_COMPLETION_RESULT") {
     return resolveTicketResultKey(params);
+  }
+
+  if (type === "WORKER_STATUS_FORCED_BY_ADMIN") {
+    return resolveForcedStatusKey(params);
   }
 
   return WORKER_NOTIFICATION_KEYS[type] ?? "worker.notification";
@@ -161,6 +180,28 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
     "auth.session_revoked": (params) => ({
       title: "บัญชีถูกเข้าสู่ระบบจากอุปกรณ์อื่น",
       message: `Session นี้ถูกออกจากระบบ เนื่องจากมีการยืนยันเข้าสู่ระบบจาก ${text(params.new_device_name, "อุปกรณ์อื่น")}`,
+    }),
+    "worker.break_return_action_required": () => ({
+      title: "หมดเวลาพัก",
+      message: "หมดเวลาพักแล้ว กรุณาเปิดแอปเพื่อกลับเข้าคิวงาน",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "แอดมินเปลี่ยนสถานะของคุณ",
+      message: params.reason_text
+        ? `แอดมินเพิ่มคุณเข้าคิวงานแล้ว เหตุผล: ${text(params.reason_text)}`
+        : "แอดมินเพิ่มคุณเข้าคิวงานแล้ว",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "แอดมินเปลี่ยนสถานะของคุณ",
+      message: params.reason_text
+        ? `แอดมินเปลี่ยนสถานะของคุณเป็นไม่อยู่ในคิวงาน เหตุผล: ${text(params.reason_text)}`
+        : "แอดมินเปลี่ยนสถานะของคุณเป็นไม่อยู่ในคิวงาน",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "แอดมินเปลี่ยนสถานะของคุณ",
+      message: params.reason_text
+        ? `แอดมินให้คุณพักงาน เหตุผล: ${text(params.reason_text)}`
+        : "แอดมินให้คุณพักงาน",
     }),
     "app.version_update": (params) => ({
       title: "มีแอปพลิเคชันเวอร์ชันใหม่",
@@ -238,6 +279,28 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
       title: "အကောင့်ကို အခြားစက်မှ ဝင်ရောက်ထားပါသည်",
       message: `${text(params.new_device_name, "အခြားစက်")} မှ ဝင်ရောက်မှုကို အတည်ပြုထားသောကြောင့် ဤ session မှ ထွက်ထားပါသည်။`,
     }),
+    "worker.break_return_action_required": () => ({
+      title: "နားနေချိန် ကုန်ဆုံးပါပြီ",
+      message: "နားနေချိန် ကုန်ဆုံးပါပြီ။ အလုပ်တန်းစီစဉ်သို့ ပြန်ဝင်ရောက်ရန် အက်ပ်ကို ဖွင့်ပါ။",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "Admin မှ သင့်အခြေအနေကို ပြောင်းလဲထားပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို အလုပ်တန်းစီစဉ်သို့ ပြန်ထည့်ပေးလိုက်ပါပြီ။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : "Admin မှ သင့်ကို အလုပ်တန်းစီစဉ်သို့ ပြန်ထည့်ပေးလိုက်ပါပြီ။",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "Admin မှ သင့်အခြေအနေကို ပြောင်းလဲထားပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်အခြေအနေကို အလုပ်တန်းစီစဉ်တွင် မပါဝင်တော့ဟု ပြောင်းလဲထားပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : "Admin မှ သင့်အခြေအနေကို အလုပ်တန်းစီစဉ်တွင် မပါဝင်တော့ဟု ပြောင်းလဲထားပါသည်။",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "Admin မှ သင့်အခြေအနေကို ပြောင်းလဲထားပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို နားနေခွင့် ပေးလိုက်ပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : "Admin မှ သင့်ကို နားနေခွင့် ပေးလိုက်ပါသည်။",
+    }),
     "app.version_update": (params) => ({
       title: "အက်ပလီကေးရှင်း ဗားရှင်းအသစ် ရရှိနိုင်ပါပြီ",
       message: params.force_update_date
@@ -314,6 +377,28 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
       title: "គណនីបានចូលពីឧបករណ៍ផ្សេង",
       message: `Session នេះត្រូវបានចេញ ព្រោះបានបញ្ជាក់ការចូលពី ${text(params.new_device_name, "ឧបករណ៍ផ្សេង")}`,
     }),
+    "worker.break_return_action_required": () => ({
+      title: "ការសម្រាកបានផុតកំណត់ហើយ",
+      message: "ការសម្រាករបស់អ្នកបានផុតកំណត់ហើយ សូមបើកកម្មវិធីដើម្បីត្រឡប់ទៅជួរការងារវិញ",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នក",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានបញ្ចូលអ្នកទៅក្នុងជួរការងារវិញ។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : "អ្នកគ្រប់គ្រងបានបញ្ចូលអ្នកទៅក្នុងជួរការងារវិញ",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នក",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នកទៅជាមិននៅក្នុងជួរការងារ។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នកទៅជាមិននៅក្នុងជួរការងារ",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នក",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានផ្តល់ការសម្រាកដល់អ្នក។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : "អ្នកគ្រប់គ្រងបានផ្តល់ការសម្រាកដល់អ្នក",
+    }),
     "app.version_update": (params) => ({
       title: "កម្មវិធីមានកំណែថ្មី",
       message: params.force_update_date
@@ -389,6 +474,28 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
     "auth.session_revoked": (params) => ({
       title: "Signed in on another device",
       message: `This session was signed out because login was confirmed on ${text(params.new_device_name, "another device")}.`,
+    }),
+    "worker.break_return_action_required": () => ({
+      title: "Break ended",
+      message: "Your break has ended. Open the app to return to the queue.",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "Your status was changed by admin",
+      message: params.reason_text
+        ? `Admin added you back to the job queue. Reason: ${text(params.reason_text)}`
+        : "Admin added you back to the job queue.",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "Your status was changed by admin",
+      message: params.reason_text
+        ? `Admin changed your status to not in queue. Reason: ${text(params.reason_text)}`
+        : "Admin changed your status to not in queue.",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "Your status was changed by admin",
+      message: params.reason_text
+        ? `Admin put you on break. Reason: ${text(params.reason_text)}`
+        : "Admin put you on break.",
     }),
     "app.version_update": (params) => ({
       title: "New app version available",
