@@ -694,7 +694,11 @@ export async function scheduleWorkerBreakReturn(
   await workerBreakReturnQueue.add(
     "worker-break-return",
     {
-      accountId,
+      // key ต้องชื่อ workerId ให้ตรงกับที่ startWorkerBreakReturnWorker (worker-dispatch.ts) destructure —
+      // เดิมใช้ accountId ทำให้ workerId เป็น undefined เสมอตอน consume แล้ว handleWorkerBreakReturn
+      // return เงียบๆ ทันทีที่ getWorkerQueueStatus(undefined) ไม่เจอ entry (บั๊กทำให้ auto-return-from-break
+      // ทั้งระบบไม่ทำงานเลย ไม่ requeue ไม่ push แจ้งเตือนอะไรทั้งสิ้น)
+      workerId: accountId,
       scheduleId,
       kind: "break_return",
     },
@@ -718,7 +722,9 @@ export async function scheduleWorkerShiftEnd(
   await workerBreakReturnQueue.add(
     "worker-shift-end",
     {
-      accountId,
+      // key ต้องชื่อ workerId เหตุผลเดียวกับ scheduleWorkerBreakReturn ด้านบน — accountId เดิมทำให้
+      // handleWorkerShiftEnd ได้ workerId เป็น undefined เสมอ auto-eject worker ตอนหมดกะไม่ทำงาน
+      workerId: accountId,
       scheduleId,
       shiftInstanceKey,
       kind: "shift_end",

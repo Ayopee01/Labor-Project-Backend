@@ -3522,12 +3522,16 @@ test("break return moves worker to open_app when WebSocket is still disconnected
 
   assert.ok(breakReturnProcessor);
   assert.ok(assignmentTimeoutProcessor);
-  await breakReturnProcessor({
-    data: {
-      workerId: worker.id,
-      scheduleId: worker.id,
-    },
-  });
+
+  // ดึง job ที่ POST /api/workers/me/break ข้างบน schedule ไว้จริงผ่าน scheduleWorkerBreakReturn มา
+  // process ตรงๆ (ไม่สร้าง job data ขึ้นมาเอง) เพื่อให้ test นี้จับ mismatch ระหว่าง key ที่ schedule ใส่
+  // กับ key ที่ startWorkerBreakReturnWorker destructure ได้จริง ถ้าสองฝั่งไม่ตรงกันอีกในอนาคต
+  const scheduledJob = state.queueJobs
+    .get(breakQueueName)
+    ?.get(`worker-break-return-${worker.id}-${worker.id}`);
+
+  assert.ok(scheduledJob, "expected /api/workers/me/break to schedule a worker-break-return job");
+  await breakReturnProcessor({ data: scheduledJob.data });
 
   assert.equal((await workerQueue.getWorkerQueueStatus(worker.id))?.status, "open_app");
   assert.equal(
