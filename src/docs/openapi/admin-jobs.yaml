@@ -49,6 +49,9 @@
       summary: บังคับเปลี่ยนสถานะ Worker
       description: >
         Admin ใช้แก้สถานะ Worker เมื่อหน้างานผิดปกติ ระบบตรวจเงื่อนไขงานที่ค้างและบันทึกเหตุผลลง audit log
+        การ force ไปเป็น open_app ทำได้เสมอไม่ว่า Worker จะเปิด WebSocket อยู่หรือไม่ (เช่น worker ติดอยู่ในคิว
+        เพราะ socket หลุด แต่ยังไม่ครบจำนวนครั้งที่ระบบจะดีดออกจากคิวเองอัตโนมัติ) ส่วนการ force ไปเป็น ready
+        หรือ break ยังคงต้องการให้ Worker เปิด WebSocket อยู่เสมอ
       operationId: forceAdminJobWorkerStatus
       security:
         - bearerAuth: []
@@ -88,7 +91,9 @@
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: Worker ไม่ได้ online อยู่ มี assignment ที่ active อยู่แล้ว หรือพักครบจำนวนครั้งที่กำหนดแล้ว
+          description: >-
+            Worker ไม่ได้ online อยู่ (WORKER_NOT_ONLINE — เกิดเฉพาะตอน force ไปเป็น ready หรือ break เท่านั้น
+            ไม่เกิดตอน force ไปเป็น open_app), มี assignment ที่ active อยู่แล้ว หรือพักครบจำนวนครั้งที่กำหนดแล้ว
           content:
             application/json:
               schema:

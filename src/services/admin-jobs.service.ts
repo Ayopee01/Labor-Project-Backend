@@ -20,7 +20,7 @@ import * as ticketWorkerRepository from "../repositories/shared/ticket-worker.re
 import * as ticketJobRepository from "../repositories/shared/ticket-job.repository";
 import * as workScheduleRepository from "../repositories/shared/work-schedule.repository";
 // Import Services
-import { publishNotification } from "./notifications.service";
+import { publishAdminWorkerStatusChanged, publishNotification } from "./notifications.service";
 import { publishRealtimeEvent } from "./shared/realtime-notification.service";
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import * as ticketJobLifecycleService from "./shared/ticket-job-lifecycle.service";
@@ -1680,6 +1680,27 @@ async function cancelTicketJobAndRequeue(
       reason: "vehicle_job_cancelled_shift_ended",
     });
   }
+  if (openAppWorkerIds.length > 0) {
+    // แจ้ง Admin SSE ทีละคนสำหรับกลุ่มที่หมดกะไปแล้ว (ต่างจาก requeuedWorkerIds ที่กลับ ready ปกติ) —
+    // publishRealtimeEvent ของ VEHICLE_JOB_CANCELLED ด้านล่างไม่มี per-worker queue snapshot ให้ตาราง
+    // worker status ฝั่ง Admin dashboard refresh ได้
+    const openAppWorkerCodeMap = await profileRepository.findWorkerCodeMapByAccountIds(
+      openAppWorkerIds,
+    );
+
+    for (const workerId of openAppWorkerIds) {
+      const workerCode = openAppWorkerCodeMap.get(workerId) ?? null;
+      const queue = await getWorkerQueueStatus(workerId);
+
+      publishAdminWorkerStatusChanged({
+        title: "Worker moved to open_app",
+        message: `Worker ${workerCode ?? workerId} moved to open_app after vehicle job cancellation because the shift already ended.`,
+        workerCode,
+        queue,
+        reason: "vehicle_job_cancelled_shift_ended",
+      });
+    }
+  }
   publishRealtimeEvent({
     type: "VEHICLE_JOB_CANCELLED",
     title: "Vehicle job cancelled",
@@ -2095,7 +2116,7 @@ async function cancelAssignment(
   await removeAssignmentTimeout(assignment.id);
   await removeScanTimeout(assignment.id);
   await removeScanWarning(assignment.id);
-  await markWorkerOpenApp(assignment.worker_id);
+  const queue = await markWorkerOpenApp(assignment.worker_id);
   const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
     assignment.vehicle_job_id,
   );
@@ -2103,6 +2124,15 @@ async function cancelAssignment(
   sendWorkerSocketEvent(assignment.worker_id, "ASSIGNMENT_CANCELLED", {
     ticketNumber: ticketJob?.ticket_number ?? null,
     ticketNos,
+    reason: "admin_cancel_assignment",
+  });
+  // แจ้ง Admin SSE แยกจาก ASSIGNMENT_CANCELLED ด้านบน (event นั้นไม่มี queue snapshot ของ worker) —
+  // ให้ตาราง worker status ฝั่ง Admin dashboard refresh ทันทีแบบเดียวกับจุดอื่นที่ worker กลับไป open_app
+  publishAdminWorkerStatusChanged({
+    title: "Worker moved to open_app",
+    message: `Worker ${workerCode} moved to open_app after admin cancelled the assignment.`,
+    workerCode,
+    queue,
     reason: "admin_cancel_assignment",
   });
 

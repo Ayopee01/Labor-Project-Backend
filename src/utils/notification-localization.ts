@@ -33,6 +33,7 @@ const WORKER_NOTIFICATION_KEYS: Record<string, string> = {
   VEHICLE_JOB_CANCELLED: "job.vehicle_cancelled",
   SESSION_REVOKED: "auth.session_revoked",
   WORKER_BREAK_RETURN_ACTION_REQUIRED: "worker.break_return_action_required",
+  WORKER_BREAK_RETRY_EXPIRED: "worker.break_retry_expired",
   APP_VERSION_UPDATE: "app.version_update",
   APP_VERSION_FORCE_UPDATE: "app.version_force_update",
 };
@@ -185,6 +186,10 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
       title: "หมดเวลาพัก",
       message: "หมดเวลาพักแล้ว กรุณาเปิดแอปเพื่อกลับเข้าคิวงาน",
     }),
+    "worker.break_retry_expired": () => ({
+      title: "เลยเวลาที่กำหนด",
+      message: "คุณไม่ได้กลับเข้าคิวภายในเวลาที่กำหนด กรุณาติดต่อ Admin",
+    }),
     "worker.status_forced_ready": (params) => ({
       title: "แอดมินเปลี่ยนสถานะของคุณ",
       message: params.reason_text
@@ -282,6 +287,10 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
     "worker.break_return_action_required": () => ({
       title: "နားနေချိန် ကုန်ဆုံးပါပြီ",
       message: "နားနေချိန် ကုန်ဆုံးပါပြီ။ အလုပ်တန်းစီစဉ်သို့ ပြန်ဝင်ရောက်ရန် အက်ပ်ကို ဖွင့်ပါ။",
+    }),
+    "worker.break_retry_expired": () => ({
+      title: "သတ်မှတ်ချိန် ကျော်လွန်သွားပါပြီ",
+      message: "အချိန်ကုန်ဆုံးချိန်အတွင်း သင် အလုပ်တန်းစီစဉ်သို့ ပြန်မရောက်ရှိခဲ့ပါ။ ကျေးဇူးပြု၍ Admin ကို ဆက်သွယ်ပါ။",
     }),
     "worker.status_forced_ready": (params) => ({
       title: "Admin မှ သင့်အခြေအနေကို ပြောင်းလဲထားပါသည်",
@@ -381,6 +390,10 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
       title: "ការសម្រាកបានផុតកំណត់ហើយ",
       message: "ការសម្រាករបស់អ្នកបានផុតកំណត់ហើយ សូមបើកកម្មវិធីដើម្បីត្រឡប់ទៅជួរការងារវិញ",
     }),
+    "worker.break_retry_expired": () => ({
+      title: "លើសពេលកំណត់ហើយ",
+      message: "អ្នកមិនបានត្រឡប់ទៅជួរការងារវិញក្នុងពេលកំណត់ទេ សូមទាក់ទង Admin",
+    }),
     "worker.status_forced_ready": (params) => ({
       title: "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នក",
       message: params.reason_text
@@ -478,6 +491,10 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
     "worker.break_return_action_required": () => ({
       title: "Break ended",
       message: "Your break has ended. Open the app to return to the queue.",
+    }),
+    "worker.break_retry_expired": () => ({
+      title: "Retry window expired",
+      message: "You did not return to the queue in time. Please contact Admin.",
     }),
     "worker.status_forced_ready": (params) => ({
       title: "Your status was changed by admin",

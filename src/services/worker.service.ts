@@ -61,16 +61,18 @@ export async function checkMobileAppVersion(query: unknown) {
   return checkMobileAppVersionForClient(query);
 }
 
-// Function เติม break_count_used/break_count_limit ลงใน queue entry
+// Function เติม break_count_used/break_count_limit/break_duration_minutes ลงใน queue entry
 function withBreakUsage(
   queueEntry: WorkerQueueEntryDto,
   breakCountUsed: number,
   breakLimit: number,
+  breakDurationMinutes: number,
 ): WorkerQueueEntryDto {
   return {
     ...queueEntry,
     break_count_used: breakCountUsed,
     break_count_limit: breakLimit,
+    break_duration_minutes: breakDurationMinutes,
   };
 }
 
@@ -940,6 +942,7 @@ export async function workerBreak(
     breakEntry,
     breakCountUsed,
     settings.worker_break_limit,
+    settings.worker_break_duration_minutes,
   );
   const workerCode = account.labor_code;
   sendWorkerSocketEvent(account.id, "WORKER_STATUS_CHANGED", {
@@ -959,6 +962,7 @@ export async function workerBreak(
     status: resolveWorkerWorkStatus(breakQueueEntry, null),
     break_count_used: breakCountUsed,
     break_count_limit: settings.worker_break_limit,
+    break_duration_minutes: settings.worker_break_duration_minutes,
   };
 }
 
@@ -1006,6 +1010,7 @@ export async function getWorkerStatus(
     status,
     ...dailySummary,
     break_count_limit: settings.worker_break_limit,
+    break_duration_minutes: settings.worker_break_duration_minutes,
     nationality: account.nationality,
     work_start_date: account.work_start_date,
     phone: account.telephone,
@@ -1615,6 +1620,16 @@ async function handleExpiredScanOutcome(
     audience: {
       roles: ["admin"],
     },
+  });
+  // แจ้ง WORKER_STATUS_CHANGED แยกจาก ASSIGNMENT_TIMEOUT ด้านบนด้วย ให้ตรง pattern เดียวกับจุดอื่นที่
+  // worker กลับไป open_app (เช่น handleAssignmentScanTimeout ฝั่ง worker-dispatch.ts ที่ path นี้ไม่ได้ผ่าน
+  // เพราะเป็นคนละ entry point — ฝั่งนี้ worker เรียก API เองมาเจอว่าหมดเวลาไปแล้ว)
+  publishAdminWorkerStatusChanged({
+    title: "Worker moved to open_app",
+    message: `Worker ${workerCode ?? account.id} moved to open_app after QR scan timed out.`,
+    workerCode,
+    queue,
+    reason: "scan_timeout",
   });
 
   throw new ApiError(409, "QR_EXPIRED", "Worker QR scan time expired.");

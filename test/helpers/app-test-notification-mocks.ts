@@ -26,6 +26,21 @@ export const notificationServiceMock = {
       worker_payload: event.worker_payload ?? event.payload ?? {},
     }),
   resolveTicketResultAudience,
+  // Function จำลอง sendAdminSseEventToSession จริงใน notifications.service.ts — บันทึกลง state.notifications
+  // เหมือน publish อื่นๆ (ไม่จำลอง in-memory SSE client map จริง) คืน true เสมอเหมือนกรณีเจอ client
+  sendAdminSseEventToSession: (
+    sessionId: number,
+    eventName: string,
+    data: unknown,
+  ) => {
+    state.notifications.push({
+      type: eventName,
+      session_id: sessionId,
+      payload: data,
+    });
+
+    return true;
+  },
   publishAdminWorkerStatusChanged: (event: {
     title: string;
     message: string;

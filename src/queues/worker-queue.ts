@@ -760,6 +760,50 @@ export async function removeWorkerBreakReturn(
   }
 }
 
+// Function ตั้ง delayed job แจ้งเตือน worker + admin ตอนหน้าต่างเวลา worker_break_retry หมดอายุโดยที่
+// worker ยังไม่กลับมาต่อ socket เลย — delay เท่ากับ TTL เดียวกับ marker ที่ markWorkerPendingBreakReturn
+// ตั้งไว้ ให้ยิงพร้อมกันพอดี (ดู handleWorkerBreakReturn/retryWorkerBreakReturnOnConnect ใน worker-dispatch.ts)
+export async function scheduleWorkerBreakRetryExpiry(
+  workerId: number,
+  scheduleId: number,
+  delayMs: number
+): Promise<void> {
+  if (delayMs <= 0) {
+    return;
+  }
+
+  await removeWorkerBreakRetryExpiry(workerId, scheduleId);
+  await workerBreakReturnQueue.add(
+    "worker-break-retry-expired",
+    {
+      workerId,
+      scheduleId,
+      kind: "break_retry_expired",
+    },
+    {
+      delay: delayMs,
+      jobId: `worker-break-retry-expired-${workerId}-${scheduleId}`,
+      removeOnComplete: true,
+      removeOnFail: 100,
+    }
+  );
+}
+
+// Function ลบ delayed job แจ้งเตือนหน้าต่างเวลา worker_break_retry หมดอายุ ใน Redis/BullMQ queue — เรียก
+// ตอน worker กลับมาต่อ socket ทันเวลาแล้ว (ไม่ต้องแจ้ง "กรุณาติดต่อ Admin" อีก)
+export async function removeWorkerBreakRetryExpiry(
+  workerId: number,
+  scheduleId: number
+): Promise<void> {
+  const job = await workerBreakReturnQueue.getJob(
+    `worker-break-retry-expired-${workerId}-${scheduleId}`
+  );
+
+  if (job) {
+    await job.remove();
+  }
+}
+
 // Function เริ่ม assignment timeout worker ใน Redis/BullMQ queue
 export function startAssignmentTimeoutWorker(
   handler: (data: AssignmentTimeoutJobData) => Promise<void>

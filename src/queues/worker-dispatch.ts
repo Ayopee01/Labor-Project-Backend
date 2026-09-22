@@ -26,7 +26,7 @@ import { WORKER_ASSIGNMENT_EVENT_TYPE } from "../types/shared/worker-assignment-
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 // Import Utils
 import { isWorkerSocketConnected, registerBreakReturnRetryHandler, sendWorkerSocketEvent } from "../websockets/worker.socket";
-import { clearWorkerPendingBreakReturn, enqueueWorker, enqueueWorkersAtFront, getWorkerPendingBreakReturnScheduleId, getWorkerQueueStatus, markWorkerAssigned, markWorkerOpenApp, markWorkerPendingBreakReturn, popReadyWorkers, removeScanWarning, scheduleAssignmentTimeout, scheduleScanTimeout, scheduleScanWarning, scheduleWorkerShiftEnd, startAssignmentTimeoutWorker, startWorkerBreakReturnWorker } from "./worker-queue";
+import { clearWorkerPendingBreakReturn, enqueueWorker, enqueueWorkersAtFront, getWorkerPendingBreakReturnScheduleId, getWorkerQueueStatus, markWorkerAssigned, markWorkerOpenApp, markWorkerPendingBreakReturn, popReadyWorkers, removeScanWarning, removeWorkerBreakRetryExpiry, scheduleAssignmentTimeout, scheduleScanTimeout, scheduleScanWarning, scheduleWorkerBreakRetryExpiry, scheduleWorkerShiftEnd, startAssignmentTimeoutWorker, startWorkerBreakReturnWorker } from "./worker-queue";
 import { buildWorkScheduleShiftInstanceKey, getWorkScheduleShiftEndDelayMs, isTimeInWorkSchedule } from "../utils/shift";
 import { buildTicketCompletionResultExtraFields, buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { logger } from "../utils/logger";
@@ -119,7 +119,21 @@ async function dispatchReadyWorkersForTicketJob(
           if (workerSchedule) {
             await ejectWorkerForShiftEnd(worker.worker_id, workerSchedule);
           } else {
-            await markWorkerOpenApp(worker.worker_id);
+            const openAppQueue = await markWorkerOpenApp(worker.worker_id);
+
+            if (isWorkerSocketConnected(worker.worker_id)) {
+              sendWorkerSocketEvent(worker.worker_id, "WORKER_STATUS_CHANGED", {
+                queue: buildWorkerQueueSocketPayload(openAppQueue, workerCode),
+                reason: "no_active_schedule",
+              });
+            }
+            publishAdminWorkerStatusChanged({
+              title: "Worker moved to open_app",
+              message: `Worker ${workerCode ?? worker.worker_id} moved to open_app because no active work schedule was found.`,
+              workerCode,
+              queue: openAppQueue,
+              reason: "no_active_schedule",
+            });
           }
 
           continue;
@@ -862,6 +876,7 @@ async function handleWorkerBreakReturn(input: {
     const ttlSeconds = Math.floor(Math.min(retryWindowMs, shiftRemainingMs) / 1000);
 
     await markWorkerPendingBreakReturn(input.workerId, input.scheduleId, ttlSeconds);
+    await scheduleWorkerBreakRetryExpiry(input.workerId, input.scheduleId, ttlSeconds * 1000);
     sendWorkerSocketEvent(
       input.workerId,
       "WORKER_BREAK_RETURN_ACTION_REQUIRED",
@@ -897,6 +912,8 @@ export async function retryWorkerBreakReturnOnConnect(workerId: number): Promise
   // เคลียร์ marker ทันทีไม่ว่าผลจะสำเร็จหรือไม่ กัน retry ซ้ำจาก reconnect ครั้งถัดไป (เงื่อนไขด้านล่าง
   // deterministic อยู่แล้ว ถ้าล้มเหลวรอบนี้ก็จะล้มเหลวซ้ำแบบเดิมทุกรอบ ไม่ใช่ปัญหาชั่ววูบที่ retry ซ้ำแล้วจะผ่าน)
   await clearWorkerPendingBreakReturn(workerId);
+  // worker ต่อ socket กลับมาทันเวลาแล้ว ไม่ต้องแจ้ง "กรุณาติดต่อ Admin" ตอนหน้าต่างเวลาหมดอายุอีก
+  await removeWorkerBreakRetryExpiry(workerId, pendingScheduleId);
 
   const queueEntry = await getWorkerQueueStatus(workerId);
 
@@ -933,6 +950,52 @@ export async function retryWorkerBreakReturnOnConnect(workerId: number): Promise
     reason: "break_finished_requeue_retry",
   });
   await dispatchReadyWorkers();
+}
+
+// Function แจ้งเตือน worker + admin ตอนหน้าต่างเวลา worker_break_retry หมดอายุโดยที่ worker ไม่ได้กลับมา
+// ต่อ socket เลย — schedule มาจาก handleWorkerBreakReturn คู่กับ markWorkerPendingBreakReturn เช็ค marker
+// ซ้ำก่อนทำงานเพราะอาจมี race กับ retryWorkerBreakReturnOnConnect ที่ควร cancel job นี้ไปแล้วตอน worker
+// ต่อ socket ทัน แต่ BullMQ delayed job อาจ fire คาบเกี่ยวกันได้เผื่อไว้ ไม่เปลี่ยน worker status (คงเป็น
+// open_app ตามเดิม) แค่แจ้งเตือนให้รู้ตัวว่าต้องติดต่อ Admin เอง
+async function handleWorkerBreakRetryExpired(input: {
+  workerId: number;
+  scheduleId: number;
+}): Promise<void> {
+  const pendingScheduleId = await getWorkerPendingBreakReturnScheduleId(input.workerId);
+
+  if (pendingScheduleId !== input.scheduleId) {
+    return;
+  }
+
+  await clearWorkerPendingBreakReturn(input.workerId);
+
+  const queue = await getWorkerQueueStatus(input.workerId);
+
+  // Admin อาจ force เปลี่ยนสถานะ worker คนนี้ไปแล้วระหว่างที่ marker ยังค้างอยู่ (ไม่ได้ clear ตอน force
+  // status) ถ้าไม่ใช่ open_app แล้วแปลว่ามีคนจัดการไปแล้วจริงๆ ไม่ต้องแจ้ง "กรุณาติดต่อ Admin" ซ้ำอีก
+  if (!queue || queue.status !== WORKER_WORK_STATUS.OPEN_APP) {
+    return;
+  }
+
+  const workerCode = await profileRepository.findWorkerCodeByAccountId(input.workerId);
+
+  sendWorkerSocketEvent(
+    input.workerId,
+    "WORKER_BREAK_RETRY_EXPIRED",
+    {
+      queue: buildWorkerQueueSocketPayload(queue, workerCode),
+      reason: "break_retry_window_expired",
+    },
+    { push: true }
+  );
+
+  publishAdminWorkerStatusChanged({
+    title: "Worker needs admin contact",
+    message: `Worker ${workerCode ?? input.workerId} did not return from break within the retry window and may need admin assistance.`,
+    workerCode,
+    queue,
+    reason: "break_retry_window_expired",
+  });
 }
 
 // Function ประมวลผล assignment timeout job หนึ่งตัว (accept/scan/scan_warning/vendor_confirm/mobile_app_*)
@@ -1144,6 +1207,11 @@ export function startAssignmentTimeoutProcessing(): void {
   startWorkerBreakReturnWorker(async ({ workerId, scheduleId, shiftInstanceKey, kind }) => {
     if (kind === "shift_end") {
       await handleWorkerShiftEnd({ workerId, scheduleId, shiftInstanceKey });
+      return;
+    }
+
+    if (kind === "break_retry_expired") {
+      await handleWorkerBreakRetryExpired({ workerId, scheduleId });
       return;
     }
 

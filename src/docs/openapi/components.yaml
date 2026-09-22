@@ -5417,6 +5417,10 @@
           type: integer
           nullable: true
           description: จำนวนครั้งที่พักได้สูงสุด
+        break_duration_minutes:
+          type: integer
+          nullable: true
+          description: ระยะเวลาพักต่อครั้ง หน่วยนาที (ค่ามาจาก runtime setting worker_break_duration_minutes)
     WorkerOnlineResponse:
       type: object
       properties:
@@ -5601,6 +5605,10 @@
           type: integer
           description: จำนวนครั้งที่พักได้สูงสุด
           example: 4
+        break_duration_minutes:
+          type: integer
+          description: ระยะเวลาพักต่อครั้ง หน่วยนาที (ค่ามาจาก runtime setting worker_break_duration_minutes)
+          example: 15
     WorkerPresence:
       type: object
       properties:
@@ -6638,6 +6646,10 @@
           type: integer
           description: จำนวนครั้งสูงสุดที่ Worker พักได้ (ค่ามาจาก runtime setting worker_break_limit ที่ Admin ปรับได้)
           example: 3
+        break_duration_minutes:
+          type: integer
+          description: ระยะเวลาพักต่อครั้ง หน่วยนาที (ค่ามาจาก runtime setting worker_break_duration_minutes ที่ Admin ปรับได้)
+          example: 15
         completed_job_count:
           type: integer
           description: จำนวนงานที่ทำเสร็จแล้ว

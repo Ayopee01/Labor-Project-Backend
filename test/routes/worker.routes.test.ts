@@ -1001,6 +1001,7 @@ test("POST /api/workers/me/break returns worker break summary", async () => {
   assert.deepEqual(Object.keys(response.body).sort(), [
     "break_count_limit",
     "break_count_used",
+    "break_duration_minutes",
     "full_name",
     "server_time",
     "server_time_unix_ms",
@@ -1012,6 +1013,7 @@ test("POST /api/workers/me/break returns worker break summary", async () => {
   assert.equal(response.body.status, "break");
   assert.equal(response.body.break_count_used, 1);
   assert.equal(response.body.break_count_limit, 4);
+  assert.equal(typeof response.body.break_duration_minutes, "number");
 
   const breakSocketEvent = [...state.socketEvents]
     .reverse()
@@ -1023,6 +1025,7 @@ test("POST /api/workers/me/break returns worker break summary", async () => {
   assert.deepEqual(Object.keys(breakSocketQueue ?? {}).sort(), [
     "break_count_limit",
     "break_count_used",
+    "break_duration_minutes",
     "break_until",
     "break_until_unix_ms",
     "created_at",
@@ -1041,6 +1044,7 @@ test("POST /api/workers/me/break returns worker break summary", async () => {
   assert.equal(typeof breakSocketQueue?.updated_at, "string");
   assert.equal(breakSocketQueue?.break_count_used, 1);
   assert.equal(breakSocketQueue?.break_count_limit, 4);
+  assert.equal(typeof breakSocketQueue?.break_duration_minutes, "number");
 });
 
 test("POST /api/workers/me/online ends break early and removes pending break return job", async () => {
@@ -1196,6 +1200,7 @@ test("GET /api/workers/me/status returns worker profile and shift", async () => 
   assert.deepEqual(Object.keys(response.body).sort(), [
     "break_count_limit",
     "break_count_used",
+    "break_duration_minutes",
     "completed_job_count",
     "full_name",
     "image_url",
@@ -1216,6 +1221,7 @@ test("GET /api/workers/me/status returns worker profile and shift", async () => 
   assert.equal(response.body.status, "ready");
   assert.equal(response.body.today_job_count, 0);
   assert.equal(response.body.break_count_used, 0);
+  assert.equal(typeof response.body.break_duration_minutes, "number");
   assert.equal(response.body.completed_job_count, 0);
   assert.equal(response.body.nationality, "Thai");
   assert.equal(response.body.work_start_date, "2026-01-01");

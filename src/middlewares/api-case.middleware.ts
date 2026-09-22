@@ -29,6 +29,7 @@ const requestKeyMap: Record<string, string> = {
   AvailableWorkerCodes: "available_worker_codes",
   BreakCountLimit: "break_count_limit",
   BreakCountUsed: "break_count_used",
+  BreakDurationMinutes: "break_duration_minutes",
   BreakUntil: "break_until",
   BreakUntilUnixMs: "break_until_unix_ms",
   BuildNumber: "build_number",

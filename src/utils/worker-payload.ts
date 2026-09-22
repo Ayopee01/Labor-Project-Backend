@@ -51,5 +51,8 @@ export function buildWorkerQueueSocketPayload(
     ...(queueEntry.break_count_limit !== undefined
       ? { break_count_limit: queueEntry.break_count_limit }
       : {}),
+    ...(queueEntry.break_duration_minutes !== undefined
+      ? { break_duration_minutes: queueEntry.break_duration_minutes }
+      : {}),
   };
 }

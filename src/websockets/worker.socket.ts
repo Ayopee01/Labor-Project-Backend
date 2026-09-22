@@ -75,6 +75,7 @@ const PUSH_WORKER_SOCKET_EVENTS = new Set<WorkerSocketEventType>([
   "MARKET_JOB_CANCELLED",
   "VEHICLE_JOB_CANCELLED",
   "WORKER_BREAK_RETURN_ACTION_REQUIRED",
+  "WORKER_BREAK_RETRY_EXPIRED",
   "WORKER_STATUS_FORCED_BY_ADMIN",
 ]);
 
@@ -426,6 +427,8 @@ function buildWorkerPushTitle(type: WorkerSocketEventType): string {
       return "Signed in on another device";
     case "WORKER_BREAK_RETURN_ACTION_REQUIRED":
       return "Open the app to return to the queue";
+    case "WORKER_BREAK_RETRY_EXPIRED":
+      return "Please contact Admin";
     case "WORKER_STATUS_FORCED_BY_ADMIN":
       return "Your status was changed by admin";
     default:
@@ -476,6 +479,8 @@ function buildWorkerPushMessage(
       return "This session was signed out because login was confirmed on another device.";
     case "WORKER_BREAK_RETURN_ACTION_REQUIRED":
       return "Your break has ended. Open the app and go online to return to the queue.";
+    case "WORKER_BREAK_RETRY_EXPIRED":
+      return "You did not return from break in time. Please contact Admin to return to the queue.";
     case "WORKER_STATUS_FORCED_BY_ADMIN": {
       const status = typeof payload.status === "string" ? payload.status : null;
 

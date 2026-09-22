@@ -1045,11 +1045,14 @@ export async function forceAdminWorkerStatus(
     throw new ApiError(403, "WORKER_NOT_ACTIVE", "Worker account is not active.");
   }
 
-  if (!isWorkerSocketConnected(worker.id)) {
+  // ยกเว้นให้ force ไปเป็น OPEN_APP ได้แม้ worker offline อยู่ (เช่น ติดอยู่ในคิวเพราะ socket หลุดแต่ยัง
+  // ไม่ครบ worker_accept_timeout_limit ครั้งที่ระบบจะดีดออกเอง) — READY/BREAK ยังคงต้องการ worker online
+  // จริงเสมอ เพราะเป็นการสั่งงานเชิงรุกที่ควรให้ worker รับรู้ทันที ต่างจาก OPEN_APP ที่แค่ดึงออกจากคิว
+  if (input.status !== WORKER_WORK_STATUS.OPEN_APP && !isWorkerSocketConnected(worker.id)) {
     throw new ApiError(
       409,
       "WORKER_NOT_ONLINE",
-      "Worker WebSocket is not connected. Admin can force status only for online workers."
+      "Worker WebSocket is not connected. Admin can force status to READY or BREAK only for online workers."
     );
   }
 

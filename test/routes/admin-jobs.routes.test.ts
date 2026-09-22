@@ -219,9 +219,52 @@ after(async () => {
 /* -------------------------------------- Admin Jobs Route Tests -------------------------------------- */
 
 describe("Force Worker Status", () => {
-  test("POST /api/admin/jobs/workers/:workerCode/status/force rejects worker without WebSocket", async () => {
+  test("POST /api/admin/jobs/workers/:workerCode/status/force rejects worker without WebSocket when target is ready", async () => {
     const { token } = await loginJobAdmin(9601);
     const worker = addWorker(9602);
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/jobs/workers/${worker.labor_code}/status/force`,
+      {
+        token,
+        body: {
+          status: "ready",
+          reason_code: "test",
+        },
+      }
+    );
+    const queueEntry = await workerQueue.getWorkerQueueStatus(worker.id);
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "WORKER_NOT_ONLINE");
+    assert.equal(queueEntry, null);
+  });
+
+  test("POST /api/admin/jobs/workers/:workerCode/status/force rejects worker without WebSocket when target is break", async () => {
+    const { token } = await loginJobAdmin(96011);
+    const worker = addWorker(96021);
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/jobs/workers/${worker.labor_code}/status/force`,
+      {
+        token,
+        body: {
+          status: "break",
+          reason_code: "test",
+        },
+      }
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "WORKER_NOT_ONLINE");
+  });
+
+  test("POST /api/admin/jobs/workers/:workerCode/status/force allows forcing open_app even without WebSocket (worker stuck in queue with a dropped socket)", async () => {
+    const { token } = await loginJobAdmin(96012);
+    const worker = addWorker(96022);
+    await workerQueue.enqueueWorker(worker.id);
 
     const response = await server.request(
       "POST",
@@ -236,9 +279,9 @@ describe("Force Worker Status", () => {
     );
     const queueEntry = await workerQueue.getWorkerQueueStatus(worker.id);
 
-    assert.equal(response.status, 409);
-    assert.equal(response.body.code, "WORKER_NOT_ONLINE");
-    assert.equal(queueEntry, null);
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.status, "open_app");
+    assert.equal(queueEntry?.status, "open_app");
   });
 
   test("POST /api/admin/jobs/workers/:workerCode/status/force allows connected worker", async () => {

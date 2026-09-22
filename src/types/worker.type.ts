@@ -26,7 +26,7 @@ export type WorkerScheduleJobData = {
   workerId: number;
   scheduleId: number;
   shiftInstanceKey?: string;
-  kind?: "break_return" | "shift_end";
+  kind?: "break_return" | "shift_end" | "break_retry_expired";
 };
 
 // Type การเปลี่ยนคิวที่ต้องทำหลัง accept-timeout ตัดสินใจแล้ว — แยกจาก AssignmentAcceptTimeoutResult
@@ -258,6 +258,7 @@ export interface WorkerQueueEntryDto {
   break_until: string | null;
   break_count_used?: number;
   break_count_limit?: number;
+  break_duration_minutes?: number;
   created_at: string;
   updated_at: string;
 }
@@ -276,6 +277,7 @@ export interface WorkerBreakResponse {
   status: WorkerWorkStatus;
   break_count_used: number;
   break_count_limit: number;
+  break_duration_minutes: number;
 }
 
 // Type ข้อมูลกะใน response status ของ worker
@@ -302,6 +304,7 @@ export interface WorkerStatusResponse {
   today_job_count: number;
   break_count_used: number;
   break_count_limit: number;
+  break_duration_minutes: number;
   completed_job_count: number;
   nationality: string | null;
   work_start_date: string | null;
@@ -663,6 +666,7 @@ export type WorkerSocketEventType =
   | "SESSION_REVOKED"
   | "WORKER_STATUS_CHANGED"
   | "WORKER_BREAK_RETURN_ACTION_REQUIRED"
+  | "WORKER_BREAK_RETRY_EXPIRED"
   | "WORKER_STATUS_FORCED_BY_ADMIN"
   | "TOKEN_NEARING_EXPIRY";
 

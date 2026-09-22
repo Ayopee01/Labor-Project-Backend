@@ -255,6 +255,18 @@ async function sendWorkerPushNotificationToTokens(
           body: input.message,
         },
         data,
+        // priority "high" ให้ Android ปลุกเครื่องออกจาก Doze/App Standby ได้ทันที (ค่า default ของ FCM
+        // อาจถูก OS ลดความสำคัญ/หน่วงได้ถ้าไม่ระบุ) และ apns-priority "10" ให้ iOS ส่งทันทีไม่ delay —
+        // ไม่ช่วยกรณีผู้ใช้กด Force Stop เอง (Android บล็อกทุก push จนกว่าจะเปิดแอปเอง เป็นข้อจำกัดของ OS
+        // ที่ไม่มีแอปไหนหลีกเลี่ยงได้) แต่ช่วยเคส "ปิด/swipe ออกจาก recent apps" ตามปกติ
+        android: {
+          priority: "high",
+        },
+        apns: {
+          headers: {
+            "apns-priority": "10",
+          },
+        },
       });
 
       const invalidTokenHashesInChunk: string[] = [];
