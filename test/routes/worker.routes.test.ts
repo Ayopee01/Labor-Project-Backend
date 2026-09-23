@@ -1313,8 +1313,8 @@ test("GET /api/workers/me/status returns shift_active false when the worker alre
   assert.equal(response.body.shift.start_time, "00:00");
   assert.equal(response.body.shift.end_time, "23:59");
   assert.equal(response.body.shift_active, false);
-  assert.equal(response.body.reason_code, "OUTSIDE_SHIFT");
-  assert.equal(response.body.reason_text, "ขณะนี้ท่านอยู่นอกช่วงเวลาปฏิบัติงานตามกะที่กำหนด");
+  assert.equal(response.body.reason_code, "SHIFT_ALREADY_CLOSED");
+  assert.equal(response.body.reason_text, "ท่านออกจากกะนี้ไปแล้ว กรุณาติดต่อเจ้าหน้าที่ (Admin)");
 });
 
 test("GET /api/workers/me/status returns shift_active false with reason ACCEPT_TIMEOUT_LIMIT_REACHED when the shift was closed for missing accept-timeout limit", async () => {
@@ -1364,13 +1364,65 @@ test("GET /api/workers/me/status returns shift_active false with reason ACCEPT_T
   );
 });
 
-test("GET /api/workers/me/status returns shift_active false with reason OUTSIDE_SHIFT when admin revoked the session (deactivated account / reset password)", async () => {
+test("GET /api/workers/me/status returns shift_active true and no reason_code once Admin force-requeues a worker whose shift attendance was already closed", async () => {
+  const { token, worker } = await loginWorker(10930);
+
+  // จำลอง state เดียวกับ test ก่อนหน้า (ปิดกะเพราะไม่กดรับงานครบจำนวน) แต่คราวนี้ Admin force worker กลับเข้า
+  // คิว (READY) ให้แล้วผ่าน forceAdminWorkerStatus ซึ่งไม่ได้ clear closedAt/closeReason ใน WorkerCheckinLog
+  // เลย (ดู admin-workers.service.ts) — regression test กัน reason_code ค้างแสดงทั้งที่ worker กลับมาทำงาน
+  // ได้ปกติแล้วจริงๆ (bug ที่เจอจาก production: worker ถูก force เป็น ready แต่ /me/status ยังโชว์
+  // ACCEPT_TIMEOUT_LIMIT_REACHED ค้างอยู่)
+  const schedule = state.schedules.get(worker.id) as {
+    time_work: string;
+    time_in: string;
+    time_out: string;
+  };
+  assert.ok(schedule, "Worker fixture must seed a default work schedule.");
+  const shiftInstanceKey = buildWorkScheduleShiftInstanceKey(
+    schedule as unknown as Parameters<typeof buildWorkScheduleShiftInstanceKey>[0],
+  );
+
+  state.checkinLogs.push({
+    id: state.nextCheckinLogId++,
+    workerId: worker.id,
+    workerCode: worker.labor_code,
+    shiftInstanceKey,
+    timeWork: schedule.time_work,
+    timeIn: schedule.time_in,
+    timeOut: schedule.time_out,
+    firstOnlineAt: new Date().toISOString(),
+    lastOnlineAt: new Date().toISOString(),
+    offlineAt: new Date().toISOString(),
+    closedAt: new Date().toISOString(),
+    closeReason: "assignment_timeout_limit_reached",
+    acceptTimeoutStreak: 3,
+    lastAcceptTimeoutAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  // เทียบเท่ากับสิ่งที่ forceAdminWorkerStatus ทำตอน Admin force เป็น READY (enqueueWorker ผ่าน Redis
+  // โดยตรง ไม่แตะ WorkerCheckinLog เลย)
+  await workerQueue.enqueueWorker(worker.id);
+
+  const response = await server.request("GET", "/api/workers/me/status", {
+    token,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.status, "ready");
+  assert.equal(response.body.shift_active, true);
+  assert.equal("reason_code" in response.body, false);
+  assert.equal("reason_text" in response.body, false);
+});
+
+test("GET /api/workers/me/status returns shift_active false with reason SHIFT_ALREADY_CLOSED when admin revoked the session (deactivated account / reset password)", async () => {
   const { token, worker } = await loginWorker(1094);
 
   // Fixture ตั้งกะเป็น 00:00-23:59 (ทั้งวัน) ตอนนี้จึงยังอยู่ในกะแน่นอน แต่จำลองว่า admin สั่ง revoke session
   // ไปแล้ว (ปิดใช้งานบัญชี หรือ reset รหัสผ่านให้) ซึ่งปิดกะให้ด้วย — ไม่มี reason_code เฉพาะของตัวเอง ถือเป็น
-  // OUTSIDE_SHIFT เหมือนปิดกะด้วยเหตุผลทั่วไปอื่นๆ (worker สลับเครื่องเอง/force login ไม่ใช่เคสนี้ เพราะไม่แตะ
-  // queue/checkin log เลย)
+  // SHIFT_ALREADY_CLOSED เหมือนปิดกะด้วยเหตุผลทั่วไปอื่นๆ (worker สลับเครื่องเอง/force login ไม่ใช่เคสนี้
+  // เพราะไม่แตะ queue/checkin log เลย)
   const schedule = state.schedules.get(worker.id) as {
     time_work: string;
     time_in: string;
@@ -1406,10 +1458,10 @@ test("GET /api/workers/me/status returns shift_active false with reason OUTSIDE_
 
   assert.equal(response.status, 200);
   assert.equal(response.body.shift_active, false);
-  assert.equal(response.body.reason_code, "OUTSIDE_SHIFT");
+  assert.equal(response.body.reason_code, "SHIFT_ALREADY_CLOSED");
   assert.equal(
     response.body.reason_text,
-    "ขณะนี้ท่านอยู่นอกช่วงเวลาปฏิบัติงานตามกะที่กำหนด",
+    "ท่านออกจากกะนี้ไปแล้ว กรุณาติดต่อเจ้าหน้าที่ (Admin)",
   );
 });
 

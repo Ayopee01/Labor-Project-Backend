@@ -27,6 +27,8 @@ const SHIFT_INACTIVE_REASON_TEXT: Record<
 > = {
   TH: {
     OUTSIDE_SHIFT: () => "ขณะนี้ท่านอยู่นอกช่วงเวลาปฏิบัติงานตามกะที่กำหนด",
+    SHIFT_ALREADY_CLOSED: () =>
+      "ท่านออกจากกะนี้ไปแล้ว กรุณาติดต่อเจ้าหน้าที่ (Admin)",
     ACCEPT_TIMEOUT_LIMIT_REACHED: (params) =>
       `ท่านไม่กดรับงานติดต่อกันครบ ${params.accept_timeout_limit} ครั้ง ระบบจึงปิดกะการทำงานให้ กรุณาติดต่อเจ้าหน้าที่ (Admin)`,
     SCAN_TIMEOUT: () =>
@@ -41,6 +43,8 @@ const SHIFT_INACTIVE_REASON_TEXT: Record<
   MN: {
     OUTSIDE_SHIFT: () =>
       "လက်ရှိတွင် သင့်အလုပ်အချိန်ဇယားအပြင်ဘက်တွင် ရှိနေပါသည်။",
+    SHIFT_ALREADY_CLOSED: () =>
+      "သင် ဤအလုပ်အချိန်မှ ထွက်သွားပြီးဖြစ်ပါသည်။ Admin ကို ဆက်သွယ်ပါ။",
     ACCEPT_TIMEOUT_LIMIT_REACHED: (params) =>
       `အလုပ်ကို ဆက်တိုက် ${params.accept_timeout_limit} ကြိမ် လက်မခံခဲ့သဖြင့် အလုပ်အချိန်ပိတ်သွားပါပြီ။ Admin ကို ဆက်သွယ်ပါ။`,
     SCAN_TIMEOUT: () =>
@@ -54,6 +58,8 @@ const SHIFT_INACTIVE_REASON_TEXT: Record<
   },
   CN: {
     OUTSIDE_SHIFT: () => "ឥឡូវនេះអ្នកនៅក្រៅម៉ោងការងាររបស់អ្នក។",
+    SHIFT_ALREADY_CLOSED: () =>
+      "អ្នកបានចាកចេញពីវេនការងារនេះហើយ។ សូមទាក់ទង Admin។",
     ACCEPT_TIMEOUT_LIMIT_REACHED: (params) =>
       `អ្នកមិនបានទទួលការងារជាបន្តបន្ទាប់ ${params.accept_timeout_limit} ដង ដូច្នេះវេនការងាររបស់អ្នកត្រូវបានបិទ។ សូមទាក់ទង Admin។`,
     SCAN_TIMEOUT: () =>
@@ -67,6 +73,8 @@ const SHIFT_INACTIVE_REASON_TEXT: Record<
   },
   EN: {
     OUTSIDE_SHIFT: () => "You are currently outside your scheduled work shift.",
+    SHIFT_ALREADY_CLOSED: () =>
+      "You have already left this shift. Please contact Admin.",
     ACCEPT_TIMEOUT_LIMIT_REACHED: (params) =>
       `You did not accept jobs for ${params.accept_timeout_limit} times in a row, so your shift was closed. Please contact Admin.`,
     SCAN_TIMEOUT: () =>

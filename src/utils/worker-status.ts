@@ -59,16 +59,29 @@ export function resolveShiftActiveStatus(input: {
   queueStatus: WorkerWorkStatus | null | undefined;
   openAppReason: string | null | undefined;
 }): { active: boolean; reasonCode?: ShiftInactiveReasonCode } {
+  // ถ้า queue status ปัจจุบันไม่ใช่ open_app แล้ว (เช่น Admin force กลับเข้าคิวให้แล้ว หรือกำลังทำงาน/พักอยู่)
+  // ถือว่า active เสมอ ไม่โชว์ reason_code ค้างจากประวัติเก่า — closedAt/closeReason ใน WorkerCheckinLog ไม่ถูก
+  // เคลียร์ตอน Admin force สถานะ (forceAdminWorkerStatus ไม่แตะ attendance เลย) จึงต้องเช็ค queue status สด
+  // เป็นตัวตัดสินหลักก่อนเสมอ ไม่งั้น reason_code จะค้างแสดงทั้งที่ worker กลับมาทำงานได้ปกติแล้ว
+  if (input.queueStatus != null && input.queueStatus !== WORKER_WORK_STATUS.OPEN_APP) {
+    return { active: true };
+  }
+
   if (!input.isWithinShiftTime) {
     return { active: false, reasonCode: SHIFT_INACTIVE_REASON.OUTSIDE_SHIFT };
   }
 
   if (input.closedAt != null) {
+    // นาฬิกายังอยู่ในเวลากะ (ผ่านเช็ค isWithinShiftTime ด้านบนมาแล้ว) แต่ attendance ของกะนี้ถูกปิดไปแล้ว —
+    // เคยเข้ากะ (Go Online) แล้วแต่ออกไปแล้ว ไม่ว่าจะออกเอง (worker_offline/worker_logout), ระบบปิดให้ตอนหมด
+    // เวลากะ (shift_ended/ticket_delivered_after_shift_end), หรือ Admin ปิดให้ (admin_session_revoked) — ผล
+    // เหมือนกันคือกลับเข้าคิวเองไม่ได้ ต้องรอ Admin force ยกเว้น assignment_timeout_limit_reached ที่แยกโค้ด
+    // เฉพาะไว้แล้วเพราะมีสาเหตุ (ไม่กดรับงานครบจำนวน) ที่ชัดเจนกว่า
     const reasonCode =
       input.closeReason ===
       ("assignment_timeout_limit_reached" satisfies WorkerShiftCloseReason)
         ? SHIFT_INACTIVE_REASON.ACCEPT_TIMEOUT_LIMIT_REACHED
-        : SHIFT_INACTIVE_REASON.OUTSIDE_SHIFT;
+        : SHIFT_INACTIVE_REASON.SHIFT_ALREADY_CLOSED;
 
     return { active: false, reasonCode };
   }

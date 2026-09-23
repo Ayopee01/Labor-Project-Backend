@@ -861,7 +861,10 @@ function formatAdminWorkerStatusItem(
           scan_deadline_at: assignment.scan_deadline_at,
         }
       : null,
-    ...(reasonCode && settings
+    // จำกัดไว้เฉพาะ status เป็น open_app เท่านั้น กัน reason_code หลุดไปติดสถานะอื่น (เช่นกรณี overtime ที่
+    // นาฬิกาเลยเวลากะไปแล้วแต่ยังมี assignment ค้าง status จะเป็น working/assigned ไม่ใช่ open_app —
+    // reason_code ไม่มีความหมายตรงนั้น เพราะ worker ไม่ได้ติดค้างรอ force เข้าคิวแต่อย่างใด)
+    ...(reasonCode && settings && status === WORKER_WORK_STATUS.OPEN_APP
       ? {
           reason_code: reasonCode,
           reason_text: resolveShiftInactiveReasonText(reasonCode, worker.lang, {

@@ -4,6 +4,7 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import { addAdmin, addDispatchableJob, addGateClient, addMarketJobForVehicle, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketFinancialService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, signLineWebhookBody, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
 import { FakeRedis } from "../helpers/app-test-infra-mocks";
 import { WORKER_OPEN_APP_REASON } from "../../src/constants/status";
+import { buildWorkScheduleShiftInstanceKey } from "../../src/utils/shift";
 import { REDIS_CONFIG } from "../../src/config/redis.config";
 
 let server: TestServer;
@@ -530,6 +531,60 @@ describe("Worker Status Board", () => {
       item.reason_text,
       "ท่านสแกน QR โค้ด/บาร์โค้ดไม่ทันเวลาที่กำหนด กรุณาติดต่อเจ้าหน้าที่ (Admin)",
     );
+  });
+
+  test("GET /api/admin/jobs/workers/status omits reason_code/reason_text once a worker whose shift attendance was closed is back at status ready", async () => {
+    const { token } = await loginJobAdmin(9625);
+    const worker = addWorker(9626);
+
+    // จำลอง state เดียวกับที่ทำให้ /me/status ตอบ ACCEPT_TIMEOUT_LIMIT_REACHED ได้ (ปิดกะเพราะไม่กดรับงานครบ
+    // จำนวน) แต่คราวนี้ Admin force worker กลับเข้าคิว (READY) ไปแล้วผ่าน forceAdminWorkerStatus ซึ่งไม่ได้
+    // clear closedAt/closeReason ใน WorkerCheckinLog เลย — regression test กัน reason_code ค้างแสดงใน admin
+    // list ทั้งที่ worker กลับมาทำงานได้ปกติแล้วจริงๆ (bug ที่เจอจาก production)
+    const schedule = state.schedules.get(worker.id) as {
+      time_work: string;
+      time_in: string;
+      time_out: string;
+    };
+    assert.ok(schedule, "Worker fixture must seed a default work schedule.");
+    const shiftInstanceKey = buildWorkScheduleShiftInstanceKey(
+      schedule as unknown as Parameters<typeof buildWorkScheduleShiftInstanceKey>[0],
+    );
+
+    state.checkinLogs.push({
+      id: state.nextCheckinLogId++,
+      workerId: worker.id,
+      workerCode: worker.labor_code,
+      shiftInstanceKey,
+      timeWork: schedule.time_work,
+      timeIn: schedule.time_in,
+      timeOut: schedule.time_out,
+      firstOnlineAt: new Date().toISOString(),
+      lastOnlineAt: new Date().toISOString(),
+      offlineAt: new Date().toISOString(),
+      closedAt: new Date().toISOString(),
+      closeReason: "assignment_timeout_limit_reached",
+      acceptTimeoutStreak: 3,
+      lastAcceptTimeoutAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    // เทียบเท่ากับสิ่งที่ forceAdminWorkerStatus ทำตอน Admin force เป็น READY
+    await workerQueue.enqueueWorker(worker.id);
+
+    const response = await server.request("GET", "/api/admin/jobs/workers/status", {
+      token,
+    });
+
+    assert.equal(response.status, 200);
+    const item = response.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+    assert.ok(item, "expected the force-requeued worker to be listed");
+    assert.equal(item.status, "ready");
+    assert.equal("reason_code" in item, false);
+    assert.equal("reason_text" in item, false);
   });
 
   test("GET /api/admin/jobs/workers/status uses the current presence session for open_app status_entered_at, not queue.updated_at from a previous shift", async () => {

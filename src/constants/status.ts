@@ -67,7 +67,8 @@ export const TICKET_SUBMITTER_ROLE = {
 
 // Config เหตุผลที่ shift_active เป็น false ใน GET /api/workers/me/status
 export const SHIFT_INACTIVE_REASON = {
-  OUTSIDE_SHIFT: "OUTSIDE_SHIFT", // ไม่มีกะวันนี้ / นอกเวลากะ / ปิดกะไปแล้วตามปกติ (เลิกงานเอง, หมดเวลากะ)
+  OUTSIDE_SHIFT: "OUTSIDE_SHIFT", // ไม่มีกะวันนี้ หรือนาฬิกายังไม่ถึง/เลยเวลากะจริงๆ (ไม่เกี่ยวกับ attendance ปิดหรือไม่)
+  SHIFT_ALREADY_CLOSED: "SHIFT_ALREADY_CLOSED", // เคยเข้ากะ (Go Online) แล้ว แต่ออกจากกะไปแล้ว (เลิกงาน/logout เอง, หมดเวลากะ, หรือ Admin ปิดให้) แม้นาฬิกายังอยู่ในเวลากะ ก็กลับเข้าคิวเองไม่ได้ ต้องรอ Admin force
   ACCEPT_TIMEOUT_LIMIT_REACHED: "ACCEPT_TIMEOUT_LIMIT_REACHED", // ไม่กดรับงานติดกันครบ worker_accept_timeout_limit ครั้ง ระบบปิดกะให้
   SCAN_TIMEOUT: "SCAN_TIMEOUT", // สแกน QR/บาร์โค้ดไม่ทันเวลาที่กำหนด
   ADMIN_CANCELLED_ASSIGNMENT: "ADMIN_CANCELLED_ASSIGNMENT", // Admin ยกเลิกงาน/assignment ที่กำลังทำอยู่

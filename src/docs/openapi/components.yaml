@@ -6802,12 +6802,13 @@
           type: string
           enum:
             - OUTSIDE_SHIFT
+            - SHIFT_ALREADY_CLOSED
             - ACCEPT_TIMEOUT_LIMIT_REACHED
             - SCAN_TIMEOUT
             - ADMIN_CANCELLED_ASSIGNMENT
             - ADMIN_FORCED_STATUS
             - BREAK_RETRY_EXPIRED
-          description: "มีเฉพาะตอน shift_active เป็น false บอกเหตุผล: OUTSIDE_SHIFT = ไม่มีกะวันนี้/นอกเวลากะ/ปิดกะไปแล้วตามปกติ (เลิกงานเอง, หมดเวลากะ, หรือ Admin ปิดใช้งานบัญชี/reset รหัสผ่านให้), ACCEPT_TIMEOUT_LIMIT_REACHED = ไม่กดรับงานติดต่อกันครบจำนวนที่ตั้งค่าไว้ ระบบปิดกะให้ ต้องรอ Admin, SCAN_TIMEOUT = สแกน QR/บาร์โค้ดไม่ทันเวลาที่กำหนด ต้องรอ Admin, ADMIN_CANCELLED_ASSIGNMENT = Admin ยกเลิกงานที่กำลังทำอยู่ ต้องรอ Admin, ADMIN_FORCED_STATUS = Admin สั่งเปลี่ยนสถานะเป็น open_app โดยตรง ต้องรอ Admin, BREAK_RETRY_EXPIRED = หมดเวลาพักและไม่เปิดแอปกลับมาภายในเวลาที่กำหนด ต้องรอ Admin ช่วงที่เพิ่งหมดเวลาพักแต่ยังอยู่ในหน้าต่างเวลาที่เปิดแอปกลับเข้าคิวเองได้ (ก่อนจะกลายเป็น BREAK_RETRY_EXPIRED) จะไม่มี reason_code ให้ เพราะ FCM แจ้งไปแล้วและยัง self-resolve ได้เอง เช่นเดียวกับกรณีอื่นที่ระบบยังไม่รู้จัก reason field นี้จะไม่มีค่า"
+          description: "มีเฉพาะตอน shift_active เป็น false บอกเหตุผล: OUTSIDE_SHIFT = ไม่มีกะวันนี้ หรือนาฬิกายังไม่ถึง/เลยเวลากะจริงๆ (ยังไม่เคย Go Online กะนี้เลย ไม่ต้องรอ Admin แค่รอถึงเวลากะ), SHIFT_ALREADY_CLOSED = เคย Go Online กะนี้แล้วแต่ออกจากกะไปแล้วแม้นาฬิกายังอยู่ในเวลากะ (เลิกงาน/logout เอง, หมดเวลากะ, หรือ Admin ปิดบัญชี/reset รหัสผ่านให้) ต้องรอ Admin, ACCEPT_TIMEOUT_LIMIT_REACHED = ไม่กดรับงานติดต่อกันครบจำนวนที่ตั้งค่าไว้ ระบบปิดกะให้ ต้องรอ Admin, SCAN_TIMEOUT = สแกน QR/บาร์โค้ดไม่ทันเวลาที่กำหนด ต้องรอ Admin, ADMIN_CANCELLED_ASSIGNMENT = Admin ยกเลิกงานที่กำลังทำอยู่ ต้องรอ Admin, ADMIN_FORCED_STATUS = Admin สั่งเปลี่ยนสถานะเป็น open_app โดยตรง ต้องรอ Admin, BREAK_RETRY_EXPIRED = หมดเวลาพักและไม่เปิดแอปกลับมาภายในเวลาที่กำหนด ต้องรอ Admin ช่วงที่เพิ่งหมดเวลาพักแต่ยังอยู่ในหน้าต่างเวลาที่เปิดแอปกลับเข้าคิวเองได้ (ก่อนจะกลายเป็น BREAK_RETRY_EXPIRED) จะไม่มี reason_code ให้ เพราะ FCM แจ้งไปแล้วและยัง self-resolve ได้เอง เช่นเดียวกับกรณีอื่นที่ระบบยังไม่รู้จัก reason field นี้จะไม่มีค่า"
           example: OUTSIDE_SHIFT
         reason_text:
           type: string
@@ -6968,13 +6969,13 @@
         reason_code:
           type: string
           enum:
-            - OUTSIDE_SHIFT
+            - SHIFT_ALREADY_CLOSED
             - ACCEPT_TIMEOUT_LIMIT_REACHED
             - SCAN_TIMEOUT
             - ADMIN_CANCELLED_ASSIGNMENT
             - ADMIN_FORCED_STATUS
             - BREAK_RETRY_EXPIRED
-          description: มีเฉพาะตอน status เป็น open_app และมีสาเหตุที่ต้อง Admin ช่วย force กลับเข้าคิว (ความหมายเดียวกับ reason_code ใน GET /api/workers/me/status) worker ที่มี field นี้จะยังคงอยู่ใน list แม้ offline และไม่มีงานค้าง เพื่อให้ Admin หาเจอตอน worker มาติดต่อขอให้ force เข้าคิว
+          description: มีเฉพาะตอน status เป็น open_app เท่านั้น (backend บังคับไว้ ไม่ให้ field นี้หลุดไปติด status อื่น เช่น working/assigned ตอน worker ทำ overtime) และมีสาเหตุที่ต้อง Admin ช่วย force กลับเข้าคิว (ความหมายเดียวกับ reason_code ใน GET /api/workers/me/status ยกเว้น OUTSIDE_SHIFT ที่ไม่มีทางเกิดใน list นี้ เพราะ worker ที่นาฬิกาอยู่นอกเวลากะจริงๆ ถูกกรองออกจาก list ไปตั้งแต่แรกแล้ว) worker ที่มี field นี้จะยังคงอยู่ใน list แม้ offline และไม่มีงานค้าง เพื่อให้ Admin หาเจอตอน worker มาติดต่อขอให้ force เข้าคิว
           example: SCAN_TIMEOUT
         reason_text:
           type: string
