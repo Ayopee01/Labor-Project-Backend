@@ -840,6 +840,12 @@ test("GET /api/auth/me sets X-Should-Refresh once the access token is within the
   // ACCESS_TOKEN_REFRESH_THRESHOLD ถูกอ่านสดทุกครั้ง (auth.config.ts) แต่ JWT_ACCESS_EXPIRES_IN ที่ jwt.ts ใช้เซ็น
   // token จริงถูก cache ไว้ตั้งแต่ตอน import module ครั้งแรก — mutate env นั้นตอน runtime จึงไม่มีผลกับ token ที่
   // เซ็นใหม่ในเทสนี้ ต้องเซ็น access token เองตรงๆ ด้วย expiresIn สั้นๆ แทนเพื่อคุมอายุ token ให้แน่นอน
+  //
+  // เดิม test นี้เซ็น token เดียวอายุ 3s แล้ว sleep จริง 2200ms ก่อนยิงซ้ำ เพื่อรอให้เหลืออายุน้อยกว่า
+  // threshold — แต่เหลือ margin แค่ ~800ms ระหว่างเวลาที่ sleep จริง (event loop/CI ที่โหลดสูงอาจดีเลย์เกิน
+  // margin นี้ได้ง่าย) กับตอน request จริงประมวลผลเสร็จ ทำให้ token หมดอายุไปเลยก่อนถึงเวลาเช็ค (flaky บน CI
+  // runner ที่ช้ากว่าเครื่อง dev) แก้โดยเซ็น token แยกกัน 2 ใบแทน ไม่ต้อง sleep จริงเลย: ใบหนึ่งอายุยาว (fresh)
+  // อีกใบอายุเท่า threshold พอดี (nearing) ผลลัพธ์ deterministic โดยไม่พึ่ง wall-clock timing ระหว่าง request
   const jwtUtil = await import("../../src/utils/jwt");
 
   await withEnv({ ACCESS_TOKEN_REFRESH_THRESHOLD: "1s" }, async () => {
@@ -855,28 +861,25 @@ test("GET /api/auth/me sets X-Should-Refresh once the access token is within the
     });
 
     const loginPayload = jwt.decode(login.body.access_token) as { session_id: number };
-    const shortLivedToken = jwtUtil.signAccessToken(
-      {
-        account_id: worker.id,
-        role: "worker",
-        permission_level: null,
-        permissions: [],
-        session_id: loginPayload.session_id,
-      },
-      { expiresIn: "3s" }
-    );
+    const basePayload = {
+      account_id: worker.id,
+      role: "worker" as const,
+      permission_level: null,
+      permissions: [],
+      session_id: loginPayload.session_id,
+    };
+    const freshToken = jwtUtil.signAccessToken(basePayload, { expiresIn: "60s" });
+    const nearingExpiryToken = jwtUtil.signAccessToken(basePayload, { expiresIn: "1s" });
 
     const freshResponse = await server.request("GET", "/api/auth/me", {
-      token: shortLivedToken,
+      token: freshToken,
     });
 
     assert.equal(freshResponse.status, 200);
     assert.equal(freshResponse.headers.get("x-should-refresh"), null);
 
-    await new Promise((resolve) => setTimeout(resolve, 2200));
-
     const nearingExpiryResponse = await server.request("GET", "/api/auth/me", {
-      token: shortLivedToken,
+      token: nearingExpiryToken,
     });
 
     assert.equal(nearingExpiryResponse.status, 200);
