@@ -15,6 +15,7 @@ import { closeWorkerBreakLog } from "../services/shared/worker-attendance.servic
 import * as ticketJobLifecycleService from "../services/shared/ticket-job-lifecycle.service";
 import { publishAdminWorkerStatusChanged, publishNotification } from "../services/notifications.service";
 import { publishRealtimeEvent } from "../services/shared/realtime-notification.service";
+import { publishDriverJobUpdate } from "../services/driver-stream.service";
 import { applyVendorTicketCompletionResult } from "../services/shared/ticket-completion.service";
 import { sendMobileAppForceUpdateNotification, sendMobileAppReleaseNotification } from "../services/shared/mobile-app-version.service";
 // Import Types
@@ -32,7 +33,7 @@ import { buildTicketCompletionResultExtraFields, buildWorkerTicketPayload } from
 import { logger } from "../utils/logger";
 import { buildDeadline, getDelayUntil } from "../utils/time";
 import { buildWorkerAssignedPayload, buildWorkerQueueSocketPayload } from "../utils/worker-payload";
-import { ASSIGNMENT_STATUS, SUBMITTED_TICKET_STATUSES, TERMINAL_JOB_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
+import { ASSIGNMENT_STATUS, SUBMITTED_TICKET_STATUSES, TERMINAL_JOB_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS, WORKER_OPEN_APP_REASON } from "../constants/status";
 
 /* -------------------------------------- Functions -------------------------------------- */
 
@@ -635,6 +636,9 @@ export async function autoReleaseTicketJobWorkersIfShiftEnded(
     return;
   }
 
+  // แจ้ง Driver Web ว่ารถเปลี่ยนเป็น RELEASED — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(ticketJob.id, "DRIVER_JOB_UPDATED");
+
   const releasedWorkerAccountIds = releasableAssignments.map(
     (assignment) => assignment.worker_id,
   );
@@ -697,6 +701,13 @@ async function handleVendorConfirmationTimeout(input: {
   if (!result) {
     return;
   }
+
+  // แจ้ง Driver Web ว่าข้อมูลแผง/ตลาดเปลี่ยน หรือรถจบงานแล้ว — เรียกหลัง transaction ข้างบน commit
+  // สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(
+    result.ticket.vehicle_job_id,
+    result.completedTicketJob ? "DRIVER_JOB_TERMINAL" : "DRIVER_JOB_UPDATED",
+  );
 
   await returnCompletedWorkersToQueue(result.completedTicketJob);
 
@@ -852,6 +863,10 @@ async function handleWorkerBreakReturn(input: {
   if (readyToRequeueExceptSocket && isWorkerSocketConnected(input.workerId)) {
     const queue = await enqueueWorker(input.workerId);
     const workerCode = await profileRepository.findWorkerCodeByAccountId(input.workerId);
+    sendWorkerSocketEvent(input.workerId, "WORKER_STATUS_CHANGED", {
+      queue: buildWorkerQueueSocketPayload(queue, workerCode),
+      reason: "break_finished_requeue",
+    });
     publishAdminWorkerStatusChanged({
       title: "Worker break finished",
       message: `Worker ${workerCode ?? input.workerId} returned to queue after break.`,
@@ -863,7 +878,10 @@ async function handleWorkerBreakReturn(input: {
     return;
   }
 
-  const queue = await markWorkerOpenApp(input.workerId);
+  const queue = await markWorkerOpenApp(
+    input.workerId,
+    WORKER_OPEN_APP_REASON.BREAK_ENDED_AWAITING_RECONNECT,
+  );
   const workerCode = await profileRepository.findWorkerCodeByAccountId(input.workerId);
 
   // Socket ไม่ connected แต่เงื่อนไขอื่นพร้อมหมด -> ตั้ง pending marker ให้ retry อัตโนมัติตอน worker
@@ -969,14 +987,20 @@ async function handleWorkerBreakRetryExpired(input: {
 
   await clearWorkerPendingBreakReturn(input.workerId);
 
-  const queue = await getWorkerQueueStatus(input.workerId);
+  const pendingQueue = await getWorkerQueueStatus(input.workerId);
 
   // Admin อาจ force เปลี่ยนสถานะ worker คนนี้ไปแล้วระหว่างที่ marker ยังค้างอยู่ (ไม่ได้ clear ตอน force
   // status) ถ้าไม่ใช่ open_app แล้วแปลว่ามีคนจัดการไปแล้วจริงๆ ไม่ต้องแจ้ง "กรุณาติดต่อ Admin" ซ้ำอีก
-  if (!queue || queue.status !== WORKER_WORK_STATUS.OPEN_APP) {
+  if (!pendingQueue || pendingQueue.status !== WORKER_WORK_STATUS.OPEN_APP) {
     return;
   }
 
+  // อัปเดต reason จาก "รอ reconnect" เป็น "หมดเวลาแล้ว" ให้ GET /api/workers/me/status ตอบ
+  // reason_code = BREAK_RETRY_EXPIRED กลับไปได้ตรงจุด
+  const queue = await markWorkerOpenApp(
+    input.workerId,
+    WORKER_OPEN_APP_REASON.BREAK_RETRY_EXPIRED,
+  );
   const workerCode = await profileRepository.findWorkerCodeByAccountId(input.workerId);
 
   sendWorkerSocketEvent(
@@ -1163,7 +1187,7 @@ export async function processAssignmentTimeoutJob({
   if (scanTimedOut && capturedAssignment) {
     const assignment: TicketJobAssignmentDto = capturedAssignment;
     await removeScanWarning(assignment.id);
-    const queue = await markWorkerOpenApp(workerId);
+    const queue = await markWorkerOpenApp(workerId, WORKER_OPEN_APP_REASON.SCAN_TIMEOUT);
     const ticketJob = await ticketJobRepository.findTicketJobById(assignment.vehicle_job_id);
     const workerCode = await profileRepository.findWorkerCodeByAccountId(workerId);
     const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(

@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "0f55f6b6-4a4f-4f5f-8b75-9f5d37a07f38",
     "name": "Labor Project Backend",
-    "description": "Postman collection for Labor Project Backend. baseUrl defaults to http://localhost:8080 for local development — change the baseUrl/wsBaseUrl variables to the shared droplet's domain (see README > Deploying to DigitalOcean) to test against the shared dev/test deployment instead.\nEvery request shows its contract explicitly in that request: method, URL, required headers, query params, and body.\nProtected requests use Header: Authorization: Bearer {{accessToken}}.\nRun Auth > POST /api/auth/login first to get AccessToken and RefreshToken.\nEvery request also accepts optional X-Request-Id and X-Client-Version headers for log correlation/debugging (added automatically below). X-Client-Type is required only on the /api/auth endpoints that run before an access token exists (login, login/confirm-force, refresh) — see each request's Headers line.\n\nToken lifecycle (added 2026-09-16): Each session has an absolute cap counted from its first login and never extended by /api/auth/refresh no matter how often it succeeds \u2014 Worker: 7 days, Admin: 24 hours. Every protected response also adds header X-Should-Refresh: true once the AccessToken in use is close to expiring (default threshold: 2 minutes) \u2014 call POST /api/auth/refresh right away when you see it. Worker WebSocket connections (GET /ws/workers) get the same signal as a TOKEN_NEARING_EXPIRY event for the case where the app is only listening on the socket and issuing no REST calls at all.",
+    "description": "Postman collection for Labor Project Backend. baseUrl defaults to http://localhost:8080 for local development — change the baseUrl/wsBaseUrl variables to the shared droplet's domain (see README > Deploying to DigitalOcean) to test against the shared dev/test deployment instead.\nEvery request shows its contract explicitly in that request: method, URL, required headers, query params, and body.\nProtected requests use Header: Authorization: Bearer {{accessToken}}.\nRun Auth > POST /api/auth/login first to get AccessToken and RefreshToken.\nEvery request also accepts optional X-Request-Id and X-Client-Version headers for log correlation/debugging (added automatically below). X-Client-Type is required only on the /api/auth endpoints that run before an access token exists (login, login/confirm-force, refresh) — see each request's Headers line.\n\nToken lifecycle (added 2026-09-16): Each session has an absolute cap counted from its first login and never extended by /api/auth/refresh no matter how often it succeeds — Worker: 7 days, Admin: 24 hours. Every protected response also adds header X-Should-Refresh: true once the AccessToken in use is close to expiring (default threshold: 2 minutes) — call POST /api/auth/refresh right away when you see it. Worker WebSocket connections (GET /ws/workers) get the same signal as a TOKEN_NEARING_EXPIRY event for the case where the app is only listening on the socket and issuing no REST calls at all.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -208,6 +208,12 @@
       "value": "",
       "type": "string",
       "description": "Driver guest session token returned by POST /api/driver/qr-sessions."
+    },
+    {
+      "key": "driverDeviceId",
+      "value": "",
+      "type": "string",
+      "description": "Random UUID the Driver Web app generates once per device and persists in browser storage. Sent as DeviceId in POST /api/driver/qr-sessions and as X-Driver-Device-Id on every other Driver request. Postman's {{$guid}} is used as a stand-in value here."
     },
     {
       "key": "mobileAppVersionId",
@@ -953,7 +959,7 @@
                 "refresh"
               ]
             },
-            "description": "Method: POST\nURL: {{baseUrl}}/api/auth/refresh\nAuth: No auth required\nHeaders: Content-Type: application/json, X-Client-Type (required, {{clientType}}), X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: JSON: RefreshToken\nNotes: Returns a new AccessToken and RefreshToken (RefreshToken rotates every call; the old one can no longer be used). Call this proactively whenever any response carries header X-Should-Refresh: true, or the worker WebSocket sends a TOKEN_NEARING_EXPIRY event \u2014 don't wait for a 401. This never extends the session's absolute cap (Worker 7d / Admin 24h from first login); once that's reached this call returns 401 and the client must log in again."
+            "description": "Method: POST\nURL: {{baseUrl}}/api/auth/refresh\nAuth: No auth required\nHeaders: Content-Type: application/json, X-Client-Type (required, {{clientType}}), X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: JSON: RefreshToken\nNotes: Returns a new AccessToken and RefreshToken (RefreshToken rotates every call; the old one can no longer be used). Call this proactively whenever any response carries header X-Should-Refresh: true, or the worker WebSocket sends a TOKEN_NEARING_EXPIRY event — don't wait for a 401. This never extends the session's absolute cap (Worker 7d / Admin 24h from first login); once that's reached this call returns 401 and the client must log in again."
           },
           "response": []
         },
@@ -3722,7 +3728,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/events\nAuth: Admin access token\nPermission: jobs:read\nHeaders: Authorization: Bearer {{accessToken}}, Accept: text/event-stream, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nBody: None\nNotes: Admin-only SSE stream. It stays open and receives realtime dashboard events. Snapshot/latest state should still be loaded from Admin REST APIs. Also sends a TOKEN_NEARING_EXPIRY event before this connection's AccessToken is close to expiring (same threshold as header X-Should-Refresh on REST calls and the TOKEN_NEARING_EXPIRY event on the worker WebSocket) \u2014 covers the case where the dashboard tab is left open with no other REST calls happening. Call POST /api/auth/refresh right away when you receive it."
+            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/events\nAuth: Admin access token\nPermission: jobs:read\nHeaders: Authorization: Bearer {{accessToken}}, Accept: text/event-stream, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nBody: None\nNotes: Admin-only SSE stream. It stays open and receives realtime dashboard events. Snapshot/latest state should still be loaded from Admin REST APIs. Also sends a TOKEN_NEARING_EXPIRY event before this connection's AccessToken is close to expiring (same threshold as header X-Should-Refresh on REST calls and the TOKEN_NEARING_EXPIRY event on the worker WebSocket) — covers the case where the dashboard tab is left open with no other REST calls happening. Call POST /api/auth/refresh right away when you receive it."
           },
           "response": []
         }
@@ -3948,7 +3954,7 @@
                 "exec": [
                   "const body = pm.response.json();",
                   "if (body.DriverSessionToken) pm.collectionVariables.set('driverSessionToken', body.DriverSessionToken);",
-                  "if (body.VehicleJob?.TicketNo) pm.collectionVariables.set('ticketNo', String(body.VehicleJob.TicketNo));"
+                  "if (body.VehicleJob?.TicketNumber) pm.collectionVariables.set('ticketNo', String(body.VehicleJob.TicketNumber));"
                 ]
               }
             }
@@ -3976,7 +3982,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"QrToken\": \"{{driverQrToken}}\"\n}",
+              "raw": "{\n  \"QrToken\": \"{{driverQrToken}}\",\n  \"DeviceId\": \"{{driverDeviceId}}\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -3997,7 +4003,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: POST\nURL: {{baseUrl}}/api/driver/qr-sessions\nAuth: No auth required\nBody: JSON QrToken from driver QR\nNotes: Creates a 24-hour driver guest session and saves driverSessionToken."
+            "description": "Method: POST\nURL: {{baseUrl}}/api/driver/qr-sessions\nAuth: No auth required\nBody: JSON QrToken from driver QR, plus DeviceId (UUID the Driver Web app generates once and persists in browser storage; identifies this browser/device, not a person)\nNotes: Creates a driver session (TTL from runtime setting driver_session_ttl_hours) and saves driverSessionToken. At most DRIVER_ACTIVE_DEVICE_LIMIT (default 2) distinct DeviceId values can hold an active session per vehicle job at once — the response includes ActiveDeviceCount/ActiveDeviceLimit. Re-scanning with the same DeviceId rotates (replaces) that device's old session instead of consuming a new slot. A 3rd distinct device gets 409 DRIVER_SESSION_LIMIT_EXCEEDED."
           },
           "response": []
         },
@@ -4010,6 +4016,12 @@
                 "key": "Authorization",
                 "value": "Bearer {{driverSessionToken}}",
                 "type": "text"
+              },
+              {
+                "key": "X-Driver-Device-Id",
+                "value": "{{driverDeviceId}}",
+                "type": "text",
+                "description": "Required only if this driver session was created with a DeviceId. Must match the DeviceId used in POST /api/driver/qr-sessions."
               },
               {
                 "key": "X-Request-Id",
@@ -4039,7 +4051,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: GET\nURL: {{baseUrl}}/api/driver/jobs/current\nAuth: Driver guest session via Authorization: Bearer {{driverSessionToken}}\nBody: None"
+            "description": "Method: GET\nURL: {{baseUrl}}/api/driver/jobs/current\nAuth: Driver session via Authorization: Bearer {{driverSessionToken}} (+ X-Driver-Device-Id if the session has one)\nBody: None\nResponse: OperationStatus (WAIT/DISPATCH_NOW/WAITING_FOR_WORKER/IN_PROGRESS/COMPLETED/CANCELLED — the canonical UI status, do not derive it from VehicleJob.Status), VehicleJob (with WorkStartedAt/CompletedAt/EndedAt), Markets (with TicketCreatedAt/DropoffPoint/BoothCount/Booths/Products).\nNotes: Still answers during the terminal grace period (DRIVER_TERMINAL_SESSION_GRACE_MINUTES, default 30) after the vehicle job goes COMPLETED/CANCELLED, so the Driver can see the final state before the session is revoked."
           },
           "response": []
         },
@@ -4052,6 +4064,12 @@
                 "key": "Authorization",
                 "value": "Bearer {{driverSessionToken}}",
                 "type": "text"
+              },
+              {
+                "key": "X-Driver-Device-Id",
+                "value": "{{driverDeviceId}}",
+                "type": "text",
+                "description": "Required only if this driver session was created with a DeviceId. Must match the DeviceId used in POST /api/driver/qr-sessions."
               },
               {
                 "key": "X-Request-Id",
@@ -4082,7 +4100,60 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: POST\nURL: {{baseUrl}}/api/driver/jobs/{{ticketNo}}/ready\nAuth: Driver guest session\nBody: None\nResponse: ticketNo, LicensePlate, LicensePlateProvince, status.\nNotes: Marks vehicle job WORKING and dispatches ready workers from Redis FIFO queue. Workers check in separately by scanning each Business Ticket's own barcode via POST /api/workers/me/assignments/check-in-barcode."
+            "description": "Method: POST\nURL: {{baseUrl}}/api/driver/jobs/{{ticketNo}}/ready\nAuth: Driver session (+ X-Driver-Device-Id if the session has one)\nBody: None\nResponse: Same DriverJobSnapshotResponse shape as GET /api/driver/jobs/current (OperationStatus is recomputed after dispatch — it may end up DISPATCH_NOW or WAITING_FOR_WORKER depending on whether the full team is already checked in).\nNotes: Only allowed while OperationStatus is WAIT; marks the vehicle job WORKING and dispatches ready workers from the Redis FIFO queue. Workers check in separately by scanning each Business Ticket's own barcode via POST /api/workers/me/assignments/check-in-barcode."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/driver/jobs/stream",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{driverSessionToken}}",
+                "type": "text"
+              },
+              {
+                "key": "X-Driver-Device-Id",
+                "value": "{{driverDeviceId}}",
+                "type": "text",
+                "description": "Required only if this driver session was created with a DeviceId. Must match the DeviceId used in POST /api/driver/qr-sessions."
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream",
+                "type": "text"
+              },
+              {
+                "key": "X-Request-Id",
+                "value": "{{$guid}}",
+                "type": "text",
+                "description": "Optional. Correlation id for this request — Postman's {{$guid}} generates a fresh UUID every time this request is sent. Echoed back in the X-Request-Id response header and in every error response body."
+              },
+              {
+                "key": "X-Client-Version",
+                "value": "{{clientVersion}}",
+                "type": "text",
+                "description": "Optional. Version of the calling client app, recorded in server logs for debugging only."
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/driver/jobs/stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "driver",
+                "jobs",
+                "stream"
+              ]
+            },
+            "auth": {
+              "type": "noauth"
+            },
+            "description": "Method: GET\nURL: {{baseUrl}}/api/driver/jobs/stream\nAuth: Driver session (+ X-Driver-Device-Id if the session has one)\nBody: None\nResponse: Server-Sent Events (text/event-stream). Postman shows the raw stream in the response pane as events arrive; it does not auto-parse SSE frames.\nEvents: DRIVER_JOB_SNAPSHOT (sent immediately on connect/reconnect), DRIVER_JOB_UPDATED (job data changed), DRIVER_JOB_TERMINAL (vehicle job went COMPLETED/CANCELLED), DRIVER_SESSION_EXPIRING (session is now in the terminal grace period, read-only), DRIVER_SESSION_CLOSED (grace period ended, connection about to close).\nNotes: Replaces polling as the realtime channel for the Driver Web app; mutations (e.g. marking ready) still go through the REST endpoints above. At most DRIVER_STREAM_CONNECTION_LIMIT (default 2) concurrent connections per driver session."
           },
           "response": []
         }

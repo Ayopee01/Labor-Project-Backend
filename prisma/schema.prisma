@@ -671,17 +671,23 @@ model TicketWorkerPayment {
 }
 
 model DriverSession {
-  id           Int       @id @default(autoincrement())
-  ticketJobId  Int       @map("ticket_job_id")
-  sessionToken String    @unique @map("session_token") @db.VarChar(255)
-  expiresAt    DateTime  @map("expires_at") @db.Timestamp(3)
-  revokedAt    DateTime? @map("revoked_at") @db.Timestamp(3)
-  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamp(3)
-  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamp(3)
+  id            Int       @id @default(autoincrement())
+  ticketJobId   Int       @map("ticket_job_id")
+  deviceId      String?   @map("device_id") @db.VarChar(255)
+  sessionToken  String    @unique @map("session_token") @db.VarChar(255)
+  expiresAt     DateTime  @map("expires_at") @db.Timestamp(3)
+  revokedAt     DateTime? @map("revoked_at") @db.Timestamp(3)
+  // ตั้งเฉพาะตอน revoke เพราะรถเข้า terminal (COMPLETED/CANCELLED) เท่านั้น — ใช้ให้ session อ่าน
+  // snapshot สุดท้ายได้ต่อแบบ read-only จนถึงเวลานี้ (DRIVER_TERMINAL_SESSION_GRACE_MINUTES) ก่อนถือว่าหมดอายุจริง
+  // revoke ด้วยเหตุอื่น (device rotate ซ้ำ) ไม่ตั้งค่านี้ จึงไม่ได้รับสิทธิ์อ่านต่อ
+  readOnlyUntil DateTime? @map("read_only_until") @db.Timestamp(3)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamp(3)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamp(3)
 
   ticketJob TicketJob @relation(fields: [ticketJobId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([ticketJobId])
+  @@index([ticketJobId, deviceId])
   @@map("driver_sessions")
 }
 

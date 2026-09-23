@@ -21,6 +21,7 @@ import * as ticketJobRepository from "../repositories/shared/ticket-job.reposito
 import * as workScheduleRepository from "../repositories/shared/work-schedule.repository";
 // Import Services
 import { publishAdminWorkerStatusChanged, publishNotification } from "./notifications.service";
+import { publishDriverJobUpdate } from "./driver-stream.service";
 import { publishRealtimeEvent } from "./shared/realtime-notification.service";
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import * as ticketJobLifecycleService from "./shared/ticket-job-lifecycle.service";
@@ -45,7 +46,7 @@ import { adminAssignWorkersBodySchema, adminCancelAssignmentBodySchema, adminCan
 import { requireActorId } from "../utils/actor";
 import ApiError from "../utils/api-error";
 // Import Config
-import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, DAILY_WORKER_INCOME_PAYMENT_STATUS, SUBMITTED_TICKET_STATUSES, TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_STATUS, TICKET_SUBMITTER_ROLE, TICKET_WORKER_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
+import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, DAILY_WORKER_INCOME_PAYMENT_STATUS, SUBMITTED_TICKET_STATUSES, TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_STATUS, TICKET_SUBMITTER_ROLE, TICKET_WORKER_STATUS, VEHICLE_JOB_STATUS, WORKER_OPEN_APP_REASON } from "../constants/status";
 import { DEFAULT_PAGE_LIMIT } from "../constants/pagination";
 import { ADMIN_ACTION_TYPE } from "../types/shared/admin-action-log.type";
 import type { AdminActionLogDto } from "../types/shared/admin-action-log.type";
@@ -1634,6 +1635,9 @@ async function performTicketJobCancellation(
     ]),
   );
 
+  // แจ้ง Driver Web ว่ารถถูกยกเลิกแล้ว — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(ticketJobId, "DRIVER_JOB_TERMINAL");
+
   return { ticketJob, activeAssignments, ticketNos, activeBooths };
 }
 
@@ -1960,6 +1964,9 @@ export async function assignTicketJobWorkers(
     },
   );
 
+  // แจ้ง Driver Web ว่ามี assignment ใหม่ — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(ticketJobId, "DRIVER_JOB_UPDATED");
+
   // Assignment ทุกตัว commit ลง DB แล้วจริง จากนี้เป็นแค่ best-effort notify Redis/BullMQ/Socket
   // ต้องครอบ try/catch แยกทีละ worker ห้าม throw ออก ไม่งั้น worker ที่เหลือจะไม่ได้ schedule timeout ค้างถาวร และ request จะพัง 500 ทั้งที่ assign สำเร็จแล้ว
   let tickets: Array<{ ticket_no: string; created_at: string }> = [];
@@ -2113,10 +2120,16 @@ async function cancelAssignment(
     },
   );
 
+  // แจ้ง Driver Web ว่า assignment ถูกยกเลิก — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(assignment.vehicle_job_id, "DRIVER_JOB_UPDATED");
+
   await removeAssignmentTimeout(assignment.id);
   await removeScanTimeout(assignment.id);
   await removeScanWarning(assignment.id);
-  const queue = await markWorkerOpenApp(assignment.worker_id);
+  const queue = await markWorkerOpenApp(
+    assignment.worker_id,
+    WORKER_OPEN_APP_REASON.ADMIN_CANCEL_ASSIGNMENT,
+  );
   const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
     assignment.vehicle_job_id,
   );
@@ -2429,6 +2442,14 @@ async function cancelMarketJobById(
 
     return { marketJob: cancelled, completedTicketJob, activeBooths };
   });
+
+  // แจ้ง Driver Web ว่าตลาดถูกยกเลิก (หรือรถจบงานไปเลยถ้านี่คือตลาดสุดท้าย) — เรียกหลัง transaction
+  // ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(
+    marketJob.vehicle_job_id,
+    completedTicketJob ? "DRIVER_JOB_TERMINAL" : "DRIVER_JOB_UPDATED",
+  );
+
   const ticketJob = await ticketJobRepository.findTicketJobById(
     marketJob.vehicle_job_id,
   );
@@ -2598,6 +2619,14 @@ async function cancelStallJobById(
 
     return cancelStallJobRecord(current, reasonCode, reasonText, actorId, transaction);
   });
+
+  // แจ้ง Driver Web ว่าแผงถูกยกเลิก (หรือรถจบงานไปเลยถ้านี่คือแผงสุดท้าย) — เรียกหลัง transaction
+  // ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(
+    ticket.vehicle_job_id,
+    completedTicketJob ? "DRIVER_JOB_TERMINAL" : "DRIVER_JOB_UPDATED",
+  );
+
   const ticketJob = await ticketJobRepository.findTicketJobById(
     ticket.vehicle_job_id,
   );
@@ -2942,6 +2971,13 @@ async function cancelTicketWorkerFromBooth(
   });
 
   if (boothCancelled) {
+    // แจ้ง Driver Web ว่าแผงถูกยกเลิก (worker คนสุดท้ายถูกถอดออก) หรือรถจบงานไปเลยถ้านี่คือแผงสุดท้าย —
+    // เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+    publishDriverJobUpdate(
+      ticketJob.id,
+      completedTicketJob ? "DRIVER_JOB_TERMINAL" : "DRIVER_JOB_UPDATED",
+    );
+
     const cancelledTicketJob = await ticketJobRepository.findTicketJobById(ticketJob.id);
     const marketJob = await marketJobRepository.findMarketJobById(ticket.market_job_id);
 
@@ -3078,6 +3114,9 @@ export async function overrideTicketProductCounts(
     ]),
   );
 
+  // แจ้ง Driver Web ว่าแผงถูกส่งยอดแล้ว — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(result.ticket.vehicle_job_id, "DRIVER_JOB_UPDATED");
+
   // submitTicketCompletion commit สถานะ Ticket เป็น DELIVERED ไปแล้วจริง จากนี้เป็นแค่ best-effort
   // notify vendor เท่านั้น ห้าม throw ออกไปทำให้ request ตอบ error ทั้งที่ยอดบันทึกสำเร็จแล้ว
   try {
@@ -3188,6 +3227,9 @@ export async function changeTicketJobToWait(
 
     return { updated: result, cancelledAssignments: cancelled };
   });
+
+  // แจ้ง Driver Web ว่า dispatch/สถานะรถเปลี่ยน — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(ticketJob.id, "DRIVER_JOB_UPDATED");
 
   let requeuedWorkerCodes: Array<string | null> = [];
   let openAppWorkerCodes: Array<string | null> = [];
@@ -3397,6 +3439,9 @@ export async function releaseTicketJobWorkers(
 
     return releasable;
   });
+
+  // แจ้ง Driver Web ว่ารถเปลี่ยนเป็น RELEASED — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(ticketJob.id, "DRIVER_JOB_UPDATED");
 
   const releasedWorkerAccountIds = releasableAssignments.map(
     (assignment) => assignment.worker_id,

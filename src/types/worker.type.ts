@@ -2,6 +2,7 @@
 import type { WorkerWorkStatus } from "./shared/worker-status.type";
 import type { WebSocket } from "ws";
 import type { WorkScheduleDto } from "./admin-workers.type";
+import type { ShiftInactiveReasonCode } from "../utils/shift-status-localization";
 
 /* -------------------------------------- Types -------------------------------------- */
 
@@ -256,6 +257,7 @@ export interface WorkerQueueEntryDto {
   status: WorkerWorkStatus;
   ready_at: string | null;
   break_until: string | null;
+  open_app_reason?: string | null;
   break_count_used?: number;
   break_count_limit?: number;
   break_duration_minutes?: number;
@@ -311,6 +313,8 @@ export interface WorkerStatusResponse {
   phone: string | null;
   shift: WorkerStatusShift | null;
   shift_active: boolean;
+  reason_code?: ShiftInactiveReasonCode;
+  reason_text?: string;
   current_job?: WorkerCurrentJobResponse | null;
   break_until?: string;
   break_until_unix_ms?: number | null;
@@ -322,6 +326,9 @@ export interface WorkerPresenceDto {
   is_online: boolean;
   last_seen_at: string | null;
   stale_after_seconds: number;
+  // เวลาที่ worker กลับมา online รอบปัจจุบัน (เปลี่ยนจาก offline/stale → online) ใช้แยกจาก
+  // last_seen_at ที่ขยับทุก heartbeat — reconnect ภายใน stale window ต้องไม่ทำให้ค่านี้ขยับ
+  session_started_at: string | null;
 }
 
 // Type DTO assignment ของ worker ต่อ vehicle job

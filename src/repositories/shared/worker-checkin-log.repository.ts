@@ -41,6 +41,29 @@ export async function findByWorkerAndShift(
   });
 }
 
+// Function ค้นหา checkin log ของ worker หลายคนพร้อมกัน ตาม (worker_id, shift_instance_key) คู่ของแต่ละคน —
+// ใช้ตอน Admin ดู worker status แบบ list เพื่อคำนวณ reason ของ shift_active โดยไม่ query ทีละคน
+export async function findManyByWorkerAndShiftKeys(
+  keys: WorkerCheckinLogKeyInput[],
+  connection?: DbConnection
+): Promise<Map<number, WorkerCheckinLog>> {
+  if (keys.length === 0) {
+    return new Map();
+  }
+
+  const db = client(connection);
+  const logs = await db.workerCheckinLog.findMany({
+    where: {
+      OR: keys.map((key) => ({
+        workerId: key.worker_id,
+        shiftInstanceKey: key.shift_instance_key,
+      })),
+    },
+  });
+
+  return new Map(logs.map((log) => [log.workerId, log]));
+}
+
 // Function ทำเครื่องหมายว่า worker online ในกะนี้ (สร้างใหม่ถ้ายังไม่มี หรืออัปเดตถ้ามีอยู่แล้ว)
 export async function markWorkerShiftOnline(
   input: WorkerCheckinLogWriteInput,

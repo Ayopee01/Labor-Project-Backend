@@ -1,7 +1,7 @@
 // Import Types
 import type { AccessTokenPayload, SessionDto } from "../auth.type";
 import type { PublicGateClient } from "../shared/gate-client.type";
-import type { DriverSessionDto } from "../driver.type";
+import type { DriverSessionContext } from "../driver.type";
 
 /* -------------------------------------- Type Declarations -------------------------------------- */
 
@@ -11,7 +11,7 @@ declare global {
     interface Request {
       auth?: AccessTokenPayload;
       session?: SessionDto;
-      driverSession?: DriverSessionDto;
+      driverSession?: DriverSessionContext;
       gateClient?: PublicGateClient;
       rawBody?: string;
       requestId?: string;

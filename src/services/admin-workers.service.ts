@@ -1,8 +1,10 @@
 // Import Library
 import { Prisma } from "@prisma/client";
+import type { WorkerCheckinLog } from "@prisma/client";
 // Import Config
 import { withTransaction } from "../db/prisma";
 import { EMPTY_SECURITY_AUDIT_CONTEXT } from "../config/security-audit.config";
+import type { RuntimeSettings } from "../config/runtime.config";
 // Import Queues
 import { enqueueWorker, getWorkerBreakCount, getWorkerPresence, getWorkerPresences, getWorkerQueueStatus, getWorkerQueueStatuses, getWorkerReadyQueueRanks, incrementWorkerBreakCount, markWorkerBreak, markWorkerOpenApp, removeWorkerBreakReturn, scheduleWorkerBreakReturn } from "../queues/worker-queue";
 // Import Repositories
@@ -12,6 +14,7 @@ import * as adminActionLogRepository from "../repositories/shared/admin-action-l
 import * as masterWorkerRepository from "../repositories/shared/master-worker.repository";
 import * as assignmentRepository from "../repositories/shared/ticket-job-assignment.repository";
 import * as ticketJobRepository from "../repositories/shared/ticket-job.repository";
+import * as workerCheckinLogRepository from "../repositories/shared/worker-checkin-log.repository";
 import * as workerSessionRepository from "../repositories/shared/worker-session.repository";
 // Import Queues
 import { dispatchReadyWorkers } from "../queues/worker-dispatch";
@@ -43,9 +46,10 @@ import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, formatScheduleWi
 import { buildDeadline, formatBangkokDate, toUnixMs } from "../utils/time";
 import { buildWorkerQueueSocketPayload } from "../utils/worker-payload";
 import { buildWorkerCode } from "../utils/worker-code";
-import { resolveWorkerWorkStatus } from "../utils/worker-status";
+import { resolveShiftActiveStatus, resolveWorkerWorkStatus } from "../utils/worker-status";
+import { resolveShiftInactiveReasonText } from "../utils/shift-status-localization";
 // Import Config
-import { ASSIGNMENT_STATUS } from "../constants/status";
+import { ASSIGNMENT_STATUS, WORKER_OPEN_APP_REASON } from "../constants/status";
 import { DEFAULT_PAGE_LIMIT } from "../constants/pagination";
 // Import Types
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
@@ -738,6 +742,12 @@ function resolveStatusEnteredAt(
     return queue?.updated_at ?? presence.last_seen_at;
   }
 
+  if (status === WORKER_WORK_STATUS.OPEN_APP) {
+    // ต้องใช้เวลาเริ่ม presence session ปัจจุบัน ห้าม fallback ไป queue?.updated_at เพราะค่านั้นอาจเป็น
+    // เวลาที่ queue entry ถูกแก้ไขล่าสุดจากกะก่อนหน้า (เช่นตอนจบกะเมื่อวาน) ไม่ใช่เวลาที่เปิดแอปรอบนี้จริง
+    return presence.session_started_at ?? presence.last_seen_at;
+  }
+
   return queue?.updated_at ?? presence.last_seen_at;
 }
 
@@ -809,11 +819,23 @@ function formatAdminWorkerStatusItem(
   socketConnected = isWorkerSocketConnected(worker.id),
   teamScanReadiness: Pick<VehicleWorkReadinessDto, "is_ready"> | null = null,
   ticketNumber: string | null = null,
+  attendance: Pick<WorkerCheckinLog, "closedAt" | "closeReason" | "firstOnlineAt"> | null = null,
+  settings: Pick<RuntimeSettings, "worker_accept_timeout_limit" | "worker_break_retry"> | null = null,
 ): AdminWorkerStatusItem {
   const scheduleWithShift = formatScheduleWithShift(schedule);
   const status = resolveWorkerWorkStatus(queue, assignment, teamScanReadiness);
   const isOvertime =
     assignment !== null && (!schedule || !isTimeInWorkSchedule(schedule));
+  // ให้ Admin เห็นสาเหตุเดียวกับที่ worker เห็นใน GET /api/workers/me/status เพื่อรู้ว่าทำไม worker ถึงมา
+  // ติดต่อขอให้ force เข้าคิว — ใช้ resolver กลางตัวเดียวกัน กัน logic เพี้ยนไปจากกัน
+  const { reasonCode } = resolveShiftActiveStatus({
+    isWithinShiftTime: Boolean(schedule && isTimeInWorkSchedule(schedule)),
+    closedAt: attendance?.closedAt,
+    closeReason: attendance?.closeReason,
+    firstOnlineAt: attendance?.firstOnlineAt,
+    queueStatus: queue?.status,
+    openAppReason: queue?.open_app_reason,
+  });
 
   return {
     full_name: worker.full_name,
@@ -839,6 +861,15 @@ function formatAdminWorkerStatusItem(
           scan_deadline_at: assignment.scan_deadline_at,
         }
       : null,
+    ...(reasonCode && settings
+      ? {
+          reason_code: reasonCode,
+          reason_text: resolveShiftInactiveReasonText(reasonCode, worker.lang, {
+            accept_timeout_limit: settings.worker_accept_timeout_limit,
+            break_retry_minutes: settings.worker_break_retry,
+          }),
+        }
+      : {}),
   };
 }
 
@@ -889,12 +920,13 @@ async function getAdminWorkerStatus(idParam: unknown): Promise<AdminWorkerStatus
     typeof idParam === "number" ? idParam : String(idParam)
   );
 
-  const [currentSchedule, queueEntry, assignment, presence, queueRanks] = await Promise.all([
+  const [currentSchedule, queueEntry, assignment, presence, queueRanks, settings] = await Promise.all([
     Promise.resolve(scheduleFromWorker(worker)),
     getWorkerQueueStatus(worker.id),
     assignmentRepository.findCurrentAssignmentByWorker(worker.id),
     getWorkerPresence(worker.id),
     getWorkerReadyQueueRanks([worker.id]),
+    getRuntimeSettings(),
   ]);
   const [teamScanReadiness, ticketJob] = assignment
     ? await Promise.all([
@@ -904,6 +936,12 @@ async function getAdminWorkerStatus(idParam: unknown): Promise<AdminWorkerStatus
         ticketJobRepository.findTicketJobById(assignment.vehicle_job_id),
       ])
     : [null, null];
+  const attendance = currentSchedule
+    ? await workerCheckinLogRepository.findByWorkerAndShift({
+        worker_id: worker.id,
+        shift_instance_key: buildWorkScheduleShiftInstanceKey(currentSchedule),
+      })
+    : null;
 
   return formatAdminWorkerStatusItem(
     worker,
@@ -915,6 +953,8 @@ async function getAdminWorkerStatus(idParam: unknown): Promise<AdminWorkerStatus
     isWorkerSocketConnected(worker.id),
     teamScanReadiness,
     ticketJob?.ticket_number ?? null,
+    attendance,
+    settings,
   );
 }
 
@@ -950,6 +990,20 @@ export async function listAdminWorkerStatuses(query: Record<string, unknown> = {
       readiness.ticket_number,
     ]),
   );
+  // ดึง attendance (checkin log) ของกะปัจจุบันทุกคนพร้อมกัน เอาไว้คำนวณ reason_code/reason_text ให้ Admin
+  // เห็นสาเหตุเดียวกับที่ worker เห็นใน GET /api/workers/me/status — เฉพาะคนที่มี schedule วันนี้เท่านั้น
+  const workersWithSchedule = workers
+    .map((worker) => ({ worker, schedule: scheduleFromWorker(worker) }))
+    .filter(
+      (entry): entry is { worker: MasterWorkerDto; schedule: WorkScheduleDto } =>
+        entry.schedule !== null,
+    );
+  const attendanceMap = await workerCheckinLogRepository.findManyByWorkerAndShiftKeys(
+    workersWithSchedule.map(({ worker, schedule }) => ({
+      worker_id: worker.id,
+      shift_instance_key: buildWorkScheduleShiftInstanceKey(schedule),
+    })),
+  );
 
   const data = workers
     .map((worker) => {
@@ -959,11 +1013,13 @@ export async function listAdminWorkerStatuses(query: Record<string, unknown> = {
           is_online: false,
           last_seen_at: null,
           stale_after_seconds: settings.worker_presence_stale_seconds,
+          session_started_at: null,
         };
 
       const queue = queueStatuses.get(worker.id) ?? null;
       const assignment = assignmentMap.get(worker.id) ?? null;
       const socketConnected = isWorkerSocketConnected(worker.id);
+      const attendance = attendanceMap.get(worker.id) ?? null;
 
       return {
         worker,
@@ -985,13 +1041,18 @@ export async function listAdminWorkerStatuses(query: Record<string, unknown> = {
           assignment
             ? ticketJobTicketNumberMap.get(assignment.vehicle_job_id) ?? null
             : null,
+          attendance,
+          settings,
         ),
       };
     })
-    .filter(({ worker, assignment, presence, queue, schedule }) => {
+    .filter(({ worker, assignment, presence, queue, schedule, item }) => {
+      // worker ที่มี reason_code (เช่น SCAN_TIMEOUT, BREAK_RETRY_EXPIRED) ต้องโชว์ใน list เสมอแม้ offline
+      // ไม่มีงานค้าง เพราะเป็นเคสที่ Admin ต้องเห็นเพื่อ force กลับเข้าคิวให้ตอน worker มาติดต่อ
       const hasVisibleWorkerFlow =
         presence.is_online ||
         assignment !== null ||
+        item.reason_code !== undefined ||
         (queue !== null && queue.status !== WORKER_WORK_STATUS.OPEN_APP);
 
       const isOvertime = assignment !== null;
@@ -1118,7 +1179,7 @@ export async function forceAdminWorkerStatus(
   }
 
   if (input.status === WORKER_WORK_STATUS.OPEN_APP) {
-    await markWorkerOpenApp(worker.id);
+    await markWorkerOpenApp(worker.id, WORKER_OPEN_APP_REASON.ADMIN_FORCED_STATUS);
   }
 
   if (input.status === WORKER_WORK_STATUS.BREAK) {

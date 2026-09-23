@@ -3,10 +3,11 @@ import type { TicketJobOperationRecord } from "../types/admin-jobs.type";
 import type { AdminTicketJobOperationItemResponse, AdminTicketJobOperationMarketResponse, AdminTicketJobOperationMarketSummaryResponse, AdminTicketJobOperationSummaryResponse, AdminTicketJobOperationWorkerSummaryResponse, VehicleOperationStatus} from "../types/admin-jobs.type";
 
 // Import Config
-import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, SCANNED_ASSIGNMENT_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS, VEHICLE_OPERATION_STATUS } from "../constants/status";
+import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, SCANNED_ASSIGNMENT_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
 
 // Import Utils
 import { findActiveWorkSchedule, formatScheduleWithShift } from "../utils/shift";
+import { resolveVehicleOperationStatus as resolveVehicleOperationStatusCore } from "../utils/vehicle-operation-status";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 
 /* -------------------------------------- Functions -------------------------------------- */
@@ -186,51 +187,21 @@ function buildOperationMarketSummary(
   };
 }
 
-// Function ตัดสิน operation_status สำหรับ UI จัดการรถจาก status, dispatch, จำนวน worker, booth
-// reject และ workStartedAt — mutually exclusive ตามลำดับความสำคัญนี้เท่านั้น (เจอก่อนใช้ก่อน)
+// Function ตัดสิน operation_status สำหรับ UI จัดการรถ — ห่อ resolver กลาง (vehicle-operation-status.ts)
+// ที่ Driver ใช้ร่วมกัน โดยแปลง TicketJobOperationRecord เป็น primitive input ให้ resolver ก่อน
 function resolveVehicleOperationStatus(
   record: TicketJobOperationRecord,
   workerSummary: AdminTicketJobOperationWorkerSummaryResponse,
   rejectedBoothCount: number
 ): VehicleOperationStatus {
-  if (record.status === VEHICLE_JOB_STATUS.CANCELLED) {
-    return VEHICLE_OPERATION_STATUS.CANCELLED;
-  }
-
-  if (record.status === VEHICLE_JOB_STATUS.COMPLETED) {
-    return VEHICLE_OPERATION_STATUS.COMPLETED;
-  }
-
-  // มีสิทธิ์ก่อน RELEASED เสมอ — เกิดขึ้นได้แม้หลัง release-workers ไปแล้ว (Worker/Admin ส่งยอดใหม่
-  // หลัง release แล้ว Vendor reject ซ้ำอีกรอบ) TicketJob.status ยังเป็น RELEASED ค้างอยู่แบบนั้น
-  if (rejectedBoothCount > 0) {
-    return VEHICLE_OPERATION_STATUS.REJECT;
-  }
-
-  // Format RELEASED ยังนับเป็น working บนบอร์ด operation
-  if (record.status === VEHICLE_JOB_STATUS.RELEASED) {
-    return VEHICLE_OPERATION_STATUS.WORKING;
-  }
-
-  // dispatchNow=false ไม่ว่าจะเกิดจาก Gate ตั้งไว้ตอนสร้าง หรือ Admin เปลี่ยนจาก true เป็น false ทีหลัง
-  if (!record.dispatchNow) {
-    return VEHICLE_OPERATION_STATUS.WAIT_UNLOAD;
-  }
-
-  if (
-    record.workersRequired > 0 &&
-    workerSummary.active < record.workersRequired
-  ) {
-    return VEHICLE_OPERATION_STATUS.WAIT_WORKER;
-  }
-
-  // ทีมครบแล้ว (dispatchNow=true, active>=required) — workStartedAt ถูกตั้งครั้งเดียวตอนทีมทั้งหมด
-  // scan เข้างานครบ (ดู markTicketJobInProgress) ใช้แยก "พร้อมแต่ยังไม่เริ่ม" กับ "กำลังทำงานจริง"
-  if (record.workStartedAt === null) {
-    return VEHICLE_OPERATION_STATUS.READY_NOW;
-  }
-
-  return VEHICLE_OPERATION_STATUS.WORKING;
+  return resolveVehicleOperationStatusCore({
+    status: record.status,
+    dispatch_now: record.dispatchNow,
+    workers_required: record.workersRequired,
+    active_assignment_count: workerSummary.active,
+    work_started_at: record.workStartedAt,
+    has_rejected_booth: rejectedBoothCount > 0,
+  });
 }
 
 // Function คำนวณเวลาผ่าน Gate และเวลาทำงานของรถ

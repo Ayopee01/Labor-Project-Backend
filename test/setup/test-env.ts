@@ -55,6 +55,9 @@ export function applyIsolatedTestEnv(prefix = "test"): void {
   process.env.BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE = `${prefix}-assignment-timeout`;
   process.env.BULLMQ_WORKER_BREAK_RETURN_QUEUE = `${prefix}-worker-break-return`;
   process.env.BULLMQ_LINE_MESSAGE_QUEUE = `${prefix}-line-message`;
+  // Gate ticket creation ต้องประกอบ Driver QR URL เสมอ (gate.service.ts) — required env นี้ไม่มี default
+  // ใน production เหมือนกัน (เจตนา บังคับตั้งค่าจริงก่อน deploy) จึงต้องตั้งไว้ให้ route test ผ่านด้วย
+  process.env.DRIVER_WEB_BASE_URL ??= "https://driver.test.example.com";
 }
 
 // Function ตรวจสอบ DATABASE_URL ของ test ก่อนรัน integration

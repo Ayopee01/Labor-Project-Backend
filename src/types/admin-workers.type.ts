@@ -1,5 +1,6 @@
 import type { WorkerWorkStatus } from "./shared/worker-status.type";
 import type { AccountStatus } from "./shared/account.type";
+import type { ShiftInactiveReasonCode } from "../utils/shift-status-localization";
 
 export const ACCOUNT_ROLES = ["admin", "worker"] as const;
 
@@ -241,4 +242,6 @@ export type AdminWorkerStatusItem = {
   status: AdminWorkerBoardStatus;
   assignment: AdminWorkerStatusAssignment | null;
   is_overtime: boolean;
+  reason_code?: ShiftInactiveReasonCode;
+  reason_text?: string;
 };

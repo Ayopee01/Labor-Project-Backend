@@ -65,6 +65,29 @@ export const TICKET_SUBMITTER_ROLE = {
   ADMIN: "admin",
 } as const;
 
+// Config เหตุผลที่ shift_active เป็น false ใน GET /api/workers/me/status
+export const SHIFT_INACTIVE_REASON = {
+  OUTSIDE_SHIFT: "OUTSIDE_SHIFT", // ไม่มีกะวันนี้ / นอกเวลากะ / ปิดกะไปแล้วตามปกติ (เลิกงานเอง, หมดเวลากะ)
+  ACCEPT_TIMEOUT_LIMIT_REACHED: "ACCEPT_TIMEOUT_LIMIT_REACHED", // ไม่กดรับงานติดกันครบ worker_accept_timeout_limit ครั้ง ระบบปิดกะให้
+  SCAN_TIMEOUT: "SCAN_TIMEOUT", // สแกน QR/บาร์โค้ดไม่ทันเวลาที่กำหนด
+  ADMIN_CANCELLED_ASSIGNMENT: "ADMIN_CANCELLED_ASSIGNMENT", // Admin ยกเลิกงาน/assignment ที่กำลังทำอยู่
+  ADMIN_FORCED_STATUS: "ADMIN_FORCED_STATUS", // Admin สั่งเปลี่ยนสถานะเป็น open_app โดยตรงผ่าน force-status endpoint
+  BREAK_RETRY_EXPIRED: "BREAK_RETRY_EXPIRED", // พักเบรกจบแล้วไม่เปิดแอปกลับเข้าคิวภายในเวลาที่กำหนด
+} as const;
+
+// Config ค่า reason ดิบที่บันทึกลง Redis (queue entry) ตอน worker ถูกเด้งไป open_app — ใช้แปลงกลับเป็น
+// SHIFT_INACTIVE_REASON ตอนตอบ GET /api/workers/me/status — BREAK_ENDED_AWAITING_RECONNECT ไม่ถูก map ไปเป็น
+// SHIFT_INACTIVE_REASON code ใดๆ (worker เห็นแค่ shift_active: false เฉยๆ) เพราะยังอยู่ในหน้าต่างเวลาที่
+// self-resolve ได้เอง (FCM แจ้งไปแล้วตอนเกิดเหตุการณ์) เก็บ raw value นี้ไว้ใน Redis เพื่อ observability/debug
+// ฝั่ง admin เท่านั้น ต่อเมื่อหน้าต่างเวลาหมดจริงถึงจะเปลี่ยนเป็น BREAK_RETRY_EXPIRED ที่ map เป็น code ให้
+export const WORKER_OPEN_APP_REASON = {
+  SCAN_TIMEOUT: "scan_timeout",
+  ADMIN_CANCEL_ASSIGNMENT: "admin_cancel_assignment",
+  ADMIN_FORCED_STATUS: "admin_forced_status",
+  BREAK_ENDED_AWAITING_RECONNECT: "break_ended_awaiting_reconnect",
+  BREAK_RETRY_EXPIRED: "break_retry_expired",
+} as const;
+
 // Config Status ของ membership ของ Worker ภายใน Ticket/Booth
 export const TICKET_WORKER_STATUS = {
   WORKING: "WORKING", // Worker คนนี้ยังเป็นสมาชิกของ Booth และมีสิทธิ์ถูกนำไปคิดค่าแรง

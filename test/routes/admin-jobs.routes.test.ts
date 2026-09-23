@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, test } from "node:test";
 
 import { addAdmin, addDispatchableJob, addGateClient, addMarketJobForVehicle, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketFinancialService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, signLineWebhookBody, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
+import { FakeRedis } from "../helpers/app-test-infra-mocks";
+import { WORKER_OPEN_APP_REASON } from "../../src/constants/status";
+import { REDIS_CONFIG } from "../../src/config/redis.config";
 
 let server: TestServer;
 let password: typeof import("../../src/utils/password");
@@ -30,6 +33,26 @@ async function loginWorker(accountId: number): Promise<{ token: string; worker: 
     token: login.body.access_token,
     worker,
   };
+}
+
+// Function จำลองการล่วงเวลาของ worker presence ใน FakeRedis (แก้ last_seen_at ตรงๆ) สำหรับ test ที่ต้อง
+// พิสูจน์ว่า presence กลายเป็น stale/offline แล้ว heartbeat รอบถัดไปต้องเริ่ม session ใหม่
+function setWorkerPresenceLastSeenAt(accountId: number, lastSeenAt: string): void {
+  const key = `${REDIS_CONFIG.workerPresenceKeyPrefix}${accountId}`;
+  FakeRedis.hashes.set(key, {
+    ...(FakeRedis.hashes.get(key) ?? {}),
+    last_seen_at: lastSeenAt,
+  });
+}
+
+// Function จำลองว่า queue entry ของ worker ถูกแก้ไขล่าสุดเมื่อไหร่ (เช่นตอนจบกะเมื่อวาน) สำหรับ test ที่
+// ต้องพิสูจน์ว่า status_entered_at ของ open_app ไม่ fallback ไปใช้เวลานี้อีกต่อไป
+function setWorkerQueueUpdatedAt(accountId: number, updatedAt: string): void {
+  const key = `${REDIS_CONFIG.workerStatusKeyPrefix}${accountId}`;
+  FakeRedis.hashes.set(key, {
+    ...(FakeRedis.hashes.get(key) ?? {}),
+    updated_at: updatedAt,
+  });
 }
 
 // Function เธชเธฃเนเธฒเธ gate vehicle job body เธชเธณเธซเธฃเธฑเธ test
@@ -473,6 +496,145 @@ describe("Worker Status Board", () => {
     assert.equal(response.body.data[0].shirt_number, worker.coat_no);
     assert.equal(response.body.data[0].status, "ready");
     assert.equal(response.body.data[0].socket_connected, false);
+  });
+
+  test("GET /api/admin/jobs/workers/status shows an offline worker stuck at open_app with reason_code/reason_text so Admin can find them to force back into the queue", async () => {
+    const { token } = await loginJobAdmin(9623);
+    const { token: workerToken, worker } = await loginWorker(9624);
+    state.connectedWorkers.add(worker.id);
+
+    const onlineResponse = await server.request("POST", "/api/workers/me/online", {
+      token: workerToken,
+    });
+    assert.equal(onlineResponse.status, 200);
+
+    // จำลองว่า worker พลาดสแกน QR/บาร์โค้ด (เด้งไป open_app) แล้วปิดแอปไป — ก่อนหน้านี้ hasVisibleWorkerFlow
+    // filter จะซ่อน worker แบบนี้ออกจาก list ไปเลยเพราะ offline + open_app + ไม่มีงานค้าง ทำให้ Admin หา
+    // worker คนนี้ไม่เจอตอนต้องการ force กลับเข้าคิว
+    await workerQueue.markWorkerOpenApp(worker.id, WORKER_OPEN_APP_REASON.SCAN_TIMEOUT);
+    state.connectedWorkers.delete(worker.id);
+
+    const response = await server.request("GET", "/api/admin/jobs/workers/status", {
+      token,
+    });
+
+    assert.equal(response.status, 200);
+    const item = response.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+    assert.ok(item, "expected the offline worker with a reason_code to still be listed");
+    assert.equal(item.status, "open_app");
+    assert.equal(item.socket_connected, false);
+    assert.equal(item.reason_code, "SCAN_TIMEOUT");
+    assert.equal(
+      item.reason_text,
+      "ท่านสแกน QR โค้ด/บาร์โค้ดไม่ทันเวลาที่กำหนด กรุณาติดต่อเจ้าหน้าที่ (Admin)",
+    );
+  });
+
+  test("GET /api/admin/jobs/workers/status uses the current presence session for open_app status_entered_at, not queue.updated_at from a previous shift", async () => {
+    const { token } = await loginJobAdmin(96301);
+    const worker = addWorker(96302);
+
+    await workerQueue.markWorkerOpenApp(worker.id);
+
+    // จำลองว่า queue entry นี้ถูกแก้ไขล่าสุดตอนจบกะเมื่อวาน 18:00 — ค่านี้ต้องไม่ถูกใช้เป็น status_entered_at
+    // อีกต่อไป ต้องใช้เวลาที่ presence session ปัจจุบันเริ่มแทน (ข้อ 37)
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    setWorkerQueueUpdatedAt(worker.id, yesterday);
+
+    // worker เปิดแอปใหม่วันนี้ -> heartbeat รอบแรกของ presence session ใหม่
+    const beforeOpen = Date.now();
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    const response = await server.request("GET", "/api/admin/jobs/workers/status", { token });
+    const item = response.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+
+    assert.ok(item);
+    assert.equal(item.status, "open_app");
+    assert.notEqual(item.statusEnteredAt, yesterday);
+    assert.ok(
+      new Date(item.statusEnteredAt).getTime() >= beforeOpen - 1000,
+      `expected statusEnteredAt to reflect today's open, got ${item.statusEnteredAt}`,
+    );
+  });
+
+  test("GET /api/admin/jobs/workers/status keeps open_app status_entered_at stable across a WebSocket reconnect within the grace period", async () => {
+    const { token } = await loginJobAdmin(96311);
+    const worker = addWorker(96312);
+
+    await workerQueue.markWorkerOpenApp(worker.id);
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    const firstResponse = await server.request("GET", "/api/admin/jobs/workers/status", { token });
+    const firstItem = firstResponse.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+    assert.ok(firstItem);
+
+    // จำลอง socket หลุดแล้วต่อกลับภายใน grace period เหมือนที่ handleWorkerSocketConnected เรียก
+    // recordWorkerHeartbeat ซ้ำทุกครั้งที่ connect — ต้องไม่ทำให้เวลาเข้าสถานะ open_app กระโดด
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    const secondResponse = await server.request("GET", "/api/admin/jobs/workers/status", { token });
+    const secondItem = secondResponse.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+
+    assert.equal(secondItem.statusEnteredAt, firstItem.statusEnteredAt);
+  });
+
+  test("GET /api/admin/jobs/workers/status starts a new open_app session once presence has actually gone stale/offline", async () => {
+    const { token } = await loginJobAdmin(96321);
+    const worker = addWorker(96322);
+
+    await workerQueue.markWorkerOpenApp(worker.id);
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    const firstResponse = await server.request("GET", "/api/admin/jobs/workers/status", { token });
+    const firstItem = firstResponse.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+    assert.ok(firstItem);
+
+    // จำลองว่า presence หมด stale window ไปแล้ว (worker_presence_stale_seconds = 90 วิใน test config)
+    // โดยไม่มี heartbeat เข้ามาเลย 120 วิ — ต้องเริ่ม session ใหม่ ไม่ใช่คง session เดิมไว้
+    setWorkerPresenceLastSeenAt(worker.id, new Date(Date.now() - 120_000).toISOString());
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    const secondResponse = await server.request("GET", "/api/admin/jobs/workers/status", { token });
+    const secondItem = secondResponse.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+
+    assert.notEqual(secondItem.statusEnteredAt, firstItem.statusEnteredAt);
+  });
+
+  test("GET /api/admin/jobs/workers/status starts a new open_app session after presence is wiped (Redis TTL expiry / server restart)", async () => {
+    const { token } = await loginJobAdmin(96331);
+    const worker = addWorker(96332);
+
+    await workerQueue.markWorkerOpenApp(worker.id);
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    const firstResponse = await server.request("GET", "/api/admin/jobs/workers/status", { token });
+    const firstItem = firstResponse.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+    assert.ok(firstItem);
+
+    // จำลอง presence key หมดอายุ (TTL) หรือ server restart — ข้อมูล presence เดิมหายไปทั้งหมด
+    await workerQueue.clearWorkerPresence(worker.id);
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    const secondResponse = await server.request("GET", "/api/admin/jobs/workers/status", { token });
+    const secondItem = secondResponse.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+
+    assert.notEqual(secondItem.statusEnteredAt, firstItem.statusEnteredAt);
   });
 
   test("GET /api/admin/jobs/workers/status returns assignment null when worker has no current assignment", async () => {

@@ -84,6 +84,7 @@ function mapQueueStatus(
     status: normalizeWorkerQueueStatus(status.status),
     ready_at: status.ready_at || null,
     break_until: status.break_until || null,
+    open_app_reason: status.open_app_reason || null,
     created_at: status.created_at || "",
     updated_at: status.updated_at || "",
   };
@@ -110,15 +111,18 @@ function mapWorkerPresence(
     is_online: isOnline,
     last_seen_at: lastSeenAt,
     stale_after_seconds: staleAfterSeconds,
+    session_started_at: presence.session_started_at || null,
   };
 }
 
-// Function จัดการ set worker status ใน Redis/BullMQ queue
+// Function จัดการ set worker status ใน Redis/BullMQ queue — open_app_reason มีค่าเฉพาะตอน status เป็น
+// OPEN_APP เท่านั้น (เคลียร์เป็นค่าว่างทุกครั้งที่เปลี่ยนสถานะไปเป็นอย่างอื่น กัน reason ค้างข้ามรอบ)
 async function setWorkerStatus(
   accountId: number,
   status: WorkerWorkStatus,
   readyAt: Date | null,
-  breakUntil: Date | null
+  breakUntil: Date | null,
+  openAppReason?: string | null
 ): Promise<WorkerQueueEntryDto> {
   const nowIso = new Date().toISOString();
   const existing = await redis.hgetall(buildWorkerStatusKey(accountId));
@@ -129,6 +133,8 @@ async function setWorkerStatus(
     status,
     ready_at: readyAt ? readyAt.toISOString() : "",
     break_until: breakUntil ? breakUntil.toISOString() : "",
+    open_app_reason:
+      status === WORKER_WORK_STATUS.OPEN_APP ? openAppReason || "" : "",
     created_at: createdAt,
     updated_at: nowIso,
   });
@@ -199,11 +205,15 @@ export async function enqueueWorkersAtFront(
   return entries;
 }
 
-// Function อัปเดตสถานะ worker open app ใน Redis/BullMQ queue
-export async function markWorkerOpenApp(accountId: number): Promise<WorkerQueueEntryDto> {
+// Function อัปเดตสถานะ worker open app ใน Redis/BullMQ queue — reason (ถ้ามี) ใช้บอกสาเหตุที่ถูกเด้งมา
+// open_app เพื่อให้ GET /api/workers/me/status ตอบ reason_code ที่ตรงจุดกลับไปได้
+export async function markWorkerOpenApp(
+  accountId: number,
+  reason?: string
+): Promise<WorkerQueueEntryDto> {
   await redis.zrem(REDIS_CONFIG.workerQueueKey, String(accountId));
 
-  return setWorkerStatus(accountId, WORKER_WORK_STATUS.OPEN_APP, null, null);
+  return setWorkerStatus(accountId, WORKER_WORK_STATUS.OPEN_APP, null, null, reason);
 }
 
 // Function อัปเดตสถานะ worker assigned ใน Redis/BullMQ queue
@@ -325,7 +335,11 @@ export async function getWorkerReadyQueueRanks(
   return result;
 }
 
-// Function จัดการ record worker heartbeat ใน Redis/BullMQ queue
+// Function จัดการ record worker heartbeat ใน Redis/BullMQ queue — แยก session_started_at ออกจาก
+// last_seen_at: ตั้งค่าใหม่เฉพาะตอนเปลี่ยนจาก offline/stale (ไม่เคย seen หรือ seen ครั้งก่อนเกิน stale
+// window ไปแล้ว รวมถึง Redis key หมดอายุ/server restart) มาเป็น online เท่านั้น ส่วน reconnect ภายใน
+// grace period และ heartbeat ต่อเนื่องต้องคง session_started_at เดิมไว้ ไม่งั้น admin worker status
+// (ข้อ 37) จะเห็นเวลาเข้าสถานะ open_app กระโดดทุกครั้งที่ socket reconnect/ping
 export async function recordWorkerHeartbeat(
   accountId: number
 ): Promise<WorkerPresenceDto> {
@@ -333,9 +347,19 @@ export async function recordWorkerHeartbeat(
   const settings = await getRuntimeSettings();
   const staleAfterSeconds = settings.worker_presence_stale_seconds;
 
+  const existing = await redis.hgetall(buildWorkerPresenceKey(accountId));
+  const previousLastSeenAt = existing.last_seen_at || null;
+  const wasOnline = previousLastSeenAt
+    ? Date.now() - new Date(previousLastSeenAt).getTime() <= staleAfterSeconds * 1000
+    : false;
+  const sessionStartedAt = wasOnline
+    ? existing.session_started_at || lastSeenAt
+    : lastSeenAt;
+
   await redis.hset(buildWorkerPresenceKey(accountId), {
     account_id: String(accountId),
     last_seen_at: lastSeenAt,
+    session_started_at: sessionStartedAt,
   });
   await redis.expire(
     buildWorkerPresenceKey(accountId),
@@ -344,6 +368,7 @@ export async function recordWorkerHeartbeat(
 
   return mapWorkerPresence({
     last_seen_at: lastSeenAt,
+    session_started_at: sessionStartedAt,
   }, staleAfterSeconds);
 }
 

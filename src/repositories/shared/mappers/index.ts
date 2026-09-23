@@ -370,9 +370,11 @@ export function mapDriverSession(record: DriverSession | null): DriverSessionDto
   return {
     id: record.id,
     vehicle_job_id: record.ticketJobId,
+    device_id: record.deviceId,
     session_token: record.sessionToken,
     expires_at: toIsoString(record.expiresAt),
     revoked_at: toIsoString(record.revokedAt),
+    read_only_until: toIsoString(record.readOnlyUntil),
     created_at: toIsoString(record.createdAt),
     updated_at: toIsoString(record.updatedAt),
   };

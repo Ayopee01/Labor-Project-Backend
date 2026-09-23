@@ -1,6 +1,7 @@
 // Import Config
+import { getDriverActiveDeviceLimit } from "../config/driver.config";
 import { withTransaction } from "../db/prisma";
-import { TERMINAL_TICKET_STATUSES, VEHICLE_JOB_STATUS } from "../constants/status";
+import { TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, VEHICLE_JOB_STATUS } from "../constants/status";
 // Import Repositories
 import * as driverRepository from "../repositories/driver.repository";
 import * as ticketJobRepository from "../repositories/shared/ticket-job.repository";
@@ -9,14 +10,16 @@ import { dispatchReadyWorkers } from "../queues/worker-dispatch";
 // Import Services
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import { publishNotification } from "./notifications.service";
+import { publishDriverJobUpdate } from "./driver-stream.service";
 import { notifyVendorBoothDispatchResumed } from "./shared/vendor-line-notification.service";
 // Import Types
-import type { DriverJobReadyResponse, DriverSessionDto, DriverSessionResponse, DriverTicketJobDetailResponse, DriverTicketJobResponse } from "../types/driver.type";
-import type { TicketJobDetailResponse, TicketJobDto } from "../types/worker.type";
+import type { DriverJobSnapshotResponse, DriverSessionContext, DriverSessionResponse, DriverTicketJobResponse } from "../types/driver.type";
+import type { TicketJobDto } from "../types/worker.type";
 // Import Validation
 import { parseWithSchema } from "../validation/parser";
 import { driverQrSessionBodySchema } from "../validation/schemas";
 // Import Utils
+import { formatDriverJobSnapshot } from "../utils/driver-job.formatter";
 import ApiError from "../utils/api-error";
 import { logger } from "../utils/logger";
 
@@ -53,36 +56,22 @@ function formatDriverTicketJob(
   };
 }
 
-// Function จัดรูปแบบ driver vehicle job detail ใน service flow
-function formatDriverTicketJobDetail(
-  detail: TicketJobDetailResponse,
-): DriverTicketJobDetailResponse {
-  return {
-    vehicle_job: formatDriverTicketJob(detail.vehicle_job),
-    markets: detail.markets.map((market) => ({
-      ticket_no: market.ticket_no,
-      boothCount: market.booth_count,
-      marketCode: market.marketCode,
-      marketName: market.marketName,
-      status: market.status,
-      booths: market.booths.map((ticket) => ({
-        boothCode: ticket.boothCode,
-        boothName: ticket.boothName,
-        status: ticket.status,
-        confirmation_status: ticket.confirmation_status,
-        products: ticket.products.map((product) => ({
-          productCode: product.productCode,
-          productName: product.productName,
-          packageCode: product.packageCode,
-          packageName: product.packageName,
-          quantity: product.quantity,
-        })),
-      })),
-    })),
-  };
+// Function โหลด driver job snapshot ปัจจุบันของ vehicle job หนึ่งคันจาก DB (ใช้ร่วมกันทั้ง GET
+// /jobs/current, POST .../ready, และตอน publish event ผ่าน driver-stream.service)
+async function loadDriverJobSnapshot(
+  ticketJobId: number,
+): Promise<DriverJobSnapshotResponse> {
+  const record = await driverRepository.getDriverJobSnapshotRecord(ticketJobId);
+
+  if (!record) {
+    throw new ApiError(404, "VEHICLE_JOB_NOT_FOUND", "Vehicle job not found.");
+  }
+
+  return formatDriverJobSnapshot(record);
 }
 
-// Function สร้าง driver session จาก QR ใน service flow
+// Function สร้าง driver session จาก QR ใน service flow — จำกัด active device ไม่เกิน
+// DRIVER_ACTIVE_DEVICE_LIMIT ต่อ vehicle job (default 2) ตาม 38.5
 export async function createDriverSessionFromQr(
   body: unknown,
 ): Promise<DriverSessionResponse> {
@@ -95,10 +84,7 @@ export async function createDriverSessionFromQr(
     throw new ApiError(404, "INVALID_DRIVER_QR", "Driver QR token is invalid.");
   }
 
-  if (
-    ticketJob.status === VEHICLE_JOB_STATUS.COMPLETED ||
-    ticketJob.status === VEHICLE_JOB_STATUS.CANCELLED
-  ) {
+  if (TERMINAL_JOB_STATUSES.includes(ticketJob.status)) {
     throw new ApiError(
       409,
       "VEHICLE_JOB_CLOSED",
@@ -106,26 +92,82 @@ export async function createDriverSessionFromQr(
     );
   }
 
+  const deviceId = input.device_id ?? null;
+  const deviceLimit = getDriverActiveDeviceLimit();
   const settings = await getRuntimeSettings();
   const driverSessionTtlMs = settings.driver_session_ttl_hours * 60 * 60 * 1000;
-  const expiresAt = new Date(Date.now() + driverSessionTtlMs);
-  const session = await driverRepository.createDriverSession(
-    ticketJob.id,
-    expiresAt,
-  );
+
+  const { session, activeDeviceCount } = await withTransaction(async (transaction) => {
+    // Lock แถว TicketJob ก่อนอ่าน/นับ active session กันหลายเครื่องสแกน QR เดียวกันพร้อมกันแล้วทะลุ limit
+    const lockedTicketJob = await driverRepository.lockTicketJobForDriverSession(
+      ticketJob.id,
+      transaction,
+    );
+
+    if (!lockedTicketJob || TERMINAL_JOB_STATUSES.includes(lockedTicketJob.status)) {
+      throw new ApiError(
+        409,
+        "VEHICLE_JOB_CLOSED",
+        "Vehicle job is already closed.",
+      );
+    }
+
+    const activeSlots = await driverRepository.listActiveDriverSessionSlots(
+      ticketJob.id,
+      transaction,
+    );
+
+    // Session ที่ไม่มี deviceId (สร้างจาก client รุ่นเก่าก่อนขึ้น feature นี้) นับเป็นเครื่องของตัวเองเสมอ
+    // ตามเงื่อนไข migration ชั่วคราวใน 38.5 ข้อ 15 — ไม่ผูกกับ deviceId ใดจึง rotate ไม่ได้
+    const existingSameDeviceSlot =
+      deviceId !== null ? activeSlots.find((slot) => slot.device_id === deviceId) : undefined;
+
+    if (existingSameDeviceSlot) {
+      // Device เดิมสแกนซ้ำ — rotate session เก่าทิ้ง ไม่กิน slot เพิ่ม
+      await driverRepository.revokeDriverSessionById(existingSameDeviceSlot.id, transaction);
+    } else {
+      const distinctDeviceCount = new Set(
+        activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`),
+      ).size;
+
+      if (distinctDeviceCount >= deviceLimit) {
+        throw new ApiError(
+          409,
+          "DRIVER_SESSION_LIMIT_EXCEEDED",
+          "Vehicle job already has the maximum number of active driver devices.",
+        );
+      }
+    }
+
+    const expiresAt = new Date(Date.now() + driverSessionTtlMs);
+    const createdSession = await driverRepository.createDriverSession(
+      ticketJob.id,
+      deviceId,
+      expiresAt,
+      transaction,
+    );
+
+    const nextActiveDeviceCount = existingSameDeviceSlot
+      ? new Set(activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`)).size
+      : new Set(activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`)).size + 1;
+
+    return { session: createdSession, activeDeviceCount: nextActiveDeviceCount };
+  });
 
   return {
     driver_session_token: session.session_token,
     expires_in: driverSessionTtlMs / 1000,
     expires_at: session.expires_at,
     vehicle_job: formatDriverTicketJob(ticketJob),
+    active_device_count: activeDeviceCount,
+    active_device_limit: deviceLimit,
   };
 }
 
 // Function ดึง driver current job ใน service flow
 export async function getDriverCurrentJob(
-  session?: DriverSessionDto,
-): Promise<DriverTicketJobDetailResponse> {
+  session?: DriverSessionContext,
+): Promise<DriverJobSnapshotResponse> {
   if (!session) {
     throw new ApiError(
       401,
@@ -134,28 +176,25 @@ export async function getDriverCurrentJob(
     );
   }
 
-  const detail = await ticketJobRepository.getTicketJobDetail(
-    session.vehicle_job_id,
-  );
-
-  if (!detail) {
-    throw new ApiError(404, "VEHICLE_JOB_NOT_FOUND", "Vehicle job not found.");
-  }
-
-  return formatDriverTicketJobDetail(detail);
+  return loadDriverJobSnapshot(session.vehicle_job_id);
 }
 
 // Function อัปเดตสถานะ driver job ready ใน service flow
 export async function markDriverJobReady(
   idParam: unknown,
-  session?: DriverSessionDto,
-): Promise<DriverJobReadyResponse> {
+  session?: DriverSessionContext,
+): Promise<DriverJobSnapshotResponse> {
   if (!session) {
     throw new ApiError(
       401,
       "MISSING_DRIVER_SESSION",
       "Missing driver session.",
     );
+  }
+
+  if (session.is_read_only) {
+    // Session อยู่ใน terminal grace period — อ่านได้อย่างเดียว ห้าม mutate
+    throw new ApiError(409, "VEHICLE_JOB_CLOSED", "Vehicle job is already closed.");
   }
 
   const ticketNumber = parseReference(idParam);
@@ -189,8 +228,8 @@ export async function markDriverJobReady(
     }
 
     if (ticketJob.status !== VEHICLE_JOB_STATUS.WAIT) {
-      // ยอมให้ mark ready เฉพาะตอนสถานะ WAIT เท่านั้น กันงานที่ release-workers ปล่อยทีมกลับคิวไปแล้ว
-      // ถูกดึงกลับมาเรียก dispatch ซ้ำผ่านทางนี้
+      // ยอมให้ mark ready เฉพาะตอนสถานะ WAIT เท่านั้น (เทียบเท่า OperationStatus=WAIT) กันงานที่
+      // release-workers ปล่อยทีมกลับคิวไปแล้วถูกดึงกลับมาเรียก dispatch ซ้ำผ่านทางนี้
       throw new ApiError(
         409,
         "VEHICLE_JOB_NOT_READY",
@@ -259,10 +298,14 @@ export async function markDriverJobReady(
     },
   });
 
-  return {
-    ticket_number: detail.vehicle_job.ticket_number,
-    license_plate: detail.vehicle_job.license_plate,
-    license_plate_province: detail.vehicle_job.license_plate_province,
-    status: detail.vehicle_job.status,
-  };
+  // แจ้ง Driver Web ผ่าน SSE ด้วย — ผลจริงหลัง dispatch อาจเป็น DISPATCH_NOW หรือ WAITING_FOR_WORKER
+  // จึงต้องคำนวณสถานะล่าสุดใหม่เสมอ ห้ามเดาว่าเป็น DISPATCH_NOW ตายตัว (ดู 38.3 ข้อ 6)
+  publishDriverJobUpdate(ticketJobId, "DRIVER_JOB_UPDATED");
+
+  // คืน snapshot รูปเดียวกับ GET /jobs/current เสมอ (คำนวณ OperationStatus ใหม่จริง ไม่เดาว่าเป็น
+  // DISPATCH_NOW ตายตัว) แทนสถานะดิบของ VehicleJob ตามสเปค 38.4 ย่อหน้าสุดท้าย
+  return loadDriverJobSnapshot(ticketJobId);
 }
+
+// Function subscribe Driver SSE stream ใน service flow — ครอบ validation session ให้ route เรียกง่ายๆ
+export { subscribeDriverJobStream } from "./driver-stream.service";

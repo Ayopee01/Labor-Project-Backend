@@ -525,6 +525,7 @@ export function signLineWebhookBody(
 /* -------------------------------------- Test Server -------------------------------------- */
 
 export type TestServer = {
+  baseUrl: string;
   request: (
     method: string,
     path: string,
@@ -567,6 +568,7 @@ export async function startRouteTestServer(): Promise<TestServer> {
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   return {
+    baseUrl,
     request: async (method, path, options = {}) => {
       // FormData ต้องปล่อยให้ fetch ตั้ง Content-Type (multipart boundary) เอง ห้าม JSON.stringify
       const isFormData = options.body instanceof FormData;

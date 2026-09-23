@@ -14,6 +14,7 @@ import * as lineActionTokenRepository from "../repositories/shared/line-action-t
 import * as ticketJobRepository from "../repositories/shared/ticket-job.repository";
 // Import Services
 import { publishRealtimeEvent } from "./shared/realtime-notification.service";
+import { publishDriverJobUpdate } from "./driver-stream.service";
 import { applyVendorTicketCompletionResult } from "./shared/ticket-completion.service";
 // Import Config
 import { TICKET_STATUS } from "../constants/status";
@@ -461,6 +462,13 @@ async function handleVendorCompletionDecisionPostback(
     });
     return true;
   }
+
+  // แจ้ง Driver Web ว่าข้อมูลแผง/ตลาดเปลี่ยน (confirm/reject) หรือรถจบงานแล้ว — เรียกหลัง transaction
+  // ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(
+    result.ticket.vehicle_job_id,
+    result.completedTicketJob ? "DRIVER_JOB_TERMINAL" : "DRIVER_JOB_UPDATED",
+  );
 
   await removeVendorConfirmationTimeout(result.ticket.id, result.submission.id);
   await returnCompletedWorkersToQueue(result.completedTicketJob);

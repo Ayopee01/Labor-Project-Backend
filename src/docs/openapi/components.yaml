@@ -36,6 +36,18 @@
       schema:
         type: string
       description: เวอร์ชันของ client app ที่เรียกใช้งาน (ไม่บังคับ) จะถูกบันทึกไว้ใน server log เพื่อใช้ช่วย debug
+    DriverDeviceIdHeader:
+      in: header
+      name: X-Driver-Device-Id
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: >-
+        UUID ของเครื่องที่ Driver Web สุ่มสร้างครั้งแรกและเก็บถาวรใน browser storage — บังคับส่งเฉพาะเมื่อ
+        driver session นี้ถูกสร้างพร้อม DeviceId ไว้แล้ว (session รุ่นเก่าที่ไม่มี DeviceId ผูกไว้ยังไม่บังคับ
+        ชั่วคราวระหว่าง migration) ถ้าต้องส่งแต่ไม่ส่งมาจะได้ 401 MISSING_DRIVER_DEVICE_ID และถ้าส่งมาไม่ตรงกับ
+        session จะได้ 401 DRIVER_DEVICE_MISMATCH ดู POST /api/driver/qr-sessions
   headers:
     ShouldRefreshHeader:
       description: >-
@@ -3072,12 +3084,17 @@
           type: object
           required:
             - DriverQrToken
+            - DriverQrUrl
           properties:
             DriverQrToken:
               type: string
               example: driver-qr-1
               description: ใช้ร่วมกันทั้งคันรถ (TicketNumber) Worker เช็คอินด้วย TicketNo ของแต่ละ Business Ticket แยกต่างหาก (บาร์โค้ดที่พิมพ์บนตั๋วกระดาษของด่าน) แทน ดู POST /api/workers/me/assignments/check-in-barcode
-          description: ข้อมูล QR เช็คอิน
+            DriverQrUrl:
+              type: string
+              example: "https://driver.example.com/track#token=driver-qr-1"
+              description: URL หน้า Driver Web ที่ Gate/ระบบพิมพ์ตั๋วต้อง encode เป็นภาพ QR แทนการ encode DriverQrToken ดิบ — token อยู่ใน URL fragment (หลัง #) เท่านั้น เพื่อไม่ให้ถูกส่งใน HTTP request/access log/Referer ตอน browser โหลดหน้า /track ประกอบจาก config DRIVER_WEB_BASE_URL
+          description: ข้อมูล QR สำหรับคนขับเปิดหน้า Driver Web (DriverQrUrl) หรือให้ Driver Web เดิมแลก session เอง (DriverQrToken ผ่าน POST /api/driver/qr-sessions)
 
     DriverSessionResponse:
       type: object
@@ -3095,29 +3112,17 @@
           description: เวลาที่ token นี้หมดอายุ
         vehicle_job:
           $ref: "#/components/schemas/DriverVehicleJob"
-    DriverJobReadyResponse:
-      type: object
-      properties:
-        ticket_number:
-          type: string
-          description: เลขอ้างอิงระดับรถ (TicketNumber) 14 หลัก ที่ Gate ออกให้ทั้งคัน
-          example: TRUCK-20260723-001
-        license_plate:
-          type: string
-          description: ทะเบียนรถ
-          example: ABC-1234
-        license_plate_province:
-          type: string
-          nullable: true
-          description: จังหวัดของป้ายทะเบียน
-          example: Bangkok
-        status:
-          type: string
-          description: สถานะปัจจุบันของงานรถ หลังกดพร้อมแล้วจะเป็น WORKING
-          example: WORKING
+        active_device_count:
+          type: integer
+          description: จำนวนเครื่อง (DeviceId ไม่ซ้ำ) ที่มี driver session active อยู่ของ vehicle job นี้ นับรวม session ที่เพิ่งสร้าง/rotate ในคำขอนี้ด้วย
+          example: 1
+        active_device_limit:
+          type: integer
+          description: จำนวนเครื่องสูงสุดที่อนุญาตต่อ vehicle job หนึ่งคัน (จาก config DRIVER_ACTIVE_DEVICE_LIMIT)
+          example: 2
     DriverVehicleJob:
       type: object
-      description: ข้อมูลงานรถแบบย่อที่ Driver เห็น (ไม่มี field ระดับ Admin)
+      description: ข้อมูลงานรถแบบย่อที่ Driver เห็นตอนสร้าง session (ไม่มี field ระดับ Admin) — ใช้ตอบเฉพาะ POST /api/driver/qr-sessions เท่านั้น ส่วน GET /jobs/current และ POST .../ready ใช้ DriverJobVehicle (ข้อมูลครบกว่า)
       properties:
         ticket_number:
           type: string
@@ -3151,7 +3156,23 @@
           type: string
           format: date-time
           description: เวลาที่แก้ไขข้อมูลนี้ล่าสุด
-    DriverTicketProduct:
+    DriverOperationStatus:
+      type: string
+      enum:
+        - WAIT
+        - DISPATCH_NOW
+        - WAITING_FOR_WORKER
+        - IN_PROGRESS
+        - COMPLETED
+        - CANCELLED
+      description: >-
+        สถานะระดับ UI ที่ Backend คำนวณให้เป็น canonical (Frontend ห้าม derive จาก vehicle_job.status เอง)
+        — WAIT = ยังไม่ dispatch (dispatch_now=false), DISPATCH_NOW = dispatch แล้วแต่ทีมยังไม่ครบ/ยังไม่เริ่ม
+        ทำงานจริง, WAITING_FOR_WORKER = dispatch แล้วแต่ worker active ยังไม่ครบจำนวนที่ต้องการ, IN_PROGRESS =
+        กำลังทำงานอยู่จริง (รวมถึงกรณี vehicle_job.status เป็น RELEASED และกรณี booth ถูก REJECT ที่ยังไม่นับเป็น
+        สถานะ UI ใหม่), COMPLETED/CANCELLED = งานจบแล้ว
+      example: IN_PROGRESS
+    DriverJobProduct:
       type: object
       properties:
         productCode:
@@ -3168,8 +3189,8 @@
           description: ชื่อ Package
         quantity:
           type: string
-          description: จำนวนสินค้า
-    DriverBooth:
+          description: จำนวนสินค้า (decimal string)
+    DriverJobBooth:
       type: object
       properties:
         boothCode:
@@ -3190,8 +3211,8 @@
           type: array
           description: รายการสินค้าในแผงค้านี้
           items:
-            $ref: "#/components/schemas/DriverTicketProduct"
-    DriverMarketJob:
+            $ref: "#/components/schemas/DriverJobProduct"
+    DriverJobMarket:
       type: object
       description: Business Ticket (MarketJob) หนึ่งใบที่ Driver เห็น พร้อมแผงค้าทั้งหมดในใบนี้
       properties:
@@ -3199,33 +3220,131 @@
           type: string
           description: Business Ticket ที่เกี่ยวข้อง สังกัดตลาดเดียว
           example: TKT-20260723-000125
-        boothCount:
-          type: integer
-          description: จำนวนแผงค้าใน Business Ticket ใบนี้
+        ticket_created_at:
+          type: string
+          format: date-time
+          description: เวลาตีตั๋วเข้า (MarketJob.ticketCreatedAt) มาจาก server เสมอ ห้าม client ใช้เวลาของตัวเอง
         marketCode:
           type: string
           description: รหัสตลาด
         marketName:
           type: string
           description: ชื่อตลาด
+        dropoff_point:
+          type: string
+          nullable: true
+          description: จุดลงสินค้าของ Business Ticket นี้
         status:
           type: string
           description: สถานะปัจจุบันของ Business Ticket นี้
+        booth_count:
+          type: integer
+          description: จำนวนแผงค้าใน Business Ticket ใบนี้
         booths:
           type: array
-          description: แผงค้าทั้งหมดใน Business Ticket นี้
+          description: แผงค้าทั้งหมดใน Business Ticket นี้ เรียงลำดับคงที่เหมือน repository
           items:
-            $ref: "#/components/schemas/DriverBooth"
-    DriverVehicleJobDetailResponse:
+            $ref: "#/components/schemas/DriverJobBooth"
+    DriverJobVehicle:
       type: object
+      description: ข้อมูลงานรถแบบเต็มสำหรับหน้ารายละเอียด Driver (ไม่มี field ระดับ Admin หรือข้อมูลส่วนตัวของ Worker)
       properties:
+        ticket_number:
+          type: string
+          description: เลขอ้างอิงระดับรถ (TicketNumber) 14 หลัก ที่ Gate ออกให้ทั้งคัน
+          example: TRUCK-20260723-001
+        license_plate:
+          type: string
+          description: ทะเบียนรถ
+          example: ABC-1234
+        license_plate_province:
+          type: string
+          nullable: true
+          description: จังหวัดของป้ายทะเบียน
+          example: Bangkok
+        vehicle_type:
+          type: string
+          nullable: true
+          description: ประเภทรถ
+        workers_required:
+          type: integer
+          description: จำนวน Worker ที่ต้องการสำหรับงานรถนี้
+        status:
+          type: string
+          description: สถานะภายในของงานรถ (VehicleJob.status) — ใช้ operation_status แทนเพื่อแสดงผลบน UI ห้าม derive เอง
+          example: WORKING
+        work_started_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: เวลาที่ทีมทั้งหมด scan เข้างานครบและเริ่มทำงานจริง (TicketJob.workStartedAt)
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: เวลาที่งานสำเร็จ (TicketJob.completedAt) มีค่าเฉพาะ status เป็น COMPLETED
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: เวลาปิดงานจาก server เท่านั้น — งานสำเร็จใช้ completed_at, งานยกเลิกใช้เวลาที่สถานะเปลี่ยนเป็น CANCELLED ล่าสุด (updated_at) ห้ามใช้เวลาปัจจุบันของ request
+        created_at:
+          type: string
+          format: date-time
+          description: เวลาที่สร้างข้อมูลนี้
+        updated_at:
+          type: string
+          format: date-time
+          description: เวลาที่แก้ไขข้อมูลนี้ล่าสุด
+    DriverJobSnapshotResponse:
+      type: object
+      description: Response หลักของหน้า Driver Web — รูปเดียวกันทั้ง GET /jobs/current, POST .../ready และทุก event ของ GET /jobs/stream (ในฟิลด์ job)
+      properties:
+        operation_status:
+          $ref: "#/components/schemas/DriverOperationStatus"
         vehicle_job:
-          $ref: "#/components/schemas/DriverVehicleJob"
+          $ref: "#/components/schemas/DriverJobVehicle"
         markets:
           type: array
-          description: รายการ Business Ticket (ตลาด) ของงานรถนี้
+          description: รายการ Business Ticket (ตลาด) ของงานรถนี้ เรียงลำดับคงที่เหมือน repository
           items:
-            $ref: "#/components/schemas/DriverMarketJob"
+            $ref: "#/components/schemas/DriverJobMarket"
+    DriverStreamEvent:
+      type: object
+      description: >-
+        รูปแบบ event ที่ GET /api/driver/jobs/stream ส่งผ่าน Server-Sent Events แต่ละ event ประกอบด้วย
+        SSE frame สองบรรทัด "event: <EventType>" และ "data: <JSON ตาม schema นี้>" คั่นด้วยบรรทัดว่าง
+      properties:
+        event_id:
+          type: string
+          description: ใช้ deduplicate event ซ้ำได้ (รูปแบบ "driver_job:<vehicle_job_id>:<unix_ms>")
+          example: "driver_job:123:1790127300000"
+        event_type:
+          type: string
+          enum:
+            - DRIVER_JOB_SNAPSHOT
+            - DRIVER_JOB_UPDATED
+            - DRIVER_JOB_TERMINAL
+            - DRIVER_SESSION_EXPIRING
+            - DRIVER_SESSION_CLOSED
+          description: >-
+            DRIVER_JOB_SNAPSHOT = ส่งทันทีหลัง subscribe สำเร็จทุกครั้ง (รวม reconnect), DRIVER_JOB_UPDATED =
+            สถานะรถ/assignment/ตลาด/แผง/สินค้าเปลี่ยน, DRIVER_JOB_TERMINAL = รถเป็น COMPLETED หรือ CANCELLED,
+            DRIVER_SESSION_EXPIRING = session อยู่ใน terminal grace period แล้ว (อ่านต่อได้แต่ mutate ไม่ได้),
+            DRIVER_SESSION_CLOSED = grace period หมดแล้ว server ปิด stream นี้ทันทีหลัง event นี้
+        vehicle_job_id:
+          type: integer
+          description: id ภายในของ TicketJob (ไม่ใช่ ticket_number)
+          example: 123
+        occurred_at:
+          type: string
+          format: date-time
+          description: เวลาที่ server สร้าง event นี้
+        job:
+          allOf:
+            - $ref: "#/components/schemas/DriverJobSnapshotResponse"
+          nullable: true
+          description: มีค่าเฉพาะ DRIVER_JOB_SNAPSHOT/DRIVER_JOB_UPDATED/DRIVER_JOB_TERMINAL เป็น null สำหรับ DRIVER_SESSION_EXPIRING/DRIVER_SESSION_CLOSED
     AdminVehicleJobAssignmentCancelRequest:
       type: object
       required:
@@ -6679,6 +6798,21 @@
           type: boolean
           description: "true เมื่อเข้าเงื่อนไขครบทั้ง 2 ข้อ: (1) อยู่ในช่วงเวลากะจริง (เงื่อนไขเดียวกับที่ POST /api/workers/me/online เช็กก่อนโยน 403 OUTSIDE_WORK_SHIFT) และ (2) ยังไม่เคยปิดกะนี้ไปก่อน (ตาม WorkerCheckinLog) ถ้า Worker ปิดกะไปแล้วจะเป็น false ทันทีแม้ยังอยู่ในช่วงเวลากะ ใช้เปิด/ปิดปุ่ม Online บนแอปได้โดยไม่ต้องคำนวณเงื่อนไขเอง"
           example: true
+        reason_code:
+          type: string
+          enum:
+            - OUTSIDE_SHIFT
+            - ACCEPT_TIMEOUT_LIMIT_REACHED
+            - SCAN_TIMEOUT
+            - ADMIN_CANCELLED_ASSIGNMENT
+            - ADMIN_FORCED_STATUS
+            - BREAK_RETRY_EXPIRED
+          description: "มีเฉพาะตอน shift_active เป็น false บอกเหตุผล: OUTSIDE_SHIFT = ไม่มีกะวันนี้/นอกเวลากะ/ปิดกะไปแล้วตามปกติ (เลิกงานเอง, หมดเวลากะ, หรือ Admin ปิดใช้งานบัญชี/reset รหัสผ่านให้), ACCEPT_TIMEOUT_LIMIT_REACHED = ไม่กดรับงานติดต่อกันครบจำนวนที่ตั้งค่าไว้ ระบบปิดกะให้ ต้องรอ Admin, SCAN_TIMEOUT = สแกน QR/บาร์โค้ดไม่ทันเวลาที่กำหนด ต้องรอ Admin, ADMIN_CANCELLED_ASSIGNMENT = Admin ยกเลิกงานที่กำลังทำอยู่ ต้องรอ Admin, ADMIN_FORCED_STATUS = Admin สั่งเปลี่ยนสถานะเป็น open_app โดยตรง ต้องรอ Admin, BREAK_RETRY_EXPIRED = หมดเวลาพักและไม่เปิดแอปกลับมาภายในเวลาที่กำหนด ต้องรอ Admin ช่วงที่เพิ่งหมดเวลาพักแต่ยังอยู่ในหน้าต่างเวลาที่เปิดแอปกลับเข้าคิวเองได้ (ก่อนจะกลายเป็น BREAK_RETRY_EXPIRED) จะไม่มี reason_code ให้ เพราะ FCM แจ้งไปแล้วและยัง self-resolve ได้เอง เช่นเดียวกับกรณีอื่นที่ระบบยังไม่รู้จัก reason field นี้จะไม่มีค่า"
+          example: OUTSIDE_SHIFT
+        reason_text:
+          type: string
+          description: ข้อความอธิบาย reason_code แปลตามภาษาของ Worker (lang) มีเฉพาะเมื่อมี reason_code บางโค้ด (ACCEPT_TIMEOUT_LIMIT_REACHED, BREAK_RETRY_EXPIRED) มีตัวเลขจาก runtime settings แทรกอยู่ในข้อความด้วย
+          example: ขณะนี้ท่านอยู่นอกช่วงเวลาปฏิบัติงานตามกะที่กำหนด
         current_job:
           allOf:
             - $ref: "#/components/schemas/WorkerCurrentJob"
@@ -6831,6 +6965,21 @@
               format: date-time
               description: เวลาสิ้นสุดที่ Worker ต้องสแกน QR เช็คอิน
               example: null
+        reason_code:
+          type: string
+          enum:
+            - OUTSIDE_SHIFT
+            - ACCEPT_TIMEOUT_LIMIT_REACHED
+            - SCAN_TIMEOUT
+            - ADMIN_CANCELLED_ASSIGNMENT
+            - ADMIN_FORCED_STATUS
+            - BREAK_RETRY_EXPIRED
+          description: มีเฉพาะตอน status เป็น open_app และมีสาเหตุที่ต้อง Admin ช่วย force กลับเข้าคิว (ความหมายเดียวกับ reason_code ใน GET /api/workers/me/status) worker ที่มี field นี้จะยังคงอยู่ใน list แม้ offline และไม่มีงานค้าง เพื่อให้ Admin หาเจอตอน worker มาติดต่อขอให้ force เข้าคิว
+          example: SCAN_TIMEOUT
+        reason_text:
+          type: string
+          description: ข้อความอธิบาย reason_code แปลตามภาษาของ Worker (lang) มีเฉพาะเมื่อมี reason_code
+          example: ท่านสแกน QR โค้ด/บาร์โค้ดไม่ทันเวลาที่กำหนด กรุณาติดต่อเจ้าหน้าที่ (Admin)
     AdminWorkerStatusListResponse:
       type: object
       properties:

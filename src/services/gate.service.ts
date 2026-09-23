@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { Prisma, type MasterMarket } from "@prisma/client";
 // Import Config
 import { TICKET_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
+import { getDriverWebBaseUrl } from "../config/driver.config";
 import { withTransaction } from "../db/prisma";
 // Import Queues
 import { enqueueLoggedLineMessage } from "../queues/line-message-queue";
@@ -396,6 +397,13 @@ async function prepareLaborJob(
   };
 }
 
+// Function ประกอบ URL หน้า Driver Web จาก driver QR token — ใส่ token ใน URL fragment (#token=) เท่านั้น
+// เพื่อไม่ให้ token ถูกส่งใน HTTP request/access log/Referer เมื่อ browser โหลดหน้า /track (ต่างจาก query
+// string ที่ server เห็นและอาจถูก log ไว้) ต้อง URL-encode token ก่อนประกอบเสมอ
+function buildDriverQrUrl(driverQrToken: string): string {
+  return `${getDriverWebBaseUrl()}/track#token=${encodeURIComponent(driverQrToken)}`;
+}
+
 // Function สร้าง response ที่คืนให้ Gate — เป็นข้อมูล Operation เท่านั้น ยังไม่มีเงินจริง
 function buildPublicBoothJobJobResponse(
   ticketJob: TicketJobDto,
@@ -500,6 +508,9 @@ function buildPublicBoothJobJobResponse(
     Qr: {
       DriverQrToken:
         ticketJob.driver_qr_token,
+
+      DriverQrUrl:
+        buildDriverQrUrl(ticketJob.driver_qr_token),
     },
   };
 }

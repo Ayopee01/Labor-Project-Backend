@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { getDriverTerminalSessionGraceMs } from "../../src/config/driver.config";
 import { state } from "./app-test-state";
 
 // Mirror ของ TicketSubmissionAlreadyResolvedError ใน src/repositories/shared/booth-job.repository.ts
@@ -164,6 +165,25 @@ export const workerApplicationRepositoryMock = {
           attendance.workerId === input.worker_id &&
           attendance.shiftInstanceKey === input.shift_instance_key,
       ) ?? null,
+    findManyByWorkerAndShiftKeys: async (
+      keys: { worker_id: number; shift_instance_key: string }[],
+    ) => {
+      const map = new Map<number, WorkerCheckinLogRecord>();
+
+      for (const key of keys) {
+        const attendance = state.checkinLogs.find(
+          (item) =>
+            item.workerId === key.worker_id &&
+            item.shiftInstanceKey === key.shift_instance_key,
+        );
+
+        if (attendance) {
+          map.set(key.worker_id, attendance);
+        }
+      }
+
+      return map;
+    },
     markWorkerShiftOnline: async (input: {
       worker_id: number;
       worker_code: string;
@@ -2029,15 +2049,111 @@ export const accountRepositoryMock = accountRepository;
 
 // Mock ของ src/repositories/shared/driver-session.repository.ts — ย้ายมาจาก driverRepositoryMock ตาม
 // Fix D เพราะถูกเรียกจาก closeCompletedTicketJobIfReady / cancelTicketJob (ticket-job-lifecycle.service.ts
-// ซึ่งเป็น shared service ไม่ควร depend กับ route-specific driver.repository) มี mock ไว้เป็น no-op พอ
-// เพราะถูก test ทางอ้อมผ่าน flow ที่เรียกอยู่แล้ว
+// ซึ่งเป็น shared service ไม่ควร depend กับ route-specific driver.repository) — ตั้ง read_only_until
+// ให้ตรงกับ repository จริงด้วย เพื่อให้ test flow ที่ตรวจ terminal grace period ผ่าน admin cancel ทำได้
 export const driverSessionRepositoryMock = {
-  revokeDriverSessionsByTicketJobId: async () => {},
+  revokeDriverSessionsByTicketJobId: async (ticketJobId: number) => {
+    const now = new Date();
+    const readOnlyUntil = new Date(
+      now.getTime() + getDriverTerminalSessionGraceMs(),
+    ).toISOString();
+
+    state.driverSessions
+      .filter(
+        (session) =>
+          session.vehicle_job_id === ticketJobId && session.revoked_at === null,
+      )
+      .forEach((session) => {
+        session.revoked_at = now.toISOString();
+        session.read_only_until = readOnlyUntil;
+        session.updated_at = now.toISOString();
+      });
+  },
 };
 
-// ยังไม่มี route test สำหรับ driver flow เอง — markTicketJobReady ใส่ไว้ให้ตรงกับ repository จริง
-// (เผื่อมี test เรียกในอนาคต) แม้ยังไม่มี route test ของ driver flow เรียกใช้จริงตอนนี้
+// Mock ของ src/repositories/driver.repository.ts — ใช้ state.driverSessions/state.ticketJobs ตรงๆ
+// แทน Prisma จริง service layer (driver.service.ts) ไม่ถูก intercept จึงรัน logic จริง (device limit,
+// rotate, error) กับข้อมูลที่ mock นี้คืนให้
 export const driverRepositoryMock = {
+  findTicketJobByDriverQrToken: async (qrToken: string) =>
+    state.ticketJobs.find((job) => job.driver_qr_token === qrToken) ?? null,
+
+  // Test harness single-threaded ไม่มี concurrency จริงให้ lock กัน จึงแค่ query ปกติ
+  lockTicketJobForDriverSession: async (ticketJobId: number) =>
+    state.ticketJobs.find((job) => job.id === ticketJobId) ?? null,
+
+  listActiveDriverSessionSlots: async (ticketJobId: number) => {
+    const now = Date.now();
+
+    return state.driverSessions
+      .filter(
+        (session) =>
+          session.vehicle_job_id === ticketJobId &&
+          session.revoked_at === null &&
+          new Date(session.expires_at).getTime() > now,
+      )
+      .map((session) => ({ id: session.id, device_id: session.device_id }));
+  },
+
+  revokeDriverSessionById: async (sessionId: number) => {
+    const session = state.driverSessions.find((item) => item.id === sessionId);
+
+    if (session) {
+      session.revoked_at = new Date().toISOString();
+      session.updated_at = session.revoked_at;
+    }
+  },
+
+  createDriverSession: async (
+    ticketJobId: number,
+    deviceId: string | null,
+    expiresAt: Date,
+  ) => {
+    const now = new Date().toISOString();
+    const id = state.nextDriverSessionId++;
+    const sessionToken = `driver_session_test_${id}`;
+    const session = {
+      id,
+      vehicle_job_id: ticketJobId,
+      device_id: deviceId,
+      session_token: sessionToken,
+      expires_at: expiresAt.toISOString(),
+      revoked_at: null,
+      read_only_until: null,
+      created_at: now,
+      updated_at: now,
+    };
+
+    state.driverSessions.push(session);
+
+    return session;
+  },
+
+  findUsableDriverSessionByToken: async (sessionToken: string) => {
+    const now = Date.now();
+    const session = state.driverSessions.find(
+      (item) => item.session_token === sessionToken,
+    );
+
+    if (!session) {
+      return null;
+    }
+
+    const isActive =
+      session.revoked_at === null &&
+      new Date(session.expires_at).getTime() > now;
+    const isGraceRead =
+      session.revoked_at !== null &&
+      session.read_only_until !== null &&
+      new Date(session.read_only_until).getTime() > now;
+
+    if (!isActive && !isGraceRead) {
+      return null;
+    }
+
+    return { ...session, is_read_only: session.revoked_at !== null };
+  },
+
   markTicketJobReady: async (ticketJobId: number) => {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);
 
@@ -2059,6 +2175,103 @@ export const driverRepositoryMock = {
       });
 
     return job;
+  },
+
+  // คืน record รูปเดียวกับที่ Prisma จริงจะคืน (camelCase, DateTime เป็น Date object) เพราะฝั่ง
+  // service เรียก formatDriverJobSnapshot (util จริง ไม่ถูก mock) ต่อจาก return value ของฟังก์ชันนี้ตรงๆ
+  getDriverJobSnapshotRecord: async (ticketJobId: number) => {
+    const job = state.ticketJobs.find((item) => item.id === ticketJobId);
+
+    if (!job) {
+      return null;
+    }
+
+    const marketJobs = state.marketJobs.filter(
+      (market) => market.vehicle_job_id === ticketJobId,
+    );
+
+    return {
+      id: job.id,
+      ticketNumber: job.ticket_number,
+      licensePlate: job.license_plate,
+      licensePlateProvince: job.license_plate_province,
+      vehicleType: job.vehicle_type,
+      workersRequired: job.workers_required,
+      dispatchNow: job.dispatch_now,
+      status: job.status,
+      workStartedAt: job.work_started_at ? new Date(job.work_started_at) : null,
+      driverQrToken: job.driver_qr_token,
+      expectedTicketCount: job.expected_ticket_count ?? null,
+      ticketsClosedAt: job.tickets_closed_at
+        ? new Date(job.tickets_closed_at)
+        : null,
+      completedAt: job.completed_at ? new Date(job.completed_at) : null,
+      createdAt: new Date(job.created_at),
+      updatedAt: new Date(job.updated_at),
+      marketJobs: marketJobs.map((market) => {
+        const tickets = state.boothJobs.filter(
+          (ticket) => ticket.market_job_id === market.id,
+        );
+
+        return {
+          id: market.id,
+          ticketJobId,
+          ticketNo: market.ticket_no,
+          ticketCreatedAt: new Date(market.ticket_created_at),
+          boothCount: market.booth_count,
+          gateTransactionRef: market.gate_transaction_ref,
+          workersRequired: market.workers_required,
+          marketCode: market.marketCode,
+          marketName: market.marketName,
+          dropoffPoint: market.dropoff_point,
+          status: market.status,
+          workerRosterLockedAt: market.worker_roster_locked_at
+            ? new Date(market.worker_roster_locked_at)
+            : null,
+          finalStallAmount: market.final_stall_amount,
+          financializedAt: market.financialized_at
+            ? new Date(market.financialized_at)
+            : null,
+          completedAt: market.completed_at ? new Date(market.completed_at) : null,
+          createdAt: new Date(market.created_at),
+          updatedAt: new Date(market.updated_at),
+          tickets: tickets.map((ticket) => ({
+            id: ticket.id,
+            ticketJobId,
+            marketJobId: market.id,
+            boothCode: ticket.boothCode,
+            boothName: ticket.boothName,
+            vendorLineId: ticket.vendor_line_id,
+            rejectReason: ticket.reject_reason,
+            status: ticket.status,
+            finalStallAmount: ticket.final_stall_amount ?? null,
+            completedAt: ticket.completed_at ? new Date(ticket.completed_at) : null,
+            financializedAt: ticket.financialized_at
+              ? new Date(ticket.financialized_at)
+              : null,
+            createdAt: ticket.created_at ? new Date(ticket.created_at) : new Date(),
+            updatedAt: ticket.updated_at ? new Date(ticket.updated_at) : new Date(),
+            products: state.ticketProducts
+              .filter((product) => product.ticket_id === ticket.id)
+              .map((product) => ({
+                id: product.id,
+                ticketId: ticket.id,
+                productCode: product.productCode,
+                productName: product.productName,
+                packageCode: product.packageCode,
+                packageName: product.packageName,
+                quantity: product.quantity,
+                confirmedQuantity: product.confirmed_quantity,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              })),
+          })),
+        };
+      }),
+      assignments: state.assignments
+        .filter((assignment) => assignment.vehicle_job_id === ticketJobId)
+        .map((assignment) => ({ status: assignment.status })),
+    };
   },
 };
 

@@ -500,6 +500,10 @@ export const boothJobJobBodySchema = z
 
 export const driverQrSessionBodySchema = z.object({
   qr_token: trimmedString,
+  // Optional ชั่วคราวเพื่อรองรับ client รุ่นเก่าที่ยังไม่ส่ง DeviceId มา (ดู 38.5 ข้อ 15) — production
+  // Driver Web รุ่นใหม่ต้องส่งมาเสมอ ไม่งั้นนับ device limit ไม่แม่นยำ (แต่ละ session ไม่มี deviceId
+  // จะถูกนับเป็นเครื่องของตัวเองแยกกันหมด)
+  device_id: trimmedString.optional(),
 });
 
 // Schema body สำหรับ worker scan barcode เข้า Business Ticket

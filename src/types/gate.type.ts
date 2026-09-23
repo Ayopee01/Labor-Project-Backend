@@ -192,6 +192,7 @@ export interface BoothJobJobResponse {
 
   Qr: {
     DriverQrToken: string;
+    DriverQrUrl: string;
   };
 }
 

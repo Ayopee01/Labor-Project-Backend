@@ -82,7 +82,7 @@ function resolveForcedStatusKey(params: Record<string, unknown>): string {
   return "worker.status_forced_open_app";
 }
 
-function normalizeNotificationLang(value?: string | null): NotificationLang {
+export function normalizeNotificationLang(value?: string | null): NotificationLang {
   const lang = String(value ?? "").trim().toUpperCase();
 
   if (lang === "TH" || lang === "MN" || lang === "CN" || lang === "EN") {

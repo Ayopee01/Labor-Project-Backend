@@ -350,8 +350,13 @@ export type GateRequestLogRecord = {
 export type DriverSessionRecord = {
   id: number;
   vehicle_job_id: number;
+  device_id: string | null;
   session_token: string;
+  expires_at: string;
+  revoked_at: string | null;
+  read_only_until: string | null;
   created_at: string;
+  updated_at: string;
 };
 
 export type MessageDeliveryLogRecord = {

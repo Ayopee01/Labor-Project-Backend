@@ -21,6 +21,7 @@ import { parseId, parseWithSchema } from "../validation/parser";
 // Import Services
 import { applyVendorTicketCompletionResult } from "./shared/ticket-completion.service";
 import { publishRealtimeEvent } from "./shared/realtime-notification.service";
+import { publishDriverJobUpdate } from "./driver-stream.service";
 
 const LINE_DEV_RESOLVER_ID = "line-dev-tester";
 const lineDevRejectBodySchema = z.object({
@@ -103,6 +104,11 @@ export async function processLineDevSubmission(
       connection: transaction,
     });
   });
+
+  publishDriverJobUpdate(
+    result.ticket.vehicle_job_id,
+    result.completedTicketJob ? "DRIVER_JOB_TERMINAL" : "DRIVER_JOB_UPDATED",
+  );
 
   await removeVendorConfirmationTimeout(result.ticket.id, result.submission.id);
   await returnCompletedWorkersToQueue(result.completedTicketJob);

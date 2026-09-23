@@ -23,6 +23,7 @@ import * as ticketJobLifecycleService from "./shared/ticket-job-lifecycle.servic
 import * as ticketCompletionService from "./shared/ticket-completion.service";
 import { checkMobileAppVersionForClient } from "./shared/mobile-app-version.service";
 import { publishNotification } from "./notifications.service";
+import { publishDriverJobUpdate } from "./driver-stream.service";
 import { publishRealtimeEvent } from "./shared/realtime-notification.service";
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import { publishAdminWorkerStatusChanged } from "./notifications.service";
@@ -36,7 +37,8 @@ import { WORKER_WORK_STATUS, type WorkerWorkStatus } from "../types/shared/worke
 import { WORKER_ASSIGNMENT_EVENT_TYPE } from "../types/shared/worker-assignment-event.type";
 import type { DbConnection } from "../types/shared/common.type";
 // Import Config
-import { ASSIGNMENT_STATUS, TICKET_SUBMITTER_ROLE, WORKING_ASSIGNMENT_STATUSES } from "../constants/status";
+import { ASSIGNMENT_STATUS, TICKET_SUBMITTER_ROLE, WORKER_OPEN_APP_REASON, WORKING_ASSIGNMENT_STATUSES } from "../constants/status";
+import { resolveShiftInactiveReasonText } from "../utils/shift-status-localization";
 // Import Validation
 import { parseWithSchema } from "../validation/parser";
 import { workerAssignmentHistoryQuerySchema, workerCheckInBarcodeBodySchema, workerEarningsSummaryQuerySchema, workerTicketCompleteBodySchema } from "../validation/schemas";
@@ -47,7 +49,7 @@ import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, formatScheduleWi
 import { buildBangkokDateRange, buildBangkokDateSpanRange, buildDeadline, buildLatestCompletedBangkokDateRange, buildRemainingBreakTime, formatBangkokDate, formatBangkokDisplayDate, formatBangkokDisplayDateTime, getDelayUntil, toUnixMs } from "../utils/time";
 import { buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { buildWorkerQueueSocketPayload } from "../utils/worker-payload";
-import { resolveWorkerWorkStatus } from "../utils/worker-status";
+import { resolveShiftActiveStatus, resolveWorkerWorkStatus } from "../utils/worker-status";
 
 /* -------------------------------------- Config -------------------------------------- */
 
@@ -999,10 +1001,17 @@ export async function getWorkerStatus(
   // ถ้าเคย Go Online มาแล้วในกะนี้ (firstOnlineAt ไม่ null) แต่ตอนนี้ถูกเด้งกลับ open_app
   // (พลาด scan/ถูก admin cancel/พักเบรกจบแล้ว requeue ไม่ได้ ฯลฯ) ต้องถือว่าไม่ eligible แล้ว
   // เพราะ worker กด Go Online เองซ้ำไม่ได้อีกในกะนี้ (ดู WORKER_SHIFT_ONLINE_ALREADY_USED) ต้องรอ Admin force กลับให้เท่านั้น
-  const hasShiftAttendanceEligibility =
-    attendance?.closedAt == null &&
-    (attendance?.firstOnlineAt == null ||
-      queueEntry?.status !== WORKER_WORK_STATUS.OPEN_APP);
+  // เหตุผลที่ shift_active เป็น false (ถ้ามี) ให้ FE โชว์ข้อความอธิบายได้ตรงสาเหตุ — ใช้ resolver กลาง
+  // เดียวกับฝั่ง Admin (GET /api/admin/jobs/workers/status) กัน logic ตัดสินโค้ดสองฝั่งเพี้ยนไปจากกัน
+  const { active: shiftActive, reasonCode } = resolveShiftActiveStatus({
+    isWithinShiftTime,
+    closedAt: attendance?.closedAt,
+    closeReason: attendance?.closeReason,
+    firstOnlineAt: attendance?.firstOnlineAt,
+    queueStatus: queueEntry?.status,
+    openAppReason: queueEntry?.open_app_reason,
+  });
+
   const response: WorkerStatusResponse = {
     full_name: account.full_name ?? account.labor_code,
     worker_code: account.labor_code,
@@ -1021,7 +1030,16 @@ export async function getWorkerStatus(
           end_time: schedule.time_out,
         }
       : null,
-    shift_active: isWithinShiftTime && hasShiftAttendanceEligibility,
+    shift_active: shiftActive,
+    ...(reasonCode
+      ? {
+          reason_code: reasonCode,
+          reason_text: resolveShiftInactiveReasonText(reasonCode, account.lang, {
+            accept_timeout_limit: settings.worker_accept_timeout_limit,
+            break_retry_minutes: settings.worker_break_retry,
+          }),
+        }
+      : {}),
   };
   const remainingBreakTime =
     status === WORKER_WORK_STATUS.BREAK
@@ -1250,6 +1268,9 @@ export async function acceptWorkerAssignment(
         "Assignment is not pending.",
       );
     }
+
+    // แจ้ง Driver Web ว่า assignment หมดเวลา accept — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+    publishDriverJobUpdate(assignment.vehicle_job_id, "DRIVER_JOB_UPDATED");
 
     // เรียกแยกหลัง transaction ข้างบน commit แล้วเสมอ เพราะ dispatch เขียน Redis/BullMQ ของ worker คนอื่นแยกจาก DB (ดู worker-dispatch.ts)
     try {
@@ -1583,7 +1604,7 @@ async function handleExpiredScanOutcome(
 ): Promise<never> {
   await removeScanTimeout(result.timedOutAssignment.id);
   await removeScanWarning(result.timedOutAssignment.id);
-  const queue = await markWorkerOpenApp(account.id);
+  const queue = await markWorkerOpenApp(account.id, WORKER_OPEN_APP_REASON.SCAN_TIMEOUT);
 
   // dispatch เป็น best-effort เสมอ — ต้องไม่ทำให้ scan-timeout ที่จัดการสำเร็จไปแล้วพัง 500 เพราะ
   // dispatch worker คันอื่นล้มเหลว (เขียน Redis/BullMQ แยกจาก DB transaction ของ request นี้)
@@ -1733,6 +1754,12 @@ export async function scanWorkerAssignment(
     resolveScanAssignmentOutcome(account, input, teamScanRemainingMinutes, transaction),
   );
 
+  // แจ้ง Driver Web ว่าทีมสแกน/timeout เปลี่ยน (อาจตั้ง WorkStartedAt ด้วยถ้าทีมครบพอดี) — เรียกหลัง
+  // transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  if (result.ticketJob) {
+    publishDriverJobUpdate(result.ticketJob.id, "DRIVER_JOB_UPDATED");
+  }
+
   if (result.kind === "expired") {
     return handleExpiredScanOutcome(result, account);
   }
@@ -1832,6 +1859,9 @@ async function completeResolvedWorkerTicket(
       reason: "ticket_delivered_after_shift_end",
     });
   }
+  // แจ้ง Driver Web ว่าแผงถูกส่งยอดแล้ว — เรียกหลัง transaction ข้างบน commit สำเร็จแล้วเท่านั้น
+  publishDriverJobUpdate(result.ticket.vehicle_job_id, "DRIVER_JOB_UPDATED");
+
   // Ticket ถูก commit เป็น DELIVERED ไปแล้วจริงจาก submitTicketCompletion ด้านบน — ถ้า notify vendor
   // ต่อไปนี้ fail ต้อง best-effort เท่านั้น ห้าม throw ทำให้ request ตอบ error ทั้งที่ยอดบันทึกสำเร็จแล้ว
   let detail: TicketJobDetailResponse | null = null;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
 import { buildWorkScheduleShiftInstanceKey } from "../../src/utils/shift";
+import { WORKER_OPEN_APP_REASON } from "../../src/constants/status";
 import { addAdmin, addDispatchableJob, addMobileAppVersion, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketCompletionService, getTicketFinancialService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, signLineWebhookBody, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
 
 let server: TestServer;
@@ -1265,6 +1266,8 @@ test("GET /api/workers/me/status returns shift_active false when worker is outsi
 
   assert.equal(response.status, 200);
   assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "OUTSIDE_SHIFT");
+  assert.equal(response.body.reason_text, "ขณะนี้ท่านอยู่นอกช่วงเวลาปฏิบัติงานตามกะที่กำหนด");
 });
 
 test("GET /api/workers/me/status returns shift_active false when the worker already closed this shift's attendance, even while still inside the shift time window", async () => {
@@ -1310,6 +1313,212 @@ test("GET /api/workers/me/status returns shift_active false when the worker alre
   assert.equal(response.body.shift.start_time, "00:00");
   assert.equal(response.body.shift.end_time, "23:59");
   assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "OUTSIDE_SHIFT");
+  assert.equal(response.body.reason_text, "ขณะนี้ท่านอยู่นอกช่วงเวลาปฏิบัติงานตามกะที่กำหนด");
+});
+
+test("GET /api/workers/me/status returns shift_active false with reason ACCEPT_TIMEOUT_LIMIT_REACHED when the shift was closed for missing accept-timeout limit", async () => {
+  const { token, worker } = await loginWorker(1093);
+
+  // Fixture ตั้งกะเป็น 00:00-23:59 (ทั้งวัน) ตอนนี้จึงยังอยู่ในกะแน่นอน แต่จำลองว่าระบบปิดกะให้อัตโนมัติ
+  // เพราะไม่กดรับงานติดกันครบ worker_accept_timeout_limit ครั้ง (ดู handleAssignmentAcceptTimeout)
+  const schedule = state.schedules.get(worker.id) as {
+    time_work: string;
+    time_in: string;
+    time_out: string;
+  };
+  assert.ok(schedule, "Worker fixture must seed a default work schedule.");
+  const shiftInstanceKey = buildWorkScheduleShiftInstanceKey(
+    schedule as unknown as Parameters<typeof buildWorkScheduleShiftInstanceKey>[0],
+  );
+
+  state.checkinLogs.push({
+    id: state.nextCheckinLogId++,
+    workerId: worker.id,
+    workerCode: worker.labor_code,
+    shiftInstanceKey,
+    timeWork: schedule.time_work,
+    timeIn: schedule.time_in,
+    timeOut: schedule.time_out,
+    firstOnlineAt: new Date().toISOString(),
+    lastOnlineAt: new Date().toISOString(),
+    offlineAt: new Date().toISOString(),
+    closedAt: new Date().toISOString(),
+    closeReason: "assignment_timeout_limit_reached",
+    acceptTimeoutStreak: 3,
+    lastAcceptTimeoutAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const response = await server.request("GET", "/api/workers/me/status", {
+    token,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "ACCEPT_TIMEOUT_LIMIT_REACHED");
+  assert.equal(
+    response.body.reason_text,
+    "ท่านไม่กดรับงานติดต่อกันครบ 3 ครั้ง ระบบจึงปิดกะการทำงานให้ กรุณาติดต่อเจ้าหน้าที่ (Admin)",
+  );
+});
+
+test("GET /api/workers/me/status returns shift_active false with reason OUTSIDE_SHIFT when admin revoked the session (deactivated account / reset password)", async () => {
+  const { token, worker } = await loginWorker(1094);
+
+  // Fixture ตั้งกะเป็น 00:00-23:59 (ทั้งวัน) ตอนนี้จึงยังอยู่ในกะแน่นอน แต่จำลองว่า admin สั่ง revoke session
+  // ไปแล้ว (ปิดใช้งานบัญชี หรือ reset รหัสผ่านให้) ซึ่งปิดกะให้ด้วย — ไม่มี reason_code เฉพาะของตัวเอง ถือเป็น
+  // OUTSIDE_SHIFT เหมือนปิดกะด้วยเหตุผลทั่วไปอื่นๆ (worker สลับเครื่องเอง/force login ไม่ใช่เคสนี้ เพราะไม่แตะ
+  // queue/checkin log เลย)
+  const schedule = state.schedules.get(worker.id) as {
+    time_work: string;
+    time_in: string;
+    time_out: string;
+  };
+  assert.ok(schedule, "Worker fixture must seed a default work schedule.");
+  const shiftInstanceKey = buildWorkScheduleShiftInstanceKey(
+    schedule as unknown as Parameters<typeof buildWorkScheduleShiftInstanceKey>[0],
+  );
+
+  state.checkinLogs.push({
+    id: state.nextCheckinLogId++,
+    workerId: worker.id,
+    workerCode: worker.labor_code,
+    shiftInstanceKey,
+    timeWork: schedule.time_work,
+    timeIn: schedule.time_in,
+    timeOut: schedule.time_out,
+    firstOnlineAt: new Date().toISOString(),
+    lastOnlineAt: new Date().toISOString(),
+    offlineAt: new Date().toISOString(),
+    closedAt: new Date().toISOString(),
+    closeReason: "admin_session_revoked",
+    acceptTimeoutStreak: 0,
+    lastAcceptTimeoutAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const response = await server.request("GET", "/api/workers/me/status", {
+    token,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "OUTSIDE_SHIFT");
+  assert.equal(
+    response.body.reason_text,
+    "ขณะนี้ท่านอยู่นอกช่วงเวลาปฏิบัติงานตามกะที่กำหนด",
+  );
+});
+
+test("GET /api/workers/me/status returns shift_active false with reason SCAN_TIMEOUT when worker missed a QR/barcode scan", async () => {
+  const { token, worker } = await loginWorker(1095);
+  state.connectedWorkers.add(worker.id);
+
+  // ต้อง Go Online จริงก่อน เพื่อให้ attendance.firstOnlineAt ถูกบันทึก (เงื่อนไข hasShiftAttendanceEligibility
+  // ต้องอาศัยว่าเคย Go Online มาแล้วในกะนี้) จากนั้นจำลองว่า worker พลาดสแกน QR/บาร์โค้ดไม่ทันเวลา ซึ่งใน
+  // โค้ดจริงเกิดจาก handleAssignmentAcceptTimeout/handleExpiredScanOutcome เรียก markWorkerOpenApp พร้อม
+  // reason นี้ (ดู worker-dispatch.ts, worker.service.ts)
+  const onlineResponse = await server.request("POST", "/api/workers/me/online", { token });
+  assert.equal(onlineResponse.status, 200);
+
+  await workerQueue.markWorkerOpenApp(worker.id, WORKER_OPEN_APP_REASON.SCAN_TIMEOUT);
+
+  const response = await server.request("GET", "/api/workers/me/status", { token });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "SCAN_TIMEOUT");
+  assert.equal(
+    response.body.reason_text,
+    "ท่านสแกน QR โค้ด/บาร์โค้ดไม่ทันเวลาที่กำหนด กรุณาติดต่อเจ้าหน้าที่ (Admin)",
+  );
+});
+
+test("GET /api/workers/me/status returns shift_active false with reason ADMIN_CANCELLED_ASSIGNMENT when admin cancelled the worker's assignment", async () => {
+  const { token, worker } = await loginWorker(1096);
+  state.connectedWorkers.add(worker.id);
+
+  const onlineResponse = await server.request("POST", "/api/workers/me/online", { token });
+  assert.equal(onlineResponse.status, 200);
+
+  await workerQueue.markWorkerOpenApp(worker.id, WORKER_OPEN_APP_REASON.ADMIN_CANCEL_ASSIGNMENT);
+
+  const response = await server.request("GET", "/api/workers/me/status", { token });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "ADMIN_CANCELLED_ASSIGNMENT");
+  assert.equal(
+    response.body.reason_text,
+    "งานที่ท่านกำลังทำถูกยกเลิก กรุณาติดต่อเจ้าหน้าที่ (Admin)",
+  );
+});
+
+test("GET /api/workers/me/status returns shift_active false with reason ADMIN_FORCED_STATUS when admin forced the worker to open_app", async () => {
+  const { token, worker } = await loginWorker(1097);
+  state.connectedWorkers.add(worker.id);
+
+  const onlineResponse = await server.request("POST", "/api/workers/me/online", { token });
+  assert.equal(onlineResponse.status, 200);
+
+  await workerQueue.markWorkerOpenApp(worker.id, WORKER_OPEN_APP_REASON.ADMIN_FORCED_STATUS);
+
+  const response = await server.request("GET", "/api/workers/me/status", { token });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "ADMIN_FORCED_STATUS");
+  assert.equal(
+    response.body.reason_text,
+    "สถานะของท่านถูกเปลี่ยนแปลง กรุณาติดต่อเจ้าหน้าที่ (Admin)",
+  );
+});
+
+test("GET /api/workers/me/status returns shift_active false with no reason_code while break just ended and worker is still within the reconnect window", async () => {
+  const { token, worker } = await loginWorker(1098);
+  state.connectedWorkers.add(worker.id);
+
+  const onlineResponse = await server.request("POST", "/api/workers/me/online", { token });
+  assert.equal(onlineResponse.status, 200);
+
+  // ช่วงที่ยังอยู่ในหน้าต่างเวลา worker_break_retry (ยังไม่หมดเวลา) ตั้งใจไม่ map เป็น reason_code ให้ —
+  // FCM (WORKER_BREAK_RETURN_ACTION_REQUIRED) แจ้ง worker ไปแล้วตอนเกิดเหตุการณ์ และยัง self-resolve ได้เอง
+  // ถ้าเปิดแอปกลับมาทัน ไม่ต้องพึ่ง Admin เหมือน BREAK_RETRY_EXPIRED — shift_active ยังต้องเป็น false เพราะ
+  // POST /me/online จะโดน 409 WORKER_SHIFT_ONLINE_ALREADY_USED เหมือนกันในสถานะนี้
+  await workerQueue.markWorkerOpenApp(
+    worker.id,
+    WORKER_OPEN_APP_REASON.BREAK_ENDED_AWAITING_RECONNECT,
+  );
+
+  const response = await server.request("GET", "/api/workers/me/status", { token });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.shift_active, false);
+  assert.equal("reason_code" in response.body, false);
+  assert.equal("reason_text" in response.body, false);
+});
+
+test("GET /api/workers/me/status returns shift_active false with reason BREAK_RETRY_EXPIRED when the break reconnect window expired", async () => {
+  const { token, worker } = await loginWorker(1099);
+  state.connectedWorkers.add(worker.id);
+
+  const onlineResponse = await server.request("POST", "/api/workers/me/online", { token });
+  assert.equal(onlineResponse.status, 200);
+
+  await workerQueue.markWorkerOpenApp(worker.id, WORKER_OPEN_APP_REASON.BREAK_RETRY_EXPIRED);
+
+  const response = await server.request("GET", "/api/workers/me/status", { token });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.shift_active, false);
+  assert.equal(response.body.reason_code, "BREAK_RETRY_EXPIRED");
+  assert.equal(
+    response.body.reason_text,
+    "ท่านไม่ได้กลับเข้าคิวงานภายใน 1 นาทีหลังหมดเวลาพัก กรุณาติดต่อเจ้าหน้าที่ (Admin)",
+  );
 });
 
 test("GET /api/workers/me/status returns open_app when worker is not ready yet", async () => {
