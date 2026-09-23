@@ -362,3 +362,80 @@ test("GET /api/driver/jobs/stream opens an SSE connection and immediately sends 
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 });
+
+test("GET /api/driver/jobs/stream is force-closed with DRIVER_SESSION_CLOSED when the same device rescans and rotates the session", async () => {
+  const job = addWaitingDriverJob(17);
+  const oldSession = await createDriverSession(job.driver_qr_token, "device-1");
+
+  const controller = new AbortController();
+
+  try {
+    const response = await fetch(`${server.baseUrl}/api/driver/jobs/stream`, {
+      headers: {
+        Authorization: `Bearer ${oldSession.body.driver_session_token}`,
+        "X-Driver-Device-Id": "device-1",
+      },
+      signal: controller.signal,
+    });
+    const reader = response.body!.getReader();
+
+    // อ่าน DRIVER_JOB_SNAPSHOT แรกทิ้งก่อน (ยืนยันว่า connection เปิดสำเร็จ)
+    const first = await reader.read();
+    assert.match(Buffer.from(first.value ?? new Uint8Array()).toString("utf8"), /DRIVER_JOB_SNAPSHOT/);
+
+    // device เดิมสแกน QR ซ้ำ — session เก่าต้องถูก rotate ทิ้งทันที รวมถึง SSE connection ของมันด้วย
+    const rotated = await createDriverSession(job.driver_qr_token, "device-1");
+    assert.equal(rotated.status, 201);
+
+    const second = await reader.read();
+    const chunk = Buffer.from(second.value ?? new Uint8Array()).toString("utf8");
+
+    assert.match(chunk, /event: DRIVER_SESSION_CLOSED/);
+
+    // Session เก่าต้องใช้งานไม่ได้แล้วผ่าน REST ด้วย (ยืนยันว่า revoke จริง ไม่ใช่แค่ตัด SSE)
+    const staleCheck = await server.request("GET", "/api/driver/jobs/current", {
+      token: oldSession.body.driver_session_token,
+      headers: { "X-Driver-Device-Id": "device-1" },
+    });
+    assert.equal(staleCheck.status, 401);
+  } finally {
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+});
+
+test("GET /api/driver/jobs/stream auto-closes with DRIVER_SESSION_CLOSED once the session's own expiry time passes", async () => {
+  const job = addWaitingDriverJob(18);
+  const session = await createDriverSession(job.driver_qr_token, "device-1");
+
+  // บังคับให้ session นี้ใกล้หมดอายุมากๆ (ปกติ TTL 24 ชม. จาก runtime settings) เพื่อไม่ต้องรอจริงนาน
+  const driverSession = state.driverSessions.find(
+    (item) => item.session_token === session.body.driver_session_token,
+  );
+  assert.ok(driverSession);
+  driverSession!.expires_at = new Date(Date.now() + 300).toISOString();
+
+  const controller = new AbortController();
+
+  try {
+    const response = await fetch(`${server.baseUrl}/api/driver/jobs/stream`, {
+      headers: {
+        Authorization: `Bearer ${session.body.driver_session_token}`,
+        "X-Driver-Device-Id": "device-1",
+      },
+      signal: controller.signal,
+    });
+    const reader = response.body!.getReader();
+
+    const first = await reader.read();
+    assert.match(Buffer.from(first.value ?? new Uint8Array()).toString("utf8"), /DRIVER_JOB_SNAPSHOT/);
+
+    const second = await reader.read();
+    const chunk = Buffer.from(second.value ?? new Uint8Array()).toString("utf8");
+
+    assert.match(chunk, /event: DRIVER_SESSION_CLOSED/);
+  } finally {
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+});

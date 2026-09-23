@@ -10,7 +10,7 @@ import { dispatchReadyWorkers } from "../queues/worker-dispatch";
 // Import Services
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import { publishNotification } from "./notifications.service";
-import { publishDriverJobUpdate } from "./driver-stream.service";
+import { closeDriverStreamSession, publishDriverJobUpdate } from "./driver-stream.service";
 import { notifyVendorBoothDispatchResumed } from "./shared/vendor-line-notification.service";
 // Import Types
 import type { DriverJobSnapshotResponse, DriverSessionContext, DriverSessionResponse, DriverTicketJobResponse } from "../types/driver.type";
@@ -97,7 +97,7 @@ export async function createDriverSessionFromQr(
   const settings = await getRuntimeSettings();
   const driverSessionTtlMs = settings.driver_session_ttl_hours * 60 * 60 * 1000;
 
-  const { session, activeDeviceCount } = await withTransaction(async (transaction) => {
+  const { session, activeDeviceCount, rotatedSessionId } = await withTransaction(async (transaction) => {
     // Lock แถว TicketJob ก่อนอ่าน/นับ active session กันหลายเครื่องสแกน QR เดียวกันพร้อมกันแล้วทะลุ limit
     const lockedTicketJob = await driverRepository.lockTicketJobForDriverSession(
       ticketJob.id,
@@ -151,8 +151,18 @@ export async function createDriverSessionFromQr(
       ? new Set(activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`)).size
       : new Set(activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`)).size + 1;
 
-    return { session: createdSession, activeDeviceCount: nextActiveDeviceCount };
+    return {
+      session: createdSession,
+      activeDeviceCount: nextActiveDeviceCount,
+      rotatedSessionId: existingSameDeviceSlot?.id ?? null,
+    };
   });
+
+  // Device เดิมสแกนซ้ำ (rotate) — ต้องตัด SSE connection ของ session เก่าทันที ไม่งั้นหน้าจอเดิมจะยังรับ
+  // ข้อมูลรถต่อได้ทั้งที่ REST ของ session นั้นถูกปฏิเสธไปแล้ว เรียกหลัง transaction commit สำเร็จแล้วเท่านั้น
+  if (rotatedSessionId !== null) {
+    closeDriverStreamSession(ticketJob.id, rotatedSessionId);
+  }
 
   return {
     driver_session_token: session.session_token,

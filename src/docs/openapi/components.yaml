@@ -3331,7 +3331,9 @@
             DRIVER_JOB_SNAPSHOT = ส่งทันทีหลัง subscribe สำเร็จทุกครั้ง (รวม reconnect), DRIVER_JOB_UPDATED =
             สถานะรถ/assignment/ตลาด/แผง/สินค้าเปลี่ยน, DRIVER_JOB_TERMINAL = รถเป็น COMPLETED หรือ CANCELLED,
             DRIVER_SESSION_EXPIRING = session อยู่ใน terminal grace period แล้ว (อ่านต่อได้แต่ mutate ไม่ได้),
-            DRIVER_SESSION_CLOSED = grace period หมดแล้ว server ปิด stream นี้ทันทีหลัง event นี้
+            DRIVER_SESSION_CLOSED = server ปิด stream นี้ทันทีหลัง event นี้ เกิดได้ 3 กรณี: (1) terminal grace
+            period หมดเวลา (2) session ถูก revoke ทันทีเพราะ device เดิมสแกน QR ซ้ำ (rotate ไปเป็น session ใหม่
+            แล้ว) (3) session หมดอายุจริงตามเวลา (ExpiresAt) ระหว่างที่ยังเปิด stream ค้างอยู่
         vehicle_job_id:
           type: integer
           description: id ภายในของ TicketJob (ไม่ใช่ ticket_number)
@@ -6979,7 +6981,7 @@
           example: SCAN_TIMEOUT
         reason_text:
           type: string
-          description: ข้อความอธิบาย reason_code แปลตามภาษาของ Worker (lang) มีเฉพาะเมื่อมี reason_code
+          description: ข้อความอธิบาย reason_code เป็นภาษาไทยเสมอ (ไม่อิง worker.lang ต่างจาก reason_text ใน GET /api/workers/me/status เพราะ Admin dashboard เป็นภาษาไทยล้วน) มีเฉพาะเมื่อมี reason_code
           example: ท่านสแกน QR โค้ด/บาร์โค้ดไม่ทันเวลาที่กำหนด กรุณาติดต่อเจ้าหน้าที่ (Admin)
     AdminWorkerStatusListResponse:
       type: object

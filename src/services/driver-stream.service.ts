@@ -28,6 +28,9 @@ interface DriverStreamClient {
   sessionId: number;
   response: Response;
   heartbeat: NodeJS.Timeout;
+  // ตั้งเฉพาะ session ที่ยัง active ปกติ (ไม่ใช่ read-only ระหว่าง terminal grace) — ปิด connection ให้เอง
+  // ตรงเวลาหมดอายุจริง ไม่ต้อง query DB ซ้ำทุก heartbeat (ดู expiresAt ตอน subscribe)
+  expiryTimer?: NodeJS.Timeout;
 }
 
 /* -------------------------------------- Config -------------------------------------- */
@@ -76,11 +79,45 @@ function writeDriverEvent(
 function removeDriverStreamClient(ticketJobId: number, client: DriverStreamClient): void {
   clearInterval(client.heartbeat);
 
+  if (client.expiryTimer) {
+    clearTimeout(client.expiryTimer);
+  }
+
   const set = clientsByTicketJob.get(ticketJobId);
   set?.delete(client);
 
   if (set && set.size === 0) {
     clientsByTicketJob.delete(ticketJobId);
+  }
+}
+
+// Function ปิด SSE connection ทั้งหมดของ session หนึ่งอันทันที (ไม่ใช่ทั้ง vehicle job) — ใช้ตอน session
+// ถูก revoke นอกเหนือจาก terminal flow เช่น device เดิมสแกน QR ซ้ำจน session เก่าถูก rotate ทิ้ง เพื่อไม่ให้
+// connection เก่ายังรับข้อมูลรถต่อทั้งที่ REST ของ session นั้นถูกปฏิเสธไปแล้ว
+export function closeDriverStreamSession(ticketJobId: number, sessionId: number): void {
+  const set = clientsByTicketJob.get(ticketJobId);
+
+  if (!set) {
+    return;
+  }
+
+  for (const client of Array.from(set)) {
+    if (client.sessionId !== sessionId) {
+      continue;
+    }
+
+    writeDriverEvent(client.response, "DRIVER_SESSION_CLOSED", ticketJobId, null);
+    removeDriverStreamClient(ticketJobId, client);
+
+    try {
+      client.response.end();
+    } catch (error) {
+      logger.error("Failed to close driver SSE connection after session revoke.", {
+        ticketJobId,
+        sessionId,
+        error,
+      });
+    }
   }
 }
 
@@ -228,7 +265,31 @@ export function subscribeDriverJobStream(
   clientsByTicketJob.set(ticketJobId, existingSet);
 
   if (session.is_read_only) {
+    // Session อยู่ใน terminal grace period อยู่แล้ว — เวลาปิดจริงถูกคุมโดย scheduleTerminalClose
+    // (เรียกด้านล่างถ้า record ยัง terminal จริง) ไม่ต้องตั้ง absolute-expiry timer ซ้อนอีกชั้น
     writeDriverEvent(response, "DRIVER_SESSION_EXPIRING", ticketJobId, null);
+  } else {
+    // Session ปกติ (ไม่ได้อยู่ใน grace) — ตั้ง timer ปิด connection ให้เองตรงเวลาหมดอายุจริงของ session
+    // เพราะ SSE connection ที่เปิดค้างไว้ไม่เคยถูกตรวจ session ซ้ำอีกเลยหลัง handshake แรก (ต่างจาก REST
+    // ที่ตรวจทุก request) ถ้าไม่ตั้ง timer นี้ connection จะรับข้อมูลต่อได้เรื่อยๆ แม้ session หมดอายุไปแล้วจริง
+    const msUntilExpiry = new Date(session.expires_at).getTime() - Date.now();
+
+    if (msUntilExpiry > 0) {
+      client.expiryTimer = setTimeout(() => {
+        writeDriverEvent(client.response, "DRIVER_SESSION_CLOSED", ticketJobId, null);
+        removeDriverStreamClient(ticketJobId, client);
+
+        try {
+          client.response.end();
+        } catch (error) {
+          logger.error("Failed to close driver SSE connection after session expiry.", {
+            ticketJobId,
+            sessionId: session.id,
+            error,
+          });
+        }
+      }, msUntilExpiry);
+    }
   }
 
   void (async () => {

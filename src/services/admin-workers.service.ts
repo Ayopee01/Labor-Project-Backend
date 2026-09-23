@@ -867,7 +867,9 @@ function formatAdminWorkerStatusItem(
     ...(reasonCode && settings && status === WORKER_WORK_STATUS.OPEN_APP
       ? {
           reason_code: reasonCode,
-          reason_text: resolveShiftInactiveReasonText(reasonCode, worker.lang, {
+          // ตั้งใจ hardcode เป็น "TH" เสมอ ไม่อิง worker.lang เหมือนฝั่ง worker เพราะ Admin dashboard เป็น
+          // ภาษาไทยล้วน ไม่ต้องแปลตามภาษาของ worker แต่ละคน
+          reason_text: resolveShiftInactiveReasonText(reasonCode, "TH", {
             accept_timeout_limit: settings.worker_accept_timeout_limit,
             break_retry_minutes: settings.worker_break_retry,
           }),

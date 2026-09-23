@@ -533,6 +533,36 @@ describe("Worker Status Board", () => {
     );
   });
 
+  test("GET /api/admin/jobs/workers/status always returns reason_text in Thai regardless of the worker's own app language", async () => {
+    const { token } = await loginJobAdmin(9627);
+    const { token: workerToken, worker } = await loginWorker(9628);
+    worker.lang = "EN"; // worker.lang ตั้งภาษาแอปของ worker เอง — reason_text ฝั่ง Admin ต้องไม่อิงค่านี้
+    state.connectedWorkers.add(worker.id);
+
+    const onlineResponse = await server.request("POST", "/api/workers/me/online", {
+      token: workerToken,
+    });
+    assert.equal(onlineResponse.status, 200);
+
+    await workerQueue.markWorkerOpenApp(worker.id, WORKER_OPEN_APP_REASON.SCAN_TIMEOUT);
+    state.connectedWorkers.delete(worker.id);
+
+    const response = await server.request("GET", "/api/admin/jobs/workers/status", {
+      token,
+    });
+
+    assert.equal(response.status, 200);
+    const item = response.body.data.find(
+      (row: { worker_code: string }) => row.worker_code === worker.labor_code,
+    );
+    assert.ok(item, "expected the offline worker with a reason_code to still be listed");
+    assert.equal(item.reason_code, "SCAN_TIMEOUT");
+    assert.equal(
+      item.reason_text,
+      "ท่านสแกน QR โค้ด/บาร์โค้ดไม่ทันเวลาที่กำหนด กรุณาติดต่อเจ้าหน้าที่ (Admin)",
+    );
+  });
+
   test("GET /api/admin/jobs/workers/status omits reason_code/reason_text once a worker whose shift attendance was closed is back at status ready", async () => {
     const { token } = await loginJobAdmin(9625);
     const worker = addWorker(9626);
