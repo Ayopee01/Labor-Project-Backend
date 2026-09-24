@@ -329,7 +329,6 @@ export function addWorker(
     nationality: "Thai",
     labor_color: "standard",
     coat_no: String(workerId),
-    picture: null,
     image_url: null,
     work_start_date: "2026-01-01",
     time_work: "Morning",

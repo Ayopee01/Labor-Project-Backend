@@ -41,13 +41,22 @@ function createPrismaClient(): PrismaClient {
     max: getDatabasePoolMax(),
   });
 
+  // cast กลับเป็น PrismaClient เพราะ client ที่ตั้ง global omit เป็นคนละ type กับ DbConnection/TransactionClient ทั้งระบบ
+  // ผลคือ type ยังบอกว่ามี MasterWorker.picture แต่ runtime จะเป็น undefined — ห้ามอ่าน .picture โดยไม่ขอ omit: { picture: false }
   return new PrismaClient({
     adapter,
+    // ไม่ดึง MasterWorker.picture (binary รูปรวม ~40MB ทั้งตาราง) ทุกครั้งที่ query worker เพราะไม่มี response
+    // ไหนใช้ — ที่ต้องใช้รูปจริง (เช่นอัปโหลดขึ้น Spaces) ให้ขอเองด้วย omit: { picture: false } หรือ select
+    omit: {
+      masterWorker: {
+        picture: true,
+      },
+    },
     log:
       process.env.PRISMA_QUERY_LOG === "true"
         ? ["query", "error", "warn"]
         : ["error", "warn"],
-  });
+  }) as unknown as PrismaClient;
 }
 
 // Function คืน Prisma client ตัวเดียวของ process เพื่อใช้ซ้ำทั้งระบบ

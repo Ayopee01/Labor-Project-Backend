@@ -69,7 +69,6 @@ export interface MasterWorkerDto {
   time_work: string | null;
   time_in: string | null;
   time_out: string | null;
-  picture: string | null;
   image_url: string | null;
   update_date: string | null;
   lang: string;

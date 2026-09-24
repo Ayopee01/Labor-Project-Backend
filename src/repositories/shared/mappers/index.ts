@@ -97,14 +97,8 @@ export function mapAccount(record: Account | null): AccountDto | null {
   };
 }
 
-// Function แปลง Picture (Bytes) เป็น base64 string สำหรับ response — ห้ามส่ง Node Buffer object
-// ดิบออกไปตรงๆ ตามข้อ 29 ของ worker.md, Frontend เป็นคนประกอบ data URL เอง
-function toBase64Picture(value: Uint8Array | null): string | null {
-  return value ? Buffer.from(value).toString("base64") : null;
-}
-
 // Function แปลง master worker จาก DB
-export function mapMasterWorker(record: MasterWorker | null): MasterWorkerDto | null {
+export function mapMasterWorker(record: Omit<MasterWorker, "picture"> | null): MasterWorkerDto | null {
   if (!record) {
     return null;
   }
@@ -128,7 +122,6 @@ export function mapMasterWorker(record: MasterWorker | null): MasterWorkerDto | 
     time_work: record.timeWork,
     time_in: record.timeIn,
     time_out: record.timeOut,
-    picture: toBase64Picture(record.picture),
     image_url: record.imageUrl,
     update_date: toIsoString(record.updateDate),
     lang: record.lang,

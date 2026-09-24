@@ -3856,7 +3856,6 @@ export const adminWorkersRepositoryMock = {
         nationality: input.nationality,
         labor_color: input.labor_color,
         coat_no: null,
-        picture: null,
         image_url: null,
         work_start_date: input.work_start_date ?? null,
         time_work: input.time_work ?? null,
