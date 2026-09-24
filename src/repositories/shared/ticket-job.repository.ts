@@ -393,3 +393,27 @@ export async function setTicketJobDispatch(
 
   return requireDto(mapTicketJob(ticketJob), "vehicle job dispatch update");
 }
+
+// Function ลด workersRequired ของ TicketJob ลง 1 เมื่อ Admin ยกเลิก Worker ที่ Scan เข้าทำงานแล้ว (ไม่หาคนแทน)
+// เขียนแบบมีเงื่อนไขในคำสั่งเดียว ไม่ให้ต่ำกว่า 1 — คืน false ถ้าเหลือ 1 อยู่แล้ว (caller ต้องปล่อยให้ dispatch หาคนแทนตามปกติ)
+export async function decrementTicketJobWorkersRequired(
+  ticketJobId: number,
+  connection?: DbConnection,
+): Promise<boolean> {
+  const db = client(connection);
+  const result = await db.ticketJob.updateMany({
+    where: {
+      id: ticketJobId,
+      workersRequired: {
+        gt: 1,
+      },
+    },
+    data: {
+      workersRequired: {
+        decrement: 1,
+      },
+    },
+  });
+
+  return result.count > 0;
+}

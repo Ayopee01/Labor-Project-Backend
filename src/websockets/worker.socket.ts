@@ -74,6 +74,8 @@ const PUSH_WORKER_SOCKET_EVENTS = new Set<WorkerSocketEventType>([
   "STALL_JOB_CANCELLED",
   "MARKET_JOB_CANCELLED",
   "VEHICLE_JOB_CANCELLED",
+  "TICKET_WORKER_CANCELLED",
+  "TICKET_WORKER_CANCELLED_FROM_BOOTH",
   "WORKER_BREAK_RETURN_ACTION_REQUIRED",
   "WORKER_BREAK_RETRY_EXPIRED",
   "WORKER_STATUS_FORCED_BY_ADMIN",
@@ -413,6 +415,10 @@ function buildWorkerPushTitle(type: WorkerSocketEventType): string {
     case "MARKET_JOB_CANCELLED":
     case "VEHICLE_JOB_CANCELLED":
       return "Assignment cancelled";
+    case "TICKET_WORKER_CANCELLED":
+      return "Removed from business ticket";
+    case "TICKET_WORKER_CANCELLED_FROM_BOOTH":
+      return "Removed from booth";
     case "TEAM_READY":
       return "Team ready";
     case "ASSIGNMENT_SCAN_DEADLINE_EXTENDED":
@@ -459,6 +465,10 @@ function buildWorkerPushMessage(
       return ticketNumber
         ? `Assignment ${ticketNumber} was cancelled.`
         : "Your assignment was cancelled.";
+    case "TICKET_WORKER_CANCELLED":
+      return "Admin removed you from a business ticket.";
+    case "TICKET_WORKER_CANCELLED_FROM_BOOTH":
+      return "Admin removed you from a booth.";
     case "TEAM_READY":
       return "Your whole team has checked in. You can start working now.";
     case "ASSIGNMENT_SCAN_DEADLINE_EXTENDED":

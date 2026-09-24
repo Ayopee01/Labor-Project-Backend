@@ -658,6 +658,10 @@
       summary: ยกเลิกงานหรือ assignment ตาม scope
       description: >
         Admin ส่ง TicketNumber และตัวเลือก ticketNo, boothCode หรือ workerCode เพื่อยกเลิกทั้งรถ ทั้ง Business Ticket เฉพาะ Booth หรือ Worker รายคนใน endpoint เดียว
+        กรณียกเลิก Worker รายคน (TicketNumber + workerCode) ถ้า Worker คนนั้น Scan เข้าทำงานแล้ว (SCANNED/WORKING/ส่งยอดแล้ว)
+        ระบบจะลด WorkersRequired ของรถลง 1 และไม่หาคนแทน ทีมที่เหลือทำงานและส่งยอดต่อได้ทันที (ยกเว้น WorkersRequired
+        เหลือ 1 อยู่แล้วจะหาคนแทนตามปกติ) ถ้า Worker ยังไม่ Scan (PENDING/ACCEPTED) ระบบจะหาคนแทนจากคิวทันทีเหมือนเดิม
+        Admin เพิ่ม Worker เองได้ผ่าน assign-workers โดย Worker ต้องกดรับและ Scan ตาม flow ปกติ
       operationId: cancelAdminVehicleJobAssignment
       security:
         - bearerAuth: []

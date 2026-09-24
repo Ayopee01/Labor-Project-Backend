@@ -823,6 +823,17 @@ export const workerApplicationRepositoryMock = {
 
     return job;
   },
+  decrementTicketJobWorkersRequired: async (ticketJobId: number) => {
+    const job = state.ticketJobs.find((item) => item.id === ticketJobId);
+
+    if (!job || job.workers_required <= 1) {
+      return false;
+    }
+
+    job.workers_required -= 1;
+
+    return true;
+  },
   completeAssignments: async (assignmentIds: number[], completedAt: Date) => {
     const completedAtIso = completedAt.toISOString();
 
@@ -2072,6 +2083,7 @@ const {
   rejectTicketCompletion,
   scanAssignment,
   setTicketJobDispatch,
+  decrementTicketJobWorkersRequired,
   findMarketJobRosterLockState,
   listActiveScannedAssignmentWorkerIds,
   createTicketWorkersIfMissing,
@@ -2346,6 +2358,7 @@ export const ticketJobRepositoryMock = {
   findTicketJobLifecycleState,
   updateTicketJobStatus,
   setTicketJobDispatch,
+  decrementTicketJobWorkersRequired,
   // Function ยกเลิก TicketJob พร้อม cascade MarketJob/BoothJob ที่ยังไม่ terminal — ย้ายมาจาก adminJobsRepositoryMock ตาม Fix B
   cancelTicketJobWithCascade: async (ticketJobId: number) => {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);

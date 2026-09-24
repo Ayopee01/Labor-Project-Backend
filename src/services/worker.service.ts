@@ -360,12 +360,14 @@ function sendAssignmentTeamUpdatedSocketEvents(
 export async function notifyTicketJobTeamScanReadiness(
   ticketJob: TicketJobDto,
   teamScan: VehicleWorkReadinessDto,
+  // false = ส่งแค่ ASSIGNMENT_TEAM_UPDATED ไม่ประกาศ TEAM_READY (มี push) ซ้ำ ใช้เมื่อทีมพร้อมทำงานอยู่ก่อนแล้ว
+  options: { announceReady?: boolean } = {},
 ): Promise<void> {
   const team = await listTicketJobAssignmentTeamWithScanStatus(ticketJob.id);
 
   sendAssignmentTeamUpdatedSocketEvents(ticketJob.ticket_number, team, teamScan);
 
-  if (!teamScan.is_ready) {
+  if (!teamScan.is_ready || options.announceReady === false) {
     return;
   }
 

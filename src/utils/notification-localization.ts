@@ -31,6 +31,8 @@ const WORKER_NOTIFICATION_KEYS: Record<string, string> = {
   STALL_JOB_CANCELLED: "job.stall_cancelled",
   MARKET_JOB_CANCELLED: "job.market_cancelled",
   VEHICLE_JOB_CANCELLED: "job.vehicle_cancelled",
+  TICKET_WORKER_CANCELLED: "ticket_worker.cancelled",
+  TICKET_WORKER_CANCELLED_FROM_BOOTH: "ticket_worker.cancelled_from_booth",
   SESSION_REVOKED: "auth.session_revoked",
   WORKER_BREAK_RETURN_ACTION_REQUIRED: "worker.break_return_action_required",
   WORKER_BREAK_RETRY_EXPIRED: "worker.break_retry_expired",
@@ -178,6 +180,18 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
       title: "งานรถถูกยกเลิก",
       message: "งานรถถูกยกเลิก",
     }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "คุณถูกถอดออกจากงาน",
+      message: params.reason_text
+        ? `แอดมินถอดคุณออกจากใบงาน ${text(params.ticketNo)} เหตุผล: ${text(params.reason_text)}`
+        : `แอดมินถอดคุณออกจากใบงาน ${text(params.ticketNo)}`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "คุณถูกถอดออกจากแผง",
+      message: params.reason_text
+        ? `แอดมินถอดคุณออกจากแผง ${text(params.boothCode)} เหตุผล: ${text(params.reason_text)}`
+        : `แอดมินถอดคุณออกจากแผง ${text(params.boothCode)}`,
+    }),
     "auth.session_revoked": (params) => ({
       title: "บัญชีถูกเข้าสู่ระบบจากอุปกรณ์อื่น",
       message: `Session นี้ถูกออกจากระบบ เนื่องจากมีการยืนยันเข้าสู่ระบบจาก ${text(params.new_device_name, "อุปกรณ์อื่น")}`,
@@ -279,6 +293,18 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
     "job.vehicle_cancelled": () => ({
       title: "ယာဉ်အလုပ် ပယ်ဖျက်ပြီးပါပြီ",
       message: "ယာဉ်အလုပ်ကို ပယ်ဖျက်ပြီးပါပြီ။",
+    }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "လုပ်ငန်းမှ ဖယ်ရှားခံရပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို လက်မှတ် ${text(params.ticketNo)} မှ ဖယ်ရှားလိုက်ပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : `Admin မှ သင့်ကို လက်မှတ် ${text(params.ticketNo)} မှ ဖယ်ရှားလိုက်ပါသည်။`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "ဆိုင်ခန်းမှ ဖယ်ရှားခံရပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို ဆိုင်ခန်း ${text(params.boothCode)} မှ ဖယ်ရှားလိုက်ပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : `Admin မှ သင့်ကို ဆိုင်ခန်း ${text(params.boothCode)} မှ ဖယ်ရှားလိုက်ပါသည်။`,
     }),
     "auth.session_revoked": (params) => ({
       title: "အကောင့်ကို အခြားစက်မှ ဝင်ရောက်ထားပါသည်",
@@ -382,6 +408,18 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
       title: "ការងាររថយន្តត្រូវបានលុបចោល",
       message: "ការងាររថយន្តត្រូវបានលុបចោល",
     }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "អ្នកត្រូវបានដកចេញពីការងារ",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីសំបុត្រ ${text(params.ticketNo)}។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីសំបុត្រ ${text(params.ticketNo)}`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "អ្នកត្រូវបានដកចេញពីតូប",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីតូប ${text(params.boothCode)}។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីតូប ${text(params.boothCode)}`,
+    }),
     "auth.session_revoked": (params) => ({
       title: "គណនីបានចូលពីឧបករណ៍ផ្សេង",
       message: `Session នេះត្រូវបានចេញ ព្រោះបានបញ្ជាក់ការចូលពី ${text(params.new_device_name, "ឧបករណ៍ផ្សេង")}`,
@@ -483,6 +521,18 @@ const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
     "job.vehicle_cancelled": () => ({
       title: "Vehicle job cancelled",
       message: "Your vehicle job was cancelled.",
+    }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "Removed from business ticket",
+      message: params.reason_text
+        ? `Admin removed you from ticket ${text(params.ticketNo)}. Reason: ${text(params.reason_text)}`
+        : `Admin removed you from ticket ${text(params.ticketNo)}.`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "Removed from booth",
+      message: params.reason_text
+        ? `Admin removed you from booth ${text(params.boothCode)}. Reason: ${text(params.reason_text)}`
+        : `Admin removed you from booth ${text(params.boothCode)}.`,
     }),
     "auth.session_revoked": (params) => ({
       title: "Signed in on another device",

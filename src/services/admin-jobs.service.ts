@@ -46,13 +46,13 @@ import { adminAssignWorkersBodySchema, adminCancelAssignmentBodySchema, adminCan
 import { requireActorId } from "../utils/actor";
 import ApiError from "../utils/api-error";
 // Import Config
-import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, DAILY_WORKER_INCOME_PAYMENT_STATUS, SUBMITTED_TICKET_STATUSES, TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_STATUS, TICKET_SUBMITTER_ROLE, TICKET_WORKER_STATUS, VEHICLE_JOB_STATUS, WORKER_OPEN_APP_REASON } from "../constants/status";
+import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, DAILY_WORKER_INCOME_PAYMENT_STATUS, SCANNED_ASSIGNMENT_STATUSES, SUBMITTED_TICKET_STATUSES, TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_STATUS, TICKET_SUBMITTER_ROLE, TICKET_WORKER_STATUS, VEHICLE_JOB_STATUS, WORKER_OPEN_APP_REASON } from "../constants/status";
 import { DEFAULT_PAGE_LIMIT } from "../constants/pagination";
 import { ADMIN_ACTION_TYPE } from "../types/shared/admin-action-log.type";
 import type { AdminActionLogDto } from "../types/shared/admin-action-log.type";
 import { WORKER_ASSIGNMENT_EVENT_TYPE } from "../types/shared/worker-assignment-event.type";
 import { buildBangkokDateSpanRange, buildDeadline, formatBangkokDate, getDelayUntil, toUnixMs } from "../utils/time";
-import { buildWorkerAssignedPayload } from "../utils/worker-payload";
+import { buildWorkerAssignedPayload, buildWorkerQueueSocketPayload } from "../utils/worker-payload";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 
 /* -------------------------------------- Functions -------------------------------------- */
@@ -1680,10 +1680,28 @@ async function cancelTicketJobAndRequeue(
       ticketNos,
       status: ticketJob.status,
       requeued: true,
+      worker_status: WORKER_WORK_STATUS.READY,
       reason: "vehicle_job_cancelled_requeue",
     },
     worker_ids: requeuedWorkerIds,
   });
+  // Worker ที่หมดกะก็ต้องได้ FCM ด้วย ไม่งั้นได้แค่ WORKER_STATUS_CHANGED ทาง socket (ไม่มี push) ถ้าแอปปิดอยู่จะไม่รู้ว่างานถูกยกเลิก
+  if (openAppWorkerIds.length > 0) {
+    publishRealtimeEvent({
+      type: "VEHICLE_JOB_CANCELLED",
+      title: "Vehicle job cancelled",
+      message: `Vehicle job ${ticketJob.ticket_number} was cancelled.`,
+      worker_payload: {
+        ticketNumber: ticketJob.ticket_number,
+        ticketNos,
+        status: ticketJob.status,
+        requeued: false,
+        worker_status: WORKER_WORK_STATUS.OPEN_APP,
+        reason: "vehicle_job_cancelled_shift_ended",
+      },
+      worker_ids: openAppWorkerIds,
+    });
+  }
   if (requeuedWorkerIds.length > 0) {
     // dispatch เป็น best-effort ต้องไม่ทำให้ request cancel ที่สำเร็จแล้วพัง 500 เพราะ dispatch ล้มเหลว
     try {
@@ -2031,8 +2049,30 @@ async function cancelAssignment(
   const ticketJob = await ticketJobRepository.findTicketJobById(
     assignment.vehicle_job_id,
   );
-  const { cancelledAssignment, teamScan } = await withTransaction(async (transaction) =>
+  const {
+    cancelledAssignment,
+    teamScan,
+    wasTeamReady,
+    replacementNotNeeded,
+  } = await withTransaction(async (transaction) =>
     {
+      // Lock แถว assignment ก่อนอ่านสถานะสด กัน race กับ worker ที่กำลัง Scan พร้อมกัน — สถานะนี้ตัดสินว่าต้องหาคนแทนหรือไม่
+      await transaction.$queryRaw`SELECT id FROM ticket_job_assignments WHERE id = ${assignment.id} FOR UPDATE`;
+
+      const currentAssignment = await assignmentRepository.findAssignmentById(
+        assignment.id,
+        transaction,
+      );
+      const wasScanned = Boolean(
+        currentAssignment &&
+          SCANNED_ASSIGNMENT_STATUSES.includes(currentAssignment.status),
+      );
+      const teamScanBefore =
+        await assignmentRepository.getTicketJobTeamScanReadiness(
+          assignment.vehicle_job_id,
+          transaction,
+        );
+
       const result = await assignmentRepository.cancelAssignment(
         assignment.id,
         transaction,
@@ -2047,6 +2087,17 @@ async function cancelAssignment(
           "Assignment is not active.",
         );
       }
+
+      // Worker ที่ Scan เข้าทำงานแล้ว (SCANNED/WORKING/ส่งยอดแล้ว) ถูกยกเลิก = ลดขนาดทีมลง ไม่หาคนแทน ทีมที่เหลือ
+      // ทำงาน/ส่งยอดต่อได้ทันที (จำนวนที่ Scan กับ workers_required ลดลงเท่ากัน ความพร้อมของทีมจึงไม่เปลี่ยน)
+      // ถ้า workers_required เหลือ 1 อยู่แล้วจะลดไม่ได้ (รถต้องมีคนอย่างน้อย 1) — ปล่อยให้ dispatch หาคนแทนตามเดิม
+      // ส่วน Worker ที่ยังไม่ Scan (PENDING/ACCEPTED) ถูกยกเลิก workers_required คงเดิม dispatch หาคนแทนตามปกติ
+      const replacementNotNeeded = wasScanned
+        ? await ticketJobRepository.decrementTicketJobWorkersRequired(
+            assignment.vehicle_job_id,
+            transaction,
+          )
+        : false;
 
       const teamScan =
         await assignmentRepository.getTicketJobTeamScanReadiness(
@@ -2072,12 +2123,21 @@ async function cancelAssignment(
             assignment_id: assignment.id,
             worker_id: assignment.worker_id,
             worker_code: workerCode,
+            previous_status: currentAssignment?.status ?? null,
+            replacement_dispatched: !replacementNotNeeded,
+            workers_required_before: teamScanBefore.workers_required,
+            workers_required_after: teamScan.workers_required,
           },
         },
         transaction,
       );
 
-      return { cancelledAssignment: result, teamScan };
+      return {
+        cancelledAssignment: result,
+        teamScan,
+        wasTeamReady: teamScanBefore.is_ready,
+        replacementNotNeeded,
+      };
     },
   );
 
@@ -2095,10 +2155,13 @@ async function cancelAssignment(
     assignment.vehicle_job_id,
   );
 
+  // แนบ worker_status/queue ไปด้วย ให้ Mobile อัปเดตสถานะตัวเองเป็น open_app ได้จาก event เดียว ไม่ต้องยิง API ถามซ้ำ
   sendWorkerSocketEvent(assignment.worker_id, "ASSIGNMENT_CANCELLED", {
     ticketNumber: ticketJob?.ticket_number ?? null,
     ticketNos,
     reason: "admin_cancel_assignment",
+    worker_status: WORKER_WORK_STATUS.OPEN_APP,
+    queue: buildWorkerQueueSocketPayload(queue, workerCode),
   });
   // แจ้ง Admin SSE แยกจาก ASSIGNMENT_CANCELLED ด้านบน (event นั้นไม่มี queue snapshot ของ worker) —
   // ให้ตาราง worker status ฝั่ง Admin dashboard refresh ทันทีแบบเดียวกับจุดอื่นที่ worker กลับไป open_app
@@ -2110,13 +2173,16 @@ async function cancelAssignment(
     reason: "admin_cancel_assignment",
   });
 
-  // แจ้งทีมที่เหลือตามสถานะทีมล่าสุดหลังยกเลิก (workers_required ไม่เปลี่ยน ทีมจะพร้อมก็ต่อเมื่อมีคนแทนสแกนเข้ามา)
+  // แจ้งทีมที่เหลือตามสถานะทีมล่าสุดหลังยกเลิก — ไม่ประกาศ TEAM_READY (มี push) ซ้ำถ้าทีมพร้อมทำงานอยู่ก่อนแล้ว
   if (ticketJob) {
-    await notifyTicketJobTeamScanReadiness(ticketJob, teamScan);
+    await notifyTicketJobTeamScanReadiness(ticketJob, teamScan, {
+      announceReady: !wasTeamReady,
+    });
   }
 
-  // workers_required ของรถไม่ลดตามการยกเลิก จึงต้อง dispatch หาคนแทนทันที ไม่งั้นทีมที่เหลือส่งยอดไม่ได้
-  // (WORKERS_NOT_CHECKED_IN) จนกว่าจะมี event อื่นมา trigger dispatch — best-effort ห้ามทำให้ cancel ที่ commit แล้วพัง
+  // ยกเลิกคนที่ยังไม่ Scan: workers_required คงเดิม ต้อง dispatch หาคนแทนทันที ไม่งั้นทีมส่งยอดไม่ได้ (WORKERS_NOT_CHECKED_IN)
+  // จนกว่าจะมี event อื่นมา trigger dispatch — ยกเลิกคนที่ Scan แล้ว workers_required ลดลงแล้ว dispatch จึงไม่ได้ใครเพิ่ม
+  // (เติมแค่ช่องที่ขาดอยู่เดิมก่อนยกเลิกถ้ามี) best-effort ห้ามทำให้ cancel ที่ commit แล้วพัง
   // เรียกหลัง markWorkerOpenApp ด้านบนเสมอ Worker ที่เพิ่งถูกยกเลิกจึงไม่ถูกจ่ายกลับมารถคันเดิม
   try {
     await dispatchReadyWorkers(undefined, {
@@ -2137,6 +2203,8 @@ async function cancelAssignment(
       worker_code: workerCode,
       status: cancelledAssignment.status,
       reason: "admin_cancel_assignment",
+      replacement_dispatched: !replacementNotNeeded,
+      workers_required: teamScan.workers_required,
     },
     audience: {
       roles: ["admin"],
@@ -2764,6 +2832,20 @@ async function cancelTicketWorker(
       roles: ["admin"],
     },
   });
+  // แจ้ง Worker ที่ถูกถอดออกเอง (socket + FCM) — Admin ได้ publishNotification ด้านบนแล้วจึงไม่ส่ง admin ซ้ำ
+  publishRealtimeEvent({
+    type: "TICKET_WORKER_CANCELLED",
+    title: "Removed from business ticket",
+    message: `Admin removed you from ticket ${ticketNo}.`,
+    worker_payload: {
+      ticketNumber: ticketJob.ticket_number,
+      ticketNo,
+      status: TICKET_WORKER_STATUS.CANCELLED,
+      reason_code: input.reason_code ?? null,
+      reason_text: input.reason_text ?? null,
+    },
+    worker_ids: [worker.id],
+  });
 
   return {
     message: "Worker removed from business ticket successfully.",
@@ -2943,6 +3025,22 @@ async function cancelTicketWorkerFromBooth(
       roles: ["admin"],
     },
   });
+  // แจ้ง Worker ที่ถูกถอดออกจาก Booth เอง (socket + FCM) ไม่ว่า Booth จะถูกยกเลิกอัตโนมัติตามไปด้วยหรือไม่
+  publishRealtimeEvent({
+    type: "TICKET_WORKER_CANCELLED_FROM_BOOTH",
+    title: "Removed from booth",
+    message: `Admin removed you from booth ${boothCode}.`,
+    worker_payload: {
+      ticketNumber: ticketJob.ticket_number,
+      ticketNo,
+      boothCode,
+      status: TICKET_WORKER_STATUS.CANCELLED,
+      booth_cancelled: boothCancelled,
+      reason_code: input.reason_code ?? null,
+      reason_text: input.reason_text ?? null,
+    },
+    worker_ids: [worker.id],
+  });
 
   if (boothCancelled) {
     // แจ้ง Driver Web ว่าแผงถูกยกเลิก (worker คนสุดท้ายถูกถอดออก) หรือรถจบงานไปเลยถ้านี่คือแผงสุดท้าย —
@@ -2973,7 +3071,10 @@ async function cancelTicketWorkerFromBooth(
         status: TICKET_STATUS.CANCELLED,
       },
       admin: true,
-      worker_ids: await listStallJobWorkerIds(ticket),
+      // ตัด Worker ที่เพิ่งถูกถอดออก เพราะได้ TICKET_WORKER_CANCELLED_FROM_BOOTH ไปแล้ว กัน push ซ้ำสองอัน
+      worker_ids: (await listStallJobWorkerIds(ticket)).filter(
+        (workerId) => workerId !== worker.id,
+      ),
     });
 
     await notifyVendorBoothCancelled({
@@ -3224,17 +3325,43 @@ export async function changeTicketJobToWait(
     const { requeuedWorkerIds, openAppWorkerIds: openAppIds } =
       await requeueWorkersAtFrontRespectingShift(candidateWorkerIds);
 
-    for (const workerId of requeuedWorkerIds) {
+    // WORKER_STATUS_CHANGED ไม่มี FCM จึงต้องส่ง ASSIGNMENT_CANCELLED (มี push) คู่ไปด้วย กัน Worker ที่ปิดแอปอยู่
+    // ไม่รู้ว่างานที่กดรับไว้หลุดไปแล้ว
+    const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
+      ticketJob.id,
+    );
+    const notifyAssignmentCancelledByWait = (
+      workerId: number,
+      workerStatus: string,
+      reason: string,
+    ) => {
       sendWorkerSocketEvent(workerId, "WORKER_STATUS_CHANGED", {
-        status: WORKER_WORK_STATUS.READY,
-        reason: "vehicle_job_wait_requeue",
+        status: workerStatus,
+        reason,
       });
+      sendWorkerSocketEvent(workerId, "ASSIGNMENT_CANCELLED", {
+        ticketNumber: ticketJob.ticket_number,
+        ticketNos,
+        reason,
+        worker_status: workerStatus,
+        reason_code: input.reason_code ?? null,
+        reason_text: input.reason_text ?? null,
+      });
+    };
+
+    for (const workerId of requeuedWorkerIds) {
+      notifyAssignmentCancelledByWait(
+        workerId,
+        WORKER_WORK_STATUS.READY,
+        "vehicle_job_wait_requeue",
+      );
     }
     for (const workerId of openAppIds) {
-      sendWorkerSocketEvent(workerId, "WORKER_STATUS_CHANGED", {
-        status: WORKER_WORK_STATUS.OPEN_APP,
-        reason: "vehicle_job_wait_shift_ended",
-      });
+      notifyAssignmentCancelledByWait(
+        workerId,
+        WORKER_WORK_STATUS.OPEN_APP,
+        "vehicle_job_wait_shift_ended",
+      );
     }
     [requeuedWorkerCodes, openAppWorkerCodes] = await Promise.all([
       profileRepository.findWorkerCodesByAccountIds(requeuedWorkerIds),
