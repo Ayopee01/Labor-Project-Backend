@@ -70,13 +70,6 @@ export function isAdminPermission(value: string): value is AdminPermission {
   return (ADMIN_PERMISSIONS as readonly string[]).includes(value);
 }
 
-// Function ตรวจว่า value เป็นระดับสิทธิ์ admin ที่ถูกต้องหรือไม่
-export function isAdminPermissionLevel(
-  value?: string | null
-): value is AdminPermissionLevel {
-  return !!value && (ADMIN_PERMISSION_LEVELS as readonly string[]).includes(value);
-}
-
 // Function คืนลำดับของ permission level (ยิ่งน้อยยิ่งสิทธิ์สูง, -1 ถ้าไม่พบ)
 export function getPermissionLevelOrder(permissionLevel?: string | null): number {
   return ADMIN_PERMISSION_LEVELS.findIndex((level) => level === permissionLevel);

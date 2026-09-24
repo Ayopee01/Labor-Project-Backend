@@ -94,17 +94,26 @@ export function buildBangkokDateSpanRange(
   };
 }
 
+// Formatter วันที่ตามเวลาไทย ใช้ร่วมกันทุกฟังก์ชันที่ต้องแยก ปี/เดือน/วัน (สร้างครั้งเดียว ไม่สร้างใหม่ทุก call)
+const bangkokDateFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BANGKOK_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+// Function แยก ปี/เดือน/วัน ตามเวลาไทยของ Date หนึ่งค่า
+function getBangkokDateParts(value: Date): { year: string; month: string; day: string } {
+  const parts = bangkokDateFormatter.formatToParts(value);
+  const find = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? "";
+
+  return { year: find("year"), month: find("month"), day: find("day") };
+}
+
 // Function จัดรูปแบบ bangkok date สำหรับ helper กลาง
 export function formatBangkokDate(value: Date = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: BANGKOK_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(value);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
+  const { year, month, day } = getBangkokDateParts(value);
 
   return `${year}-${month}-${day}`;
 }
@@ -120,15 +129,7 @@ export function formatBangkokDisplayDate(value: Date | string | null | undefined
     return "-";
   }
 
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: BANGKOK_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
+  const { year, month, day } = getBangkokDateParts(date);
 
   return `${day}/${month}/${year}`;
 }

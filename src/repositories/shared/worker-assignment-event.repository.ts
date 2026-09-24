@@ -13,9 +13,12 @@ export async function createOnce(
 ): Promise<void> {
   const db = client(connection);
 
-  try {
-    await db.workerAssignmentEvent.create({
-      data: {
+  // ใช้ ON CONFLICT DO NOTHING (skipDuplicates) แทนการ catch P2002 — ใน Postgres ถ้า unique violation เกิดใน
+  // transaction จะ abort ทั้ง transaction ทันที (query ถัดไป fail ด้วย 25P02) การ catch แล้ว return เงียบๆ
+  // จึงกันซ้ำไม่ได้จริงเมื่อถูกเรียกใน transaction ซึ่งเป็นกรณีส่วนใหญ่ของ caller
+  await db.workerAssignmentEvent.createMany({
+    data: [
+      {
         assignmentId: input.assignment_id,
         workerId: input.worker_id,
         ticketJobId: input.vehicle_job_id,
@@ -25,17 +28,9 @@ export async function createOnce(
           ? (input.metadata as Prisma.InputJsonValue)
           : Prisma.JsonNull,
       },
-    });
-  } catch (error) {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2002"
-    ) {
-      return;
-    }
-
-    throw error;
-  }
+    ],
+    skipDuplicates: true,
+  });
 }
 
 // Function บันทึก assignment event หลายรายการแบบ idempotent (เรียก createOnce วนทีละรายการ)

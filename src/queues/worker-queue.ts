@@ -32,8 +32,8 @@ const workerBreakReturnQueue = new Queue(REDIS_CONFIG.workerBreakReturnQueueName
   connection: bullConnection,
 });
 
-// Retry option สำหรับ accept/scan timeout job เท่านั้น (ต่างจาก job อื่นในไฟล์นี้ที่ไม่ retry) เพราะ job สอง
-// ตัวนี้เขียนเปลี่ยนสถานะ assignment ที่ถ้าพลาดแล้วไม่มีอะไรมาประมวลผลซ้ำ จะค้างสถานะถาวร (ดู incident ที่
+// Retry option สำหรับ accept/scan/vendor-confirm timeout job เท่านั้น (ต่างจาก job อื่นในไฟล์นี้ที่ไม่ retry) เพราะ
+// job กลุ่มนี้เขียนเปลี่ยนสถานะที่ถ้าพลาดแล้วไม่มีอะไรมาประมวลผลซ้ำ จะค้างสถานะถาวร (ดู incident ที่
 // interactive transaction หมดเวลา 5000ms เป็นครั้งคราวภายใต้โหลดพร้อมกัน) — retry แบบ exponential backoff
 // ให้โอกาสความผิดพลาดชั่ววูบสำเร็จเองในรอบถัดไปโดยไม่ต้องรอ sweep job (ทุก 2 นาที) มาช่วย
 const ASSIGNMENT_TIMEOUT_RETRY_OPTIONS = {
@@ -48,6 +48,27 @@ let lastWorkerQueueScore = 0; // ค่าลำดับของ worker queue 
 let lastWorkerQueueFrontScore = 0; // ค่าลำดับของ worker queue score ล่าสุดที่ใช้สำหรับ enqueueWorkersAtFront (ค่าติดลบ) เพื่อให้ worker ที่ enqueue ทีหลังอยู่หน้าคิวเสมอ
 
 /* -------------------------------------- Functions -------------------------------------- */
+
+// Function ลบ delayed job ตาม jobId ถ้ามีอยู่ — BullMQ ไม่ยอมลบ job ที่ worker กำลังประมวลผลอยู่ (locked) และ throw
+// ออกมา ซึ่งมักเกิดหลัง caller commit DB ไปแล้ว (เช่น Admin cancel ชนจังหวะเดียวกับ timeout job) จึงไม่ throw ต่อ
+// job ที่กำลังทำงานเช็คสถานะ DB ด้วย conditional update เองก่อนเปลี่ยนอะไรเสมอ ปล่อยให้ทำงานต่อได้อย่างปลอดภัย
+async function removeQueueJobIfPresent(queue: Queue, jobId: string): Promise<void> {
+  const job = await queue.getJob(jobId);
+
+  if (!job) {
+    return;
+  }
+
+  try {
+    await job.remove();
+  } catch (error) {
+    logger.warn("Skipped removing a queue job that could not be removed (likely being processed).", {
+      queue: queue.name,
+      jobId,
+      error,
+    });
+  }
+}
 
 // Function สร้าง worker status key ใน Redis/BullMQ queue
 function buildWorkerStatusKey(accountId: number): string {
@@ -170,9 +191,20 @@ export async function enqueueWorker(accountId: number): Promise<WorkerQueueEntry
   return queueEntry;
 }
 
-// Function จอง worker queue front scores สำหรับ enqueueWorkersAtFront
-function reserveWorkerQueueFrontScores(count: number): number {
-  lastWorkerQueueFrontScore -= count;
+// Function จอง worker queue front scores สำหรับ enqueueWorkersAtFront — ต้องต่ำกว่า score ต่ำสุดที่อยู่ในคิว Redis
+// จริงเสมอ ไม่ใช่แค่ค่าที่จำไว้ใน memory เพราะค่านั้นรีเซ็ตเป็น 0 ทุกครั้งที่ server restart ขณะที่ Worker ที่ถูกดัน
+// หน้าคิวก่อน restart ยังค้าง score ติดลบอยู่ใน Redis (ไม่งั้นคนที่ถูกดันหน้าคิวทีหลังจะไปต่อท้ายคนเก่า)
+async function reserveWorkerQueueFrontScores(count: number): Promise<number> {
+  const lowest = await redis.zrange(REDIS_CONFIG.workerQueueKey, 0, 0, "WITHSCORES");
+  const lowestScore = lowest.length >= 2 ? Number(lowest[1]) : 0;
+  // อ่าน lastWorkerQueueFrontScore หลัง await เสมอ กันสองคำขอพร้อมกันใน process เดียวได้ score ชุดเดียวกัน
+  const base = Math.min(
+    lastWorkerQueueFrontScore,
+    Number.isFinite(lowestScore) ? lowestScore : 0,
+    0
+  );
+
+  lastWorkerQueueFrontScore = base - count;
   return lastWorkerQueueFrontScore;
 }
 
@@ -186,7 +218,7 @@ export async function enqueueWorkersAtFront(
     return [];
   }
 
-  const firstScore = reserveWorkerQueueFrontScores(uniqueAccountIds.length);
+  const firstScore = await reserveWorkerQueueFrontScores(uniqueAccountIds.length);
   const readyAt = new Date();
   const entries: WorkerQueueEntryDto[] = [];
 
@@ -511,11 +543,7 @@ export async function scheduleAssignmentTimeout(
 
 // Function ลบ assignment timeout ใน Redis/BullMQ queue
 export async function removeAssignmentTimeout(assignmentId: number): Promise<void> {
-  const job = await assignmentTimeoutQueue.getJob(`assignment-timeout-${assignmentId}`);
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(assignmentTimeoutQueue, `assignment-timeout-${assignmentId}`);
 }
 
 // Function ตั้ง delayed job สำหรับ timeout การ scan QR หลัง accept assignment
@@ -544,11 +572,7 @@ export async function scheduleScanTimeout(
 
 // Function ลบ scan timeout ใน Redis/BullMQ queue
 export async function removeScanTimeout(assignmentId: number): Promise<void> {
-  const job = await assignmentTimeoutQueue.getJob(`assignment-scan-timeout-${assignmentId}`);
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(assignmentTimeoutQueue, `assignment-scan-timeout-${assignmentId}`);
 }
 
 // Function ตั้งเวลา delayed job scan warning ใน Redis/BullMQ queue
@@ -586,11 +610,7 @@ export async function scheduleScanWarning(
 
 // Function ลบ scan warning ใน Redis/BullMQ queue
 export async function removeScanWarning(assignmentId: number): Promise<void> {
-  const job = await assignmentTimeoutQueue.getJob(`assignment-scan-warning-${assignmentId}`);
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(assignmentTimeoutQueue, `assignment-scan-warning-${assignmentId}`);
 }
 
 // Function ตั้งเวลา delayed job vendor confirmation timeout ใน Redis/BullMQ queue
@@ -612,6 +632,9 @@ export async function scheduleVendorConfirmationTimeout(
       jobId: `vendor-confirm-timeout-${ticketId}-${submissionId}`,
       removeOnComplete: true,
       removeOnFail: 100,
+      // Retry เหมือน accept/scan timeout — job นี้เป็นทางเดียวที่ auto-confirm Booth ถ้าพลาดครั้งเดียวแล้วไม่ retry
+      // Booth จะค้าง DELIVERED ถาวร (handleVendorConfirmationTimeout ปลอดภัยต่อการรันซ้ำเพราะเช็คสถานะก่อนเสมอ)
+      ...ASSIGNMENT_TIMEOUT_RETRY_OPTIONS,
     }
   );
 }
@@ -621,25 +644,29 @@ export async function removeVendorConfirmationTimeout(
   ticketId: number,
   submissionId: number
 ): Promise<void> {
-  const job = await assignmentTimeoutQueue.getJob(
-    `vendor-confirm-timeout-${ticketId}-${submissionId}`
-  );
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(assignmentTimeoutQueue, `vendor-confirm-timeout-${ticketId}-${submissionId}`);
 }
 
-// Function ตรวจว่ามี vendor confirmation timeout job อยู่ใน queue
+// Function ตรวจว่ามี vendor confirmation timeout job ที่ยังรอทำงานอยู่ใน queue — job ที่ failed (retry หมดแล้ว)
+// ถูกเก็บไว้ใน failed set ตาม removeOnFail ห้ามนับว่ายังรออยู่ ไม่งั้น reconcile ตอน startup จะข้าม Booth ที่ค้าง
+// DELIVERED ถาวร ลบ job ที่ failed ทิ้งด้วยเพื่อให้ schedule ใหม่ด้วย jobId เดิมได้
 export async function hasVendorConfirmationTimeout(
   ticketId: number,
   submissionId: number
 ): Promise<boolean> {
-  const job = await assignmentTimeoutQueue.getJob(
-    `vendor-confirm-timeout-${ticketId}-${submissionId}`
-  );
+  const jobId = `vendor-confirm-timeout-${ticketId}-${submissionId}`;
+  const job = await assignmentTimeoutQueue.getJob(jobId);
 
-  return Boolean(job);
+  if (!job) {
+    return false;
+  }
+
+  if ((await job.getState()) === "failed") {
+    await removeQueueJobIfPresent(assignmentTimeoutQueue, jobId);
+    return false;
+  }
+
+  return true;
 }
 
 // Function ตั้ง delayed job สำหรับ release notification
@@ -666,13 +693,7 @@ export async function scheduleMobileAppReleaseNotification(
 export async function removeMobileAppReleaseNotification(
   mobileAppVersionId: number
 ): Promise<void> {
-  const job = await assignmentTimeoutQueue.getJob(
-    `mobile-app-release-notification-${mobileAppVersionId}`
-  );
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(assignmentTimeoutQueue, `mobile-app-release-notification-${mobileAppVersionId}`);
 }
 
 // Function ตั้ง delayed job สำหรับ force-update notification
@@ -699,13 +720,7 @@ export async function scheduleMobileAppForceUpdateNotification(
 export async function removeMobileAppForceUpdateNotification(
   mobileAppVersionId: number
 ): Promise<void> {
-  const job = await assignmentTimeoutQueue.getJob(
-    `mobile-app-force-update-notification-${mobileAppVersionId}`
-  );
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(assignmentTimeoutQueue, `mobile-app-force-update-notification-${mobileAppVersionId}`);
 }
 
 // Function ตั้ง delayed job สำหรับพา worker กลับจาก break
@@ -720,9 +735,7 @@ export async function scheduleWorkerBreakReturn(
     "worker-break-return",
     {
       // key ต้องชื่อ workerId ให้ตรงกับที่ startWorkerBreakReturnWorker (worker-dispatch.ts) destructure —
-      // เดิมใช้ accountId ทำให้ workerId เป็น undefined เสมอตอน consume แล้ว handleWorkerBreakReturn
-      // return เงียบๆ ทันทีที่ getWorkerQueueStatus(undefined) ไม่เจอ entry (บั๊กทำให้ auto-return-from-break
-      // ทั้งระบบไม่ทำงานเลย ไม่ requeue ไม่ push แจ้งเตือนอะไรทั้งสิ้น)
+      // ชื่ออื่นจะได้ workerId เป็น undefined ตอน consume แล้ว auto-return-from-break เงียบหายทั้งระบบ
       workerId: accountId,
       scheduleId,
       kind: "break_return",
@@ -747,8 +760,7 @@ export async function scheduleWorkerShiftEnd(
   await workerBreakReturnQueue.add(
     "worker-shift-end",
     {
-      // key ต้องชื่อ workerId เหตุผลเดียวกับ scheduleWorkerBreakReturn ด้านบน — accountId เดิมทำให้
-      // handleWorkerShiftEnd ได้ workerId เป็น undefined เสมอ auto-eject worker ตอนหมดกะไม่ทำงาน
+      // key ต้องชื่อ workerId เหตุผลเดียวกับ scheduleWorkerBreakReturn ด้านบน (ไม่งั้น auto-eject ตอนหมดกะไม่ทำงาน)
       workerId: accountId,
       scheduleId,
       shiftInstanceKey,
@@ -768,13 +780,7 @@ async function removeWorkerShiftEnd(
   accountId: number,
   scheduleId: number
 ): Promise<void> {
-  const job = await workerBreakReturnQueue.getJob(
-    `worker-shift-end-${accountId}-${scheduleId}`
-  );
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(workerBreakReturnQueue, `worker-shift-end-${accountId}-${scheduleId}`);
 }
 
 // Function ลบ worker break return ใน Redis/BullMQ queue
@@ -782,13 +788,7 @@ export async function removeWorkerBreakReturn(
   accountId: number,
   scheduleId: number
 ): Promise<void> {
-  const job = await workerBreakReturnQueue.getJob(
-    `worker-break-return-${accountId}-${scheduleId}`
-  );
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(workerBreakReturnQueue, `worker-break-return-${accountId}-${scheduleId}`);
 }
 
 // Function ตั้ง delayed job แจ้งเตือน worker + admin ตอนหน้าต่างเวลา worker_break_retry หมดอายุโดยที่
@@ -826,13 +826,7 @@ export async function removeWorkerBreakRetryExpiry(
   workerId: number,
   scheduleId: number
 ): Promise<void> {
-  const job = await workerBreakReturnQueue.getJob(
-    `worker-break-retry-expired-${workerId}-${scheduleId}`
-  );
-
-  if (job) {
-    await job.remove();
-  }
+  await removeQueueJobIfPresent(workerBreakReturnQueue, `worker-break-retry-expired-${workerId}-${scheduleId}`);
 }
 
 // Function เริ่ม assignment timeout worker ใน Redis/BullMQ queue

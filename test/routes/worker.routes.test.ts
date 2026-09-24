@@ -3,14 +3,13 @@ import { after, before, beforeEach, test } from "node:test";
 
 import { buildWorkScheduleShiftInstanceKey } from "../../src/utils/shift";
 import { WORKER_OPEN_APP_REASON } from "../../src/constants/status";
-import { addAdmin, addDispatchableJob, addMobileAppVersion, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketCompletionService, getTicketFinancialService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, signLineWebhookBody, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
+import { ticketJobAssignmentRepositoryMock } from "../helpers/app-test-repository-mocks";
+import { addDispatchableJob, addMobileAppVersion, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketCompletionService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, signLineWebhookBody, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
 
 let server: TestServer;
 let password: typeof import("../../src/utils/password");
 let workerQueue: typeof import("../../src/queues/worker-queue");
 let workerDispatch: typeof import("../../src/queues/worker-dispatch");
-let ticketFinancialService: typeof import("../../src/services/shared/ticket-financial.service");
-
 /* -------------------------------------- Test Helpers -------------------------------------- */
 
 // Function เธเธฑเธ”เธเธฒเธฃ login worker เธชเธณเธซเธฃเธฑเธ test
@@ -52,98 +51,12 @@ function addHistoryAssignment(
   return job;
 }
 
-// Function เธเธฑเธ”เธเธฒเธฃ login job admin เธชเธณเธซเธฃเธฑเธ test
-async function loginJobAdmin(accountId: number): Promise<{ token: string }> {
-  const passwordHash = await password.hashPassword("Admin@123456");
-  const admin = addAdmin(accountId, passwordHash);
-  state.adminPermissions.set(admin.id, [
-    "jobs:read",
-    "jobs:assign",
-    "jobs:cancel",
-    "workers:force_status",
-  ]);
-
-  const login = await server.request("POST", "/api/auth/login", {
-    body: {
-      username: admin.username,
-      password: "Admin@123456",
-    },
-  });
-
-  assert.equal(login.status, 200);
-
-  return {
-    token: login.body.access_token,
-  };
-}
-
-function bangkokDateKey(value = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(value);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-
-  return `${year}-${month}-${day}`;
-}
-
-function bangkokDateToUtcIso(date: string, hour = 1): string {
-  return new Date(`${date}T${String(hour).padStart(2, "0")}:00:00.000+07:00`).toISOString();
-}
-
-function addAuditAssignment(input: {
-  id: number;
-  workerId: number;
-  ticketJobId: number;
-  createdAt: string;
-  status?: string;
-  acceptedAt?: string | null;
-  scannedAt?: string | null;
-  completedAt?: string | null;
-  events?: string[];
-}) {
-  const assignment = {
-    id: input.id,
-    vehicle_job_id: input.ticketJobId,
-    worker_id: input.workerId,
-    status: input.status ?? "PENDING",
-    accept_deadline_at: null,
-    scan_deadline_at: null,
-    accepted_at: input.acceptedAt ?? null,
-    scanned_at: input.scannedAt ?? null,
-    completed_at: input.completedAt ?? null,
-    created_at: input.createdAt,
-    updated_at: input.completedAt ?? input.createdAt,
-  };
-
-  state.assignments.push(assignment);
-  for (const eventType of input.events ?? []) {
-    state.workerAssignmentEvents.push({
-      id: state.nextWorkerAssignmentEventId++,
-      assignment_id: assignment.id,
-      worker_id: assignment.worker_id,
-      vehicle_job_id: assignment.vehicle_job_id,
-      event_type: eventType,
-      occurred_at: assignment.updated_at,
-      metadata: null,
-      created_at: assignment.updated_at,
-    });
-  }
-
-  return assignment;
-}
-
 /* -------------------------------------- Test Lifecycle -------------------------------------- */
 
 before(async () => {
   password = await getPassword();
   workerQueue = await getWorkerQueue();
   workerDispatch = await getWorkerDispatch();
-  ticketFinancialService = await getTicketFinancialService();
   server = await startRouteTestServer();
 });
 
@@ -2636,6 +2549,145 @@ test("assignment scan timeout processor dispatches replacement worker from queue
   assert.ok(replacementAssignment?.accept_deadline_at);
 });
 
+test("accept timeout does not requeue a worker who went offline while the assignment was still PENDING (shift already closed)", async () => {
+  const { token, worker } = await loginWorker(67);
+  state.connectedWorkers.add(worker.id);
+
+  const online = await server.request("POST", "/api/workers/me/online", { token });
+  assert.equal(online.status, 200);
+
+  const job = addDispatchableJob(867, 1);
+  const assignment = addPendingAssignment(967, job.id, worker.id);
+  await workerQueue.markWorkerAssigned(worker.id);
+
+  const offline = await server.request("POST", "/api/workers/me/offline", { token });
+  assert.equal(offline.status, 200);
+
+  workerDispatch.startAssignmentTimeoutProcessing();
+  const processor = state.workerProcessors.get(
+    process.env.BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE as string
+  );
+  assert.ok(processor, "Assignment timeout processor must be registered.");
+  await processor({
+    data: { assignmentId: assignment.id, workerId: worker.id, kind: "accept" },
+  });
+
+  assert.equal(assignment.status, "TIMEOUT");
+  assert.equal((await workerQueue.getWorkerQueueStatus(worker.id))?.status, "open_app");
+  assert.equal((await workerQueue.getWorkerReadyQueueRanks([worker.id])).get(worker.id), null);
+  const timeoutEvent = state.socketEvents.find(
+    (item) => item.workerId === worker.id && item.event === "ASSIGNMENT_TIMEOUT"
+  );
+  assert.equal(
+    (timeoutEvent?.payload as { reason?: string } | undefined)?.reason,
+    "assignment_timeout_shift_closed"
+  );
+});
+
+test("vehicle job completion does not requeue a worker whose shift was already closed", async () => {
+  const worker = addWorker(68, await password.hashPassword("Worker@123456"));
+  const schedule = state.schedules.get(worker.id) as Parameters<typeof buildWorkScheduleShiftInstanceKey>[0];
+  const now = new Date().toISOString();
+
+  state.checkinLogs.push({
+    id: state.nextCheckinLogId++,
+    workerId: worker.id,
+    workerCode: worker.labor_code,
+    shiftInstanceKey: buildWorkScheduleShiftInstanceKey(schedule),
+    timeWork: schedule.time_work,
+    timeIn: schedule.time_in,
+    timeOut: schedule.time_out,
+    firstOnlineAt: now,
+    lastOnlineAt: now,
+    offlineAt: now,
+    closedAt: now,
+    closeReason: "worker_offline",
+    acceptTimeoutStreak: 0,
+    lastAcceptTimeoutAt: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await workerDispatch.returnCompletedWorkersToQueue({
+    vehicle_job: { ticket_number: "TICKET-CLOSED-SHIFT" },
+    completed_worker_ids: [worker.id],
+  });
+
+  assert.equal((await workerQueue.getWorkerQueueStatus(worker.id))?.status, "open_app");
+  assert.equal((await workerQueue.getWorkerReadyQueueRanks([worker.id])).get(worker.id), null);
+});
+
+test("dispatch that fails inside its transaction returns popped workers to the queue instead of looping forever", async () => {
+  const worker = addWorker(69, await password.hashPassword("Worker@123456"));
+  addDispatchableJob(869, 1);
+  await workerQueue.enqueueWorker(worker.id);
+
+  const originalCreateAssignment = ticketJobAssignmentRepositoryMock.createAssignment;
+  let createAttempts = 0;
+
+  ticketJobAssignmentRepositoryMock.createAssignment = async () => {
+    createAttempts += 1;
+    throw new Error("Transaction already closed");
+  };
+
+  try {
+    await workerDispatch.dispatchReadyWorkers();
+  } finally {
+    ticketJobAssignmentRepositoryMock.createAssignment = originalCreateAssignment;
+  }
+
+  assert.equal(createAttempts, 1);
+  assert.equal((await workerQueue.getWorkerQueueStatus(worker.id))?.status, "ready");
+  assert.equal((await workerQueue.getWorkerReadyQueueRanks([worker.id])).get(worker.id), 0);
+  assert.equal(
+    state.assignments.some((assignment) => assignment.worker_id === worker.id),
+    false
+  );
+});
+
+test("POST /api/workers/me/online recovers a worker stuck at ASSIGNED in Redis without any active assignment", async () => {
+  const { token, worker } = await loginWorker(70);
+  state.connectedWorkers.add(worker.id);
+
+  const firstOnline = await server.request("POST", "/api/workers/me/online", { token });
+  assert.equal(firstOnline.status, 200);
+
+  // จำลองสถานะค้าง: Redis เป็น ASSIGNED แต่ไม่มี assignment จริงใน DB (เช่น Redis ล้มหลัง timeout commit)
+  await workerQueue.markWorkerAssigned(worker.id);
+
+  const secondOnline = await server.request("POST", "/api/workers/me/online", { token });
+
+  assert.equal(secondOnline.status, 200);
+  assert.equal((await workerQueue.getWorkerQueueStatus(worker.id))?.status, "ready");
+});
+
+test("POST /api/workers/me/assignments/tickets/complete rejects a null or empty confirmed_quantity instead of treating it as 0", async () => {
+  const { token } = await loginWorker(72);
+
+  for (const confirmedQuantity of [null, "", "   ", false]) {
+    const response = await server.request(
+      "POST",
+      "/api/workers/me/assignments/tickets/complete",
+      {
+        token,
+        body: {
+          ticket_no: "TICKET-ANY",
+          boothCode: "BOOTH-ANY",
+          items: [
+            {
+              productCode: "P1",
+              packageCode: "PKG1",
+              confirmed_quantity: confirmedQuantity,
+            },
+          ],
+        },
+      }
+    );
+
+    assert.equal(response.status, 400, `confirmed_quantity=${JSON.stringify(confirmedQuantity)}`);
+  }
+});
+
 /* -------------------------------------- Worker Ticket Route Tests -------------------------------------- */
 
 test("POST /api/workers/me/assignments/tickets/complete submits quantities for vendor confirmation", async () => {
@@ -3480,34 +3532,6 @@ test("POST /api/workers/me/assignments/tickets/complete accepts BoothCode with s
   assert.equal(response.body.status, "DELIVERED");
   assert.equal(response.body.boothCode, ticket.boothCode);
   assert.equal(ticket.status, "DELIVERED");
-});
-
-test("POST /api/workers/me/assignments/:ticketNumber/tickets/:boothCode/complete is not supported", async () => {
-  const { token, worker } = await loginWorker(76);
-  const job = addDispatchableJob(8760, 1);
-  const ticket = addTicketForTicketJob(job.id, 9760);
-  addPendingAssignment(1076, job.id, worker.id).status = "SCANNED";
-  const products = state.ticketProducts.filter(
-    (product) => product.ticket_id === ticket.id
-  );
-
-  const response = await server.request(
-    "POST",
-    `/api/workers/me/assignments/${job.ticket_number}/tickets/${ticket.boothCode}/complete`,
-    {
-      token,
-      body: {
-        items: products.map((product) => ({
-          productCode: product.productCode,
-          packageCode: product.packageCode,
-          confirmed_quantity: Number(product.quantity),
-        })),
-      },
-    }
-  );
-
-  assert.equal(response.status, 404);
-  assert.equal(ticket.status, "WORKING");
 });
 
 test("POST /api/workers/me/assignments/tickets/complete rejects before all required workers check in", async () => {

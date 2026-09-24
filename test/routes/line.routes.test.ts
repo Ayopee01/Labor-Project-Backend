@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
-import { addAdmin, addDispatchableJob, addGateClient, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketFinancialService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, signLineWebhookBody, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
+import { addAdmin, addDispatchableJob, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, resetRouteTestState, restoreRouteTestLoader, signLineWebhookBody, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
 
 let server: TestServer;
 let password: typeof import("../../src/utils/password");
-let workerQueue: typeof import("../../src/queues/worker-queue");
-let workerDispatch: typeof import("../../src/queues/worker-dispatch");
-let ticketFinancialService: typeof import("../../src/services/shared/ticket-financial.service");
-
 /* -------------------------------------- Test Helpers -------------------------------------- */
 
 // Function เธเธฑเธ”เธเธฒเธฃ login worker เธชเธณเธซเธฃเธฑเธ test
@@ -29,48 +25,6 @@ async function loginWorker(accountId: number): Promise<{ token: string; worker: 
   return {
     token: login.body.access_token,
     worker,
-  };
-}
-
-// Function เธชเธฃเนเธฒเธ gate vehicle job body เธชเธณเธซเธฃเธฑเธ test
-function buildBoothJobJobBody(suffix: string) {
-  return {
-    TicketNo: `TKT-20260723-${suffix}`,
-    TicketCreatedAt: "2026-07-23T14:30:00+07:00",
-    BoothCount: 1,
-    MarketCode: `MARKET-${suffix}`,
-    LicensePlate: `ABC-${suffix}`,
-    LicensePlateProvince: "Bangkok",
-    VehicleTypeCode: "PICKUP",
-    VehicleTypeName: "Pickup truck",
-    Booths: [
-      {
-        BoothCode: `STALL-${suffix}`,
-        Products: [
-          {
-            ProductCode: "02020300",
-            PackageCode: "29",
-            Quantity: 180,
-          },
-        ],
-      },
-    ],
-    Dispatch: true,
-  };
-}
-
-// Function เธเธฑเธ”เธเธฒเธฃ gate auth headers เธชเธณเธซเธฃเธฑเธ test
-async function gateAuthHeaders(
-  clientId = "gate-test",
-  clientSecret = "GateSecret@123456",
-  status: "active" | "inactive" = "active"
-): Promise<Record<string, string>> {
-  if (!state.gateClients.has(clientId)) {
-    addGateClient(clientId, await password.hashPassword(clientSecret), status);
-  }
-
-  return {
-    Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
   };
 }
 
@@ -99,73 +53,10 @@ async function loginJobAdmin(accountId: number): Promise<{ token: string }> {
   };
 }
 
-function bangkokDateKey(value = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(value);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-
-  return `${year}-${month}-${day}`;
-}
-
-function bangkokDateToUtcIso(date: string, hour = 1): string {
-  return new Date(`${date}T${String(hour).padStart(2, "0")}:00:00.000+07:00`).toISOString();
-}
-
-function addAuditAssignment(input: {
-  id: number;
-  workerId: number;
-  ticketJobId: number;
-  createdAt: string;
-  status?: string;
-  acceptedAt?: string | null;
-  scannedAt?: string | null;
-  completedAt?: string | null;
-  events?: string[];
-}) {
-  const assignment = {
-    id: input.id,
-    vehicle_job_id: input.ticketJobId,
-    worker_id: input.workerId,
-    status: input.status ?? "PENDING",
-    accept_deadline_at: null,
-    scan_deadline_at: null,
-    accepted_at: input.acceptedAt ?? null,
-    scanned_at: input.scannedAt ?? null,
-    completed_at: input.completedAt ?? null,
-    created_at: input.createdAt,
-    updated_at: input.completedAt ?? input.createdAt,
-  };
-
-  state.assignments.push(assignment);
-  for (const eventType of input.events ?? []) {
-    state.workerAssignmentEvents.push({
-      id: state.nextWorkerAssignmentEventId++,
-      assignment_id: assignment.id,
-      worker_id: assignment.worker_id,
-      vehicle_job_id: assignment.vehicle_job_id,
-      event_type: eventType,
-      occurred_at: assignment.updated_at,
-      metadata: null,
-      created_at: assignment.updated_at,
-    });
-  }
-
-  return assignment;
-}
-
 /* -------------------------------------- Test Lifecycle -------------------------------------- */
 
 before(async () => {
   password = await getPassword();
-  workerQueue = await getWorkerQueue();
-  workerDispatch = await getWorkerDispatch();
-  ticketFinancialService = await getTicketFinancialService();
   server = await startRouteTestServer();
 });
 

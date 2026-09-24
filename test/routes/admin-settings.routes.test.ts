@@ -1047,7 +1047,7 @@ test("scheduled release notification sends FCM and sets ReleaseNotificationSentA
 });
 
 test("force-update notification sends a standard-pattern-only FCM and sets ForceUpdateNotificationSentAt once ForceUpdateAt is reached", async () => {
-  const { token } = await loginAdmin(9516, "owner");
+  await loginAdmin(9516, "owner");
 
   addMobileAppVersion({ version: "1.3.0", build_number: 10300 });
   const scheduled = addMobileAppVersion({

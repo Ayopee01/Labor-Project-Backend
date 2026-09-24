@@ -4003,7 +4003,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: POST\nURL: {{baseUrl}}/api/driver/qr-sessions\nAuth: No auth required\nBody: JSON QrToken from driver QR, plus DeviceId (UUID the Driver Web app generates once and persists in browser storage; identifies this browser/device, not a person)\nNotes: Creates a driver session (TTL from runtime setting driver_session_ttl_hours) and saves driverSessionToken. At most DRIVER_ACTIVE_DEVICE_LIMIT (default 2) distinct DeviceId values can hold an active session per vehicle job at once — the response includes ActiveDeviceCount/ActiveDeviceLimit. Re-scanning with the same DeviceId rotates (replaces) that device's old session instead of consuming a new slot. A 3rd distinct device gets 409 DRIVER_SESSION_LIMIT_EXCEEDED."
+            "description": "Method: POST\nURL: {{baseUrl}}/api/driver/qr-sessions\nAuth: No auth required\nBody: JSON QrToken from driver QR and required DeviceId (UUID the Driver Web app generates once and persists in browser storage; identifies this browser/device, not a person)\nNotes: Creates a driver session (TTL from runtime setting driver_session_ttl_hours) and saves driverSessionToken. At most DRIVER_ACTIVE_DEVICE_LIMIT (default 2) distinct DeviceId values can hold an active session per vehicle job at once — the response includes ActiveDeviceCount/ActiveDeviceLimit. Re-scanning with the same DeviceId rotates (replaces) that device's old session instead of consuming a new slot. A 3rd distinct device gets 409 DRIVER_SESSION_LIMIT_EXCEEDED."
           },
           "response": []
         },
@@ -4021,7 +4021,7 @@
                 "key": "X-Driver-Device-Id",
                 "value": "{{driverDeviceId}}",
                 "type": "text",
-                "description": "Required only if this driver session was created with a DeviceId. Must match the DeviceId used in POST /api/driver/qr-sessions."
+                "description": "Required on every Driver request. Must match the DeviceId used in POST /api/driver/qr-sessions."
               },
               {
                 "key": "X-Request-Id",
@@ -4069,7 +4069,7 @@
                 "key": "X-Driver-Device-Id",
                 "value": "{{driverDeviceId}}",
                 "type": "text",
-                "description": "Required only if this driver session was created with a DeviceId. Must match the DeviceId used in POST /api/driver/qr-sessions."
+                "description": "Required on every Driver request. Must match the DeviceId used in POST /api/driver/qr-sessions."
               },
               {
                 "key": "X-Request-Id",
@@ -4118,7 +4118,7 @@
                 "key": "X-Driver-Device-Id",
                 "value": "{{driverDeviceId}}",
                 "type": "text",
-                "description": "Required only if this driver session was created with a DeviceId. Must match the DeviceId used in POST /api/driver/qr-sessions."
+                "description": "Required on every Driver request. Must match the DeviceId used in POST /api/driver/qr-sessions."
               },
               {
                 "key": "Accept",

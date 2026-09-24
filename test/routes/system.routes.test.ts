@@ -141,6 +141,46 @@ test("rate limiter targets auth/admin routes but not ready or LINE webhook", asy
   assert.equal(secondLine.status, 200);
 });
 
+test("rate limiter covers Gate routes and keeps a separate bucket per route group", async () => {
+  const previousWindowMs = process.env.RATE_LIMIT_WINDOW_MS;
+  const previousMaxRequests = process.env.RATE_LIMIT_MAX_REQUESTS;
+  process.env.RATE_LIMIT_WINDOW_MS = "60000";
+  process.env.RATE_LIMIT_MAX_REQUESTS = "1";
+  clearRateLimitBuckets();
+
+  const firstAuth = await server.request("POST", "/api/auth/login", { body: {} });
+  const firstGate = await server.request("GET", "/api/gate/options");
+  const secondGate = await server.request("GET", "/api/gate/options");
+
+  // คืนค่าเดิม (process.env = undefined จะกลายเป็น string "undefined" จึงต้อง delete แทน)
+  for (const [key, value] of [
+    ["RATE_LIMIT_WINDOW_MS", previousWindowMs],
+    ["RATE_LIMIT_MAX_REQUESTS", previousMaxRequests],
+  ] as const) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  clearRateLimitBuckets();
+
+  assert.notEqual(firstAuth.status, 429);
+  // bucket ของ Gate แยกจาก auth — คำขอแรกของ Gate ต้องไม่โดน limit จาก login ที่ยิงไปก่อนหน้า
+  assert.notEqual(firstGate.status, 429);
+  assert.equal(secondGate.status, 429);
+});
+
+test("oversized JSON body is reported as 413 instead of a 500 server error", async () => {
+  // ใช้ route ที่ไม่มี rate limit — body parser ทำงานก่อน route/auth เสมอ จึงไม่ต้อง login
+  const response = await server.request("POST", "/api/workers/me/online", {
+    body: { padding: "x".repeat(200 * 1024) },
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(response.body.code, "PAYLOAD_TOO_LARGE");
+});
+
 test("LINE webhook fails closed when channel secret is missing", async () => {
   delete process.env.LINE_CHANNEL_SECRET;
 

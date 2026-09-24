@@ -1,5 +1,5 @@
 // Import Mappers
-import { mapMasterWorker, mapWorkerSchedule } from "./mappers";
+import { isMasterWorkerDto, mapMasterWorker, mapWorkerSchedule } from "./mappers";
 import { client, requireMapped, toId } from "./repository-utils";
 // Import Types
 import type { DbConnection } from "../../types/shared/common.type";
@@ -7,11 +7,6 @@ import { MASTER_WORKER_STATUS } from "../../types/admin-workers.type";
 import type { MasterWorkerDto, WorkScheduleDto } from "../../types/admin-workers.type";
 
 /* -------------------------------------- Functions -------------------------------------- */
-
-// Function ตรวจว่า master worker ที่ map แล้วไม่เป็น null (ใช้เป็น type guard)
-function isMasterWorkerDto(worker: MasterWorkerDto | null): worker is MasterWorkerDto {
-  return worker !== null;
-}
 
 // Function ค้นหา ตาม ID จาก DB
 export async function findById(

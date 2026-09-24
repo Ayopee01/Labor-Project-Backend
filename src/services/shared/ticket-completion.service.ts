@@ -245,13 +245,12 @@ export async function resolvePackageSwitchesForItems(
 
 // Function เลือก timeout การยืนยัน vendor ตาม flow ส่งครั้งแรกหรือส่งใหม่หลัง reject
 function getVendorConfirmationTimeoutMs(
-  ticket: BoothJobDto,
+  isResubmission: boolean,
   settings: Awaited<ReturnType<typeof getRuntimeSettings>>,
 ): number {
-  const timeoutHours =
-    ticket.status === TICKET_STATUS.REJECT
-      ? settings.vendor_reconfirm_timeout_hours
-      : settings.vendor_confirm_timeout_hours;
+  const timeoutHours = isResubmission
+    ? settings.vendor_reconfirm_timeout_hours
+    : settings.vendor_confirm_timeout_hours;
 
   return timeoutHours * 60 * 60 * 1000;
 }
@@ -490,7 +489,10 @@ export async function submitTicketCompletion(input: {
     originalProducts: products,
     receiverAccountIds,
     vendorLineTargets,
-    vendorTimeoutMs: getVendorConfirmationTimeoutMs(ticket, settings),
+    vendorTimeoutMs: getVendorConfirmationTimeoutMs(
+      ticket.status === TICKET_STATUS.REJECT,
+      settings,
+    ),
   };
 }
 
@@ -571,7 +573,7 @@ export async function reconcileOrphanedTicketSubmissions(): Promise<number> {
   const candidates = await boothJobRepository.listDeliveredTicketsWithLatestSubmission();
   let reconciledCount = 0;
 
-  for (const { ticket, submission } of candidates) {
+  for (const { ticket, submission, is_resubmission: isResubmission } of candidates) {
     const alreadyScheduled = await hasVendorConfirmationTimeout(ticket.id, submission.id);
 
     if (alreadyScheduled) {
@@ -603,7 +605,14 @@ export async function reconcileOrphanedTicketSubmissions(): Promise<number> {
         originalProducts: products,
         receiverAccountIds,
         vendorLineTargets,
-        vendorTimeoutMs: getVendorConfirmationTimeoutMs(ticket, settings),
+        // นับจากเวลาส่งยอดจริง ไม่ใช่เริ่มนับใหม่เต็มรอบทุกครั้งที่ server restart และเลือก timeout ตามรอบ
+        // (ticket.status ตอนนี้เป็น DELIVERED เสมอ จึงใช้แยกรอบส่งใหม่หลัง reject ไม่ได้)
+        vendorTimeoutMs: Math.max(
+          0,
+          Date.parse(submission.created_at) +
+            getVendorConfirmationTimeoutMs(isResubmission, settings) -
+            Date.now(),
+        ),
       });
       reconciledCount += 1;
       logger.info("Reconciled an orphaned ticket submission stuck without a vendor-confirm-timeout job.", {

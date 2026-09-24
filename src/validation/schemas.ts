@@ -500,10 +500,8 @@ export const boothJobJobBodySchema = z
 
 export const driverQrSessionBodySchema = z.object({
   qr_token: trimmedString,
-  // Optional ชั่วคราวเพื่อรองรับ client รุ่นเก่าที่ยังไม่ส่ง DeviceId มา (ดู 38.5 ข้อ 15) — production
-  // Driver Web รุ่นใหม่ต้องส่งมาเสมอ ไม่งั้นนับ device limit ไม่แม่นยำ (แต่ละ session ไม่มี deviceId
-  // จะถูกนับเป็นเครื่องของตัวเองแยกกันหมด)
-  device_id: trimmedString.optional(),
+  // UUID ประจำ browser/เครื่องที่ Driver Web สร้างครั้งเดียวแล้วเก็บไว้ ใช้นับ active device ต่อรถและ rotate session
+  device_id: trimmedString,
 });
 
 // Schema body สำหรับ worker scan barcode เข้า Business Ticket
@@ -511,12 +509,26 @@ export const workerCheckInBarcodeBodySchema = z.object({
   ticket_no: trimmedString,
 });
 
+// Format จำนวนสินค้าที่ยืนยันตอนส่งยอด (Worker/Admin) — ห้าม coerce null/ค่าว่าง/boolean เป็น 0 แบบเงียบๆ
+// (Booth จะถูกคิดเงิน 0 บาททั้งที่ client ไม่ได้ส่งจำนวนมาจริง) และจำกัดเพดานตามคอลัมน์ Decimal(12,2)
+// กัน overflow กลายเป็น 500 ตอนบันทึก
+const MAX_CONFIRMED_QUANTITY = 9_999_999_999.99;
+const confirmedQuantitySchema = z.preprocess(
+  (value) =>
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "string" && value.trim() === "")
+      ? undefined
+      : value,
+  z.coerce.number().min(0).max(MAX_CONFIRMED_QUANTITY)
+);
+
 // Schema original_package_code สำหรับกรณี Worker เปลี่ยน PackageCode
 const workerTicketCompleteItemSchema = z.object({
   productCode: trimmedString,
   packageCode: trimmedString,
   original_package_code: trimmedString.optional(),
-  confirmed_quantity: z.coerce.number().min(0),
+  confirmed_quantity: confirmedQuantitySchema,
 });
 
 // ticket_no ระบุว่าส่งยอดให้ Business Ticket ใบไหน (บูธเดียวกันอาจซ้ำ boothCode กันได้ข้าม
@@ -784,7 +796,7 @@ export const adminAssignWorkersBodySchema = z.object({
 const adminOverrideCountItemSchema = z.object({
   productCode: trimmedString,
   packageCode: trimmedString,
-  actual_quantity: z.coerce.number().min(0),
+  actual_quantity: confirmedQuantitySchema,
 });
 
 export const adminOverrideCountBodySchema = z.object({
@@ -945,7 +957,8 @@ export const updateSystemSettingsBodySchema = z
     worker_scan_team_remaining_minutes: z.coerce.number().int().positive().max(240).optional(),
     worker_break_duration_minutes: z.coerce.number().int().positive().max(240).optional(),
     worker_break_limit: z.coerce.number().int().min(0).max(20).optional(),
-    worker_break_count_ttl_hours: z.coerce.number().int().positive().max(168).optional(),
+    // ต้องไม่สั้นกว่ากะที่ยาวที่สุด (กะข้ามคืนยาวได้เกือบ 24 ชม.) ไม่งั้นตัวนับการพักหมดอายุกลางกะ พักเกิน limit ได้
+    worker_break_count_ttl_hours: z.coerce.number().int().min(24).max(168).optional(),
     worker_break_retry: z.coerce.number().int().positive().max(240).optional(),
     worker_presence_stale_seconds: z.coerce.number().int().positive().max(3600).optional(),
     vendor_confirm_timeout_hours: z.coerce.number().int().positive().max(168).optional(),

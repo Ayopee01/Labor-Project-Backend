@@ -2,7 +2,7 @@
 import { createHash } from "crypto";
 import { Prisma, type MasterMarket } from "@prisma/client";
 // Import Config
-import { TICKET_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
+import { TERMINAL_JOB_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
 import { getDriverWebBaseUrl } from "../config/driver.config";
 import { withTransaction } from "../db/prisma";
 // Import Queues
@@ -921,9 +921,16 @@ export async function createOrAppendGateBusinessTicket(
   const canReopenDispatch =
     existingTicketJob?.status === VEHICLE_JOB_STATUS.WAIT ||
     existingTicketJob?.status === VEHICLE_JOB_STATUS.RELEASED;
+  // รถที่ปิดไปแล้ว (COMPLETED/CANCELLED เช่น ยกเลิก Business Ticket ทุกใบ) แล้ว Gate ส่ง Business Ticket ใหม่
+  // มาใต้ TicketNumber เดิม ต้องเปิดรถกลับมาทำงานใหม่ตาม Dispatch ของคำขอนี้ ไม่งั้นรถยังเป็น terminal
+  // และ dispatchReadyWorkers จะไม่หยิบรถคันนี้เลย แผงใหม่จะไม่มีใครมาทำ
+  const isReopeningTerminalVehicle =
+    existingTicketJob !== null &&
+    TERMINAL_JOB_STATUSES.includes(existingTicketJob.status);
   const shouldUpdateVehicle =
     existingTicketJob !== null &&
-    (existingTicketJob.license_plate !== input.license_plate ||
+    (isReopeningTerminalVehicle ||
+      existingTicketJob.license_plate !== input.license_plate ||
       existingTicketJob.license_plate_province !== input.license_plate_province ||
       existingTicketJob.vehicle_type !== input.vehicle_type ||
       (dispatchNow && !existingTicketJob.dispatch_now) ||
@@ -937,11 +944,12 @@ export async function createOrAppendGateBusinessTicket(
           licensePlate: input.license_plate,
           licensePlateProvince: input.license_plate_province,
           vehicleType: input.vehicle_type,
-          dispatchNow: existingTicketJob.dispatch_now || dispatchNow,
-          status:
-            dispatchNow && canReopenDispatch
-              ? vehicleStatus
-              : existingTicketJob.status,
+          dispatchNow: isReopeningTerminalVehicle
+            ? dispatchNow
+            : existingTicketJob.dispatch_now || dispatchNow,
+          status: isReopeningTerminalVehicle || (dispatchNow && canReopenDispatch)
+            ? vehicleStatus
+            : existingTicketJob.status,
         },
         connection
       )

@@ -179,48 +179,6 @@ function bangkokDateToUtcIso(date: string, hour = 1): string {
   return new Date(`${date}T${String(hour).padStart(2, "0")}:00:00.000+07:00`).toISOString();
 }
 
-function addAuditAssignment(input: {
-  id: number;
-  workerId: number;
-  ticketJobId: number;
-  createdAt: string;
-  status?: string;
-  acceptedAt?: string | null;
-  scannedAt?: string | null;
-  completedAt?: string | null;
-  events?: string[];
-}) {
-  const assignment = {
-    id: input.id,
-    vehicle_job_id: input.ticketJobId,
-    worker_id: input.workerId,
-    status: input.status ?? "PENDING",
-    accept_deadline_at: null,
-    scan_deadline_at: null,
-    accepted_at: input.acceptedAt ?? null,
-    scanned_at: input.scannedAt ?? null,
-    completed_at: input.completedAt ?? null,
-    created_at: input.createdAt,
-    updated_at: input.completedAt ?? input.createdAt,
-  };
-
-  state.assignments.push(assignment);
-  for (const eventType of input.events ?? []) {
-    state.workerAssignmentEvents.push({
-      id: state.nextWorkerAssignmentEventId++,
-      assignment_id: assignment.id,
-      worker_id: assignment.worker_id,
-      vehicle_job_id: assignment.vehicle_job_id,
-      event_type: eventType,
-      occurred_at: assignment.updated_at,
-      metadata: null,
-      created_at: assignment.updated_at,
-    });
-  }
-
-  return assignment;
-}
-
 /* -------------------------------------- Test Lifecycle -------------------------------------- */
 
 before(async () => {
@@ -341,6 +299,78 @@ describe("Force Worker Status", () => {
     assert.equal(response.body.worker_code, worker.labor_code);
     assert.equal(response.body.status, "ready");
     assert.equal(queueEntry?.status, "ready");
+  });
+
+  test("POST /api/admin/jobs/workers/:workerCode/status/force ready reopens a closed shift so the worker is requeued after the next job instead of bounced to open_app", async () => {
+    const { token } = await loginJobAdmin(9613);
+    const worker = addWorker(9614);
+    const schedule = state.schedules.get(worker.id) as Parameters<typeof buildWorkScheduleShiftInstanceKey>[0];
+    const now = new Date().toISOString();
+
+    state.connectedWorkers.add(worker.id);
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+    state.checkinLogs.push({
+      id: state.nextCheckinLogId++,
+      workerId: worker.id,
+      workerCode: worker.labor_code,
+      shiftInstanceKey: buildWorkScheduleShiftInstanceKey(schedule),
+      timeWork: schedule.time_work,
+      timeIn: schedule.time_in,
+      timeOut: schedule.time_out,
+      firstOnlineAt: now,
+      lastOnlineAt: now,
+      offlineAt: now,
+      closedAt: now,
+      closeReason: "assignment_timeout_limit_reached",
+      acceptTimeoutStreak: 3,
+      lastAcceptTimeoutAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const response = await server.request(
+      "POST",
+      `/api/admin/jobs/workers/${worker.labor_code}/status/force`,
+      { token, body: { status: "ready", reason_code: "test" } }
+    );
+    const attendance = state.checkinLogs.find((item) => item.workerId === worker.id);
+
+    assert.equal(response.status, 200);
+    assert.equal(attendance?.closedAt, null);
+    assert.equal(attendance?.acceptTimeoutStreak, 0);
+
+    await workerQueue.markWorkerAssigned(worker.id);
+    await workerDispatch.returnCompletedWorkersToQueue({
+      vehicle_job: { ticket_number: "TICKET-REOPENED" },
+      completed_worker_ids: [worker.id],
+    });
+
+    assert.equal((await workerQueue.getWorkerQueueStatus(worker.id))?.status, "ready");
+  });
+
+  test("POST /api/admin/jobs/workers/:workerCode/status/force break is rejected at the break limit without writing a 'forced' audit log", async () => {
+    const { token } = await loginJobAdmin(9615);
+    const worker = addWorker(9616);
+    const schedule = state.schedules.get(worker.id) as Parameters<typeof buildWorkScheduleShiftInstanceKey>[0];
+    const shiftInstanceKey = buildWorkScheduleShiftInstanceKey(schedule);
+
+    state.connectedWorkers.add(worker.id);
+    await workerQueue.recordWorkerHeartbeat(worker.id);
+
+    for (let index = 0; index < 4; index += 1) {
+      await workerQueue.incrementWorkerBreakCount(worker.id, shiftInstanceKey);
+    }
+
+    const logCountBefore = state.adminActionLogs.length;
+    const response = await server.request(
+      "POST",
+      `/api/admin/jobs/workers/${worker.labor_code}/status/force`,
+      { token, body: { status: "break", reason_code: "test" } }
+    );
+
+    assert.equal(response.status, 409);
+    assert.equal(response.body.code, "BREAK_LIMIT_REACHED");
+    assert.equal(state.adminActionLogs.length, logCountBefore);
   });
 
   test("POST /api/admin/jobs/workers/:workerCode/status/force rejects with 400 when reason_code is missing", async () => {
@@ -1949,6 +1979,43 @@ describe("Assignment Cancel", () => {
     assert.equal(assignment.status, "PENDING");
   });
 
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) dispatches a replacement worker from the queue because workers_required does not shrink", async () => {
+    const { token: adminToken } = await loginJobAdmin(9950);
+    const cancelledWorker = addWorker(9951);
+    const replacementWorker = addWorker(9952);
+    const job = addDispatchableJob(995, 1);
+    const assignment = addPendingAssignment(19950, job.id, cancelledWorker.id);
+
+    await workerQueue.enqueueWorker(replacementWorker.id);
+
+    const response = await server.request(
+      "POST",
+      "/api/admin/vehicle-jobs/assignment/cancel",
+      {
+        token: adminToken,
+        body: {
+          ticket_number: job.ticket_number,
+          worker_code: cancelledWorker.labor_code,
+          reason_code: "test",
+        },
+      }
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(assignment.status, "CANCELLED");
+    assert.equal((await workerQueue.getWorkerQueueStatus(cancelledWorker.id))?.status, "open_app");
+    const replacementAssignment = state.assignments.find(
+      (item) => item.vehicle_job_id === job.id && item.worker_id === replacementWorker.id
+    );
+    assert.equal(replacementAssignment?.status, "PENDING");
+    assert.equal(
+      state.assignments.filter(
+        (item) => item.vehicle_job_id === job.id && item.worker_id === cancelledWorker.id
+      ).length,
+      1
+    );
+  });
+
   test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) returns ASSIGNMENT_NOT_FOUND and leaves the worker's real assignment untouched when the TicketNumber does not match", async () => {
     const { token: adminToken } = await loginJobAdmin(9940);
     const worker = addWorker(9941);
@@ -1976,7 +2043,7 @@ describe("Assignment Cancel", () => {
   });
 
   test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no) includes the cancelled Business Ticket's own TicketNo in the worker push payload", async () => {
-    const { token: workerToken, worker } = await loginWorker(9661);
+    const { worker } = await loginWorker(9661);
     const { token: adminToken } = await loginJobAdmin(9660);
 
     const job = addDispatchableJob(966, 1);

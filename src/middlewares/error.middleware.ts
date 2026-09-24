@@ -76,6 +76,19 @@ function normalizeError(error: unknown): ApiError {
     return new ApiError(400, "VALIDATION_ERROR", "Invalid JSON body.");
   }
 
+  // Error อื่นจาก body-parser (เช่น entity.too.large = 413, charset.unsupported = 415) มี statusCode 4xx อยู่แล้ว
+  // แต่ไม่มี field code จึงตกไปเป็น 500 ด้านล่าง — คืนสถานะ 4xx เดิมให้ client รู้ว่าเป็นปัญหาที่ request
+  if (
+    typeof error.type === "string" &&
+    typeof error.statusCode === "number" &&
+    error.statusCode >= 400 &&
+    error.statusCode < 500
+  ) {
+    return error.type === "entity.too.large"
+      ? new ApiError(413, "PAYLOAD_TOO_LARGE", "Request body is too large.")
+      : new ApiError(error.statusCode, "INVALID_REQUEST_BODY", "Request body could not be read.");
+  }
+
   // ตรวจสอบว่า error เป็น object ที่มี field statusCode/code/message/details หรือไม่ ถ้าใช่ให้สร้าง ApiError ใหม่จาก field เหล่านั้น
   const errorLike = error;
   // ตรวจสอบว่า error เป็น instance ของ Error จริงหรือไม่ (เช่น new Error() หรือ class ที่ extends Error) ถ้าไม่ใช่ให้ถือว่าเป็น object ธรรมดา

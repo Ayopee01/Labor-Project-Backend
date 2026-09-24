@@ -101,7 +101,7 @@ class WorkerSocketRecorder {
   private readonly received: any[] = [];
   private readonly waiters: Array<{ type: string; resolve: (value: any) => void }> = [];
 
-  constructor(private readonly socket: WebSocket) {
+  constructor(socket: WebSocket) {
     socket.on("message", (raw: WebSocket.RawData) => {
       const event = JSON.parse(raw.toString());
       this.received.push(event);

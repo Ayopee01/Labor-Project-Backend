@@ -102,7 +102,8 @@ export type WorkerCheckinLogWriteInput = WorkerCheckinLogKeyInput & {
 export type WorkerBreakEndReason =
   | "auto_timeout"
   | "early_return"
-  | "shift_closed";
+  | "shift_closed"
+  | "admin_forced";
 
 // Type input สำหรับเริ่มบันทึก break log หนึ่งครั้ง
 export type WorkerBreakLogStartInput = WorkerCheckinLogKeyInput & {

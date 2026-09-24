@@ -120,14 +120,6 @@ export interface AccountCreateInput {
   created_by?: number | null;
 }
 
-export interface UserAccountUpdateInput {
-  username?: string;
-  full_name?: string;
-  position?: string | null;
-  email?: string | null;
-  phone?: string | null;
-}
-
 export interface MasterWorkerCreateInput {
   labor_code: string;
   full_name: string;

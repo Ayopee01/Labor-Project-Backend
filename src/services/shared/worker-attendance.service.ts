@@ -84,6 +84,24 @@ export async function markWorkerAttendanceOnline(
   );
 }
 
+// Function เปิด attendance ของกะที่ถูกปิดไปแล้วกลับมา — ใช้ตอน Admin force Worker กลับเข้าคิว (READY/BREAK)
+export async function reopenWorkerAttendanceShift(
+  worker: MasterWorkerDto,
+  schedule: WorkScheduleDto,
+  shiftInstanceKey: string,
+  connection?: DbConnection,
+): Promise<void> {
+  await workerCheckinLogRepository.reopenWorkerShift(
+    {
+      worker_id: worker.id,
+      worker_code: worker.labor_code,
+      schedule,
+      shift_instance_key: shiftInstanceKey,
+    },
+    connection,
+  );
+}
+
 // Function ปิด attendance ของกะ worker พร้อมเหตุผลที่ออกจากกะ
 export async function closeWorkerAttendanceShift(
   worker: MasterWorkerDto,

@@ -6,7 +6,6 @@ export const REDIS_CONFIG = {
   workerQueueKey: requiredEnv("REDIS_WORKER_QUEUE_KEY"),
   workerStatusKeyPrefix: requiredEnv("REDIS_WORKER_STATUS_KEY_PREFIX"),
   workerPresenceKeyPrefix: requiredEnv("REDIS_WORKER_PRESENCE_KEY_PREFIX"),
-  workerPresenceStaleSeconds: requiredNumberEnv("WORKER_PRESENCE_STALE_SECONDS"),
   workerBreakCountKeyPrefix: requiredEnv("REDIS_WORKER_BREAK_COUNT_KEY_PREFIX"),
   workerBreakRetryKeyPrefix: requiredEnv("REDIS_WORKER_BREAK_RETRY_KEY_PREFIX"),
   assignmentTimeoutQueueName: requiredEnv("BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE"),
@@ -46,18 +45,6 @@ function requiredEnv(name: string): string {
   }
 
   return value;
-}
-
-// Function อ่านค่า env ที่ต้องมีและแปลงเป็นตัวเลข ถ้าไม่ใช่ตัวเลขให้ Throw Error
-function requiredNumberEnv(name: string): number {
-  const value = requiredEnv(name);
-  const numberValue = Number(value);
-
-  if (Number.isNaN(numberValue)) {
-    throw new Error(`${name} must be a valid number`);
-  }
-
-  return numberValue;
 }
 
 // Function เช็คว่าค่า env ไม่ซ้ำกัน ถ้าซ้ำให้ Throw Error

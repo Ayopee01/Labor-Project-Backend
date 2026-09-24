@@ -264,7 +264,7 @@ export const messageDeliveryLogRepositoryMock = {
   createMessageDeliveryLog: async (
     channel: string,
     jobName: string,
-    payload: unknown,
+    _payload: unknown,
     target?: string | null,
   ) => {
     const now = new Date().toISOString();

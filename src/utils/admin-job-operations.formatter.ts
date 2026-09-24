@@ -6,7 +6,7 @@ import type { AdminTicketJobOperationItemResponse, AdminTicketJobOperationMarket
 import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, SCANNED_ASSIGNMENT_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
 
 // Import Utils
-import { findActiveWorkSchedule, formatScheduleWithShift } from "../utils/shift";
+import { calculateShiftName } from "../utils/shift";
 import { resolveVehicleOperationStatus as resolveVehicleOperationStatusCore } from "../utils/vehicle-operation-status";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 
@@ -47,7 +47,7 @@ function toOperationWorkerStatus(assignmentStatus: string): string {
   return WORKER_WORK_STATUS.OPEN_APP;
 }
 
-// Function หา label กะของ worker จากข้อมูล schedule ที่เก็บบน account
+// Function หา label กะของ worker จากตารางกะที่เก็บบน master_workers (ชื่อกะตัดสินจาก time_in อย่างเดียว)
 function resolveOperationWorkerShiftName(
   worker: TicketJobOperationRecord["assignments"][number]["worker"]
 ): string | null {
@@ -59,22 +59,7 @@ function resolveOperationWorkerShiftName(
     return null;
   }
 
-  const scheduleDto = {
-    id: worker.id,
-    worker_id: worker.id,
-    time_work: worker.timeWork,
-    work_date: (worker.workStartDate ?? worker.createdAt).toISOString().slice(0, 10),
-    time_in: worker.timeIn,
-    time_out: worker.timeOut,
-    is_current: true,
-    created_by: null,
-    updated_by: null,
-    created_at: worker.createdAt.toISOString(),
-    updated_at: worker.updatedAt.toISOString(),
-  };
-  const activeSchedule = findActiveWorkSchedule([scheduleDto]) ?? scheduleDto;
-
-  return formatScheduleWithShift(activeSchedule)?.shift_name ?? null;
+  return calculateShiftName(worker.timeIn);
 }
 
 // Function ตรวจว่า ticket อยู่สถานะ REJECT หรือไม่

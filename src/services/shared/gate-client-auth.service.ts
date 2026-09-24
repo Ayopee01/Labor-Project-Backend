@@ -7,7 +7,8 @@ import type { GateClientDto, PublicGateClient } from "../../types/shared/gate-cl
 
 /* -------------------------------------- Functions -------------------------------------- */
 
-function toPublicGateClient(client: GateClientDto): PublicGateClient {
+// Function ตัด secret_hash ออกจาก Gate client ก่อนส่งออกนอก service (ใช้ร่วมกับ Admin Settings)
+export function toPublicGateClient(client: GateClientDto): PublicGateClient {
   const { secret_hash: _secretHash, ...publicClient } = client;
 
   return publicClient;

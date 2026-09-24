@@ -19,6 +19,7 @@ import { getAccountPermissions } from "./shared/account-permission.service";
 import { clearRuntimeSettingsCache, getRuntimeSettings } from "./shared/runtime-settings.service";
 import { diffChangedFields, writeSecurityAuditLog } from "./shared/security-audit-log.service";
 import * as mobileAppVersionService from "./shared/mobile-app-version.service";
+import { toPublicGateClient } from "./shared/gate-client-auth.service";
 // Import Types
 import { SECURITY_AUDIT_EVENT_TYPE, SECURITY_AUDIT_OUTCOME } from "../types/shared/security-audit-log.type";
 import type { AccessTokenPayload } from "../types/auth.type";
@@ -26,11 +27,11 @@ import type { AccountDto } from "../types/admin-workers.type";
 import type { DbConnection } from "../types/shared/common.type";
 import type { AccountPermissionsResponse } from "../types/shared/account-permission.type";
 import type { AdminRoleListResponse, RuntimeSettingsResponse } from "../types/admin-settings.type";
-import type { GateClientDto, PublicGateClient } from "../types/shared/gate-client.type";
+import type { GateClientDto } from "../types/shared/gate-client.type";
 import type { GateClientListResponse, GateClientMutationResponse, GateClientSecretResponse } from "../types/admin-settings.type";
 import type { SecurityAuditRequestContext } from "../types/shared/security-audit-log.type";
 // Import Validation
-import { parseId, parseWithSchema } from "../validation/parser";
+import { parseId, parseRequiredReference, parseWithSchema } from "../validation/parser";
 import { createAdminAccountBodySchema, createGateClientBodySchema, resetPasswordBodySchema, updateAccountPermissionsBodySchema, updateAdminAccountBodySchema, updateGateClientBodySchema, updateSystemSettingsBodySchema } from "../validation/schemas";
 // Import Utils
 import { getActorId } from "../utils/actor";
@@ -73,24 +74,6 @@ function generateGateClientSecret(): string {
   return `${GATE_SECRET_PREFIX}${randomBytes(GENERATED_SECRET_BYTES).toString("base64url")}`;
 }
 
-// Function อ่านค่า client ID ใน service flow
-function parseClientId(value: unknown): string {
-  const clientId = String(value ?? "").trim();
-
-  if (!clientId) {
-    throw new ApiError(400, "INVALID_GATE_CLIENT_ID", "Gate client id is required.");
-  }
-
-  return clientId;
-}
-
-// Function จัดการ เป็น public Gate client ใน service flow
-function toPublicGateClient(client: GateClientDto): PublicGateClient {
-  const { secret_hash: _secretHash, ...publicClient } = client;
-
-  return publicClient;
-}
-
 // Function จัดการ generate unique client ID ใน service flow
 async function generateUniqueClientId(): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -110,7 +93,7 @@ async function generateUniqueClientId(): Promise<string> {
 
 // Function ตรวจสอบและดึง Gate client ใน service flow
 async function requireGateClient(clientIdParam: unknown): Promise<GateClientDto> {
-  const clientId = parseClientId(clientIdParam);
+  const clientId = parseRequiredReference(clientIdParam, "INVALID_GATE_CLIENT_ID", "Gate client id is required.");
   const client = await gateClientRepository.findByClientId(clientId);
 
   if (!client) {
@@ -357,12 +340,37 @@ export async function listSystemSettings(): Promise<RuntimeSettingsResponse> {
 }
 
 // Function อัปเดต system settings ใน service flow
+// Function ตรวจความสัมพันธ์ข้ามค่าของ runtime settings (หลังรวมค่าที่ส่งมากับค่าปัจจุบัน) — schema ตรวจได้ทีละค่า
+// แต่บางคู่ต้องสัมพันธ์กันถึงจะมีความหมาย เช่น เวลา "ร่น" scan deadline ต้องไม่ยาวกว่า deadline เต็ม
+function assertRuntimeSettingsConsistent(
+  settings: Awaited<ReturnType<typeof getRuntimeSettings>>
+): void {
+  if (settings.worker_scan_team_remaining_minutes > settings.worker_scan_deadline_minutes) {
+    throw new ApiError(
+      400,
+      "INVALID_RUNTIME_SETTINGS",
+      "worker_scan_team_remaining_minutes must not be greater than worker_scan_deadline_minutes."
+    );
+  }
+
+  if (settings.worker_scan_warning_before_minutes >= settings.worker_scan_deadline_minutes) {
+    throw new ApiError(
+      400,
+      "INVALID_RUNTIME_SETTINGS",
+      "worker_scan_warning_before_minutes must be less than worker_scan_deadline_minutes."
+    );
+  }
+}
+
 export async function updateSystemSettings(
   body: unknown,
   auth?: AccessTokenPayload,
   context: SecurityAuditRequestContext = EMPTY_SECURITY_AUDIT_CONTEXT
 ): Promise<RuntimeSettingsResponse> {
   const input = parseWithSchema(updateSystemSettingsBodySchema, body);
+
+  assertRuntimeSettingsConsistent({ ...(await getRuntimeSettings()), ...input });
+
   const settingsToSave = Object.fromEntries(
     Object.entries(input).map(([key, value]) => [key, String(value)])
   );

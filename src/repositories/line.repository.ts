@@ -2,40 +2,14 @@
 import { Prisma } from "@prisma/client";
 // Import Utils
 import { client } from "./shared/repository-utils";
+import { mapLineActionToken } from "./shared/mappers";
 // Import Types
 import type { DbConnection } from "../types/shared/common.type";
-import type { LineActionTokenDto, LineDevSubmissionItem, TicketRatingDto, VendorTicketAction } from "../types/line.type";
+import type { LineActionTokenDto, LineDevSubmissionItem, TicketRatingDto } from "../types/line.type";
 // Import Config
 import { TICKET_STATUS } from "../constants/status";
 
 /* -------------------------------------- Functions -------------------------------------- */
-
-// Function จัดการ เป็น LINE action token DTO จาก DB
-function toLineActionTokenDto(record: {
-  id: number;
-  token: string;
-  action: string;
-  ticketId: number;
-  submissionId: number;
-  boothCode: string;
-  expiresAt: Date;
-  usedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-}): LineActionTokenDto {
-  return {
-    id: record.id,
-    token: record.token,
-    action: record.action as VendorTicketAction,
-    ticket_id: record.ticketId,
-    submission_id: record.submissionId,
-    boothCode: record.boothCode,
-    expires_at: record.expiresAt.toISOString(),
-    used_at: record.usedAt?.toISOString() ?? null,
-    created_at: record.createdAt.toISOString(),
-    updated_at: record.updatedAt.toISOString(),
-  };
-}
 
 // Function ค้นหา LINE action token จาก DB
 export async function findLineActionToken(
@@ -49,7 +23,7 @@ export async function findLineActionToken(
     },
   });
 
-  return record ? toLineActionTokenDto(record) : null;
+  return record ? mapLineActionToken(record) : null;
 }
 
 // Function ทำเครื่องหมาย LINE action token ว่าถูกใช้แล้วแบบ atomic (WHERE used_at IS NULL) — คืน true

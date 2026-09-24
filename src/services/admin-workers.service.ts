@@ -22,7 +22,7 @@ import { dispatchReadyWorkers } from "../queues/worker-dispatch";
 import { disconnectWorkerSocket, isWorkerSocketConnected, sendWorkerSocketEvent } from "../websockets/worker.socket";
 // Import Services
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
-import { closeWorkerAttendanceShift, scheduleWorkerShiftEndIfNeeded } from "./shared/worker-attendance.service";
+import { closeWorkerAttendanceShift, closeWorkerBreakLog, reopenWorkerAttendanceShift, scheduleWorkerShiftEndIfNeeded, startWorkerBreakLog } from "./shared/worker-attendance.service";
 import { publishAdminWorkerStatusChanged } from "./notifications.service";
 import { writeSecurityAuditLog, diffChangedFields } from "./shared/security-audit-log.service";
 // Import Types
@@ -1150,6 +1150,24 @@ export async function forceAdminWorkerStatus(
     );
   }
 
+  const shiftInstanceKey = buildWorkScheduleShiftInstanceKey(currentSchedule);
+  const isEnteringBreak =
+    input.status === WORKER_WORK_STATUS.BREAK &&
+    queueEntry?.status !== WORKER_WORK_STATUS.BREAK;
+
+  // เช็ค Break limit ก่อนเขียน Audit Log เสมอ — ไม่งั้น log จะบันทึกว่า Force สำเร็จทั้งที่ request ถูกปฏิเสธจริง
+  if (isEnteringBreak) {
+    const currentBreakCount = await getWorkerBreakCount(worker.id, shiftInstanceKey);
+
+    if (currentBreakCount >= settings.worker_break_limit) {
+      throw new ApiError(
+        409,
+        "BREAK_LIMIT_REACHED",
+        "Worker break limit reached for this shift."
+      );
+    }
+  }
+
   // เขียน Audit Log ก่อนแตะ Redis เสมอ — ถ้า DB write ล้ม จะ fail ก่อน Redis state เปลี่ยน กัน worker state เปลี่ยนแบบไม่มีร่องรอยว่าใคร Force ทำไม
   await adminActionLogRepository.create({
     vehicle_job_id: currentAssignment?.vehicle_job_id ?? null,
@@ -1165,8 +1183,15 @@ export async function forceAdminWorkerStatus(
     },
   });
 
-  if (queueEntry?.status === WORKER_WORK_STATUS.BREAK && currentSchedule) {
+  // Admin ดึง Worker กลับเข้างาน (READY/BREAK) = เปิดกะที่อาจถูกปิดไปแล้ว (offline/timeout ครบ limit/revoke) กลับมา
+  // ไม่งั้นเส้นทาง requeue อัตโนมัติ (จบงาน/timeout) จะเห็นว่ากะปิดแล้วและดีด Worker กลับ open_app ทุกครั้ง
+  if (input.status !== WORKER_WORK_STATUS.OPEN_APP) {
+    await reopenWorkerAttendanceShift(worker, currentSchedule, shiftInstanceKey);
+  }
+
+  if (queueEntry?.status === WORKER_WORK_STATUS.BREAK && input.status !== WORKER_WORK_STATUS.BREAK) {
     await removeWorkerBreakReturn(worker.id, currentSchedule.id);
+    await closeWorkerBreakLog(worker.id, shiftInstanceKey, "admin_forced");
   }
 
   if (input.status === WORKER_WORK_STATUS.READY) {
@@ -1188,26 +1213,15 @@ export async function forceAdminWorkerStatus(
   }
 
   if (input.status === WORKER_WORK_STATUS.BREAK) {
-    if (queueEntry?.status !== WORKER_WORK_STATUS.BREAK) {
-      const shiftInstanceKey = buildWorkScheduleShiftInstanceKey(currentSchedule);
-      const currentBreakCount = await getWorkerBreakCount(
-        worker.id,
-        shiftInstanceKey
-      );
-
-      if (currentBreakCount >= settings.worker_break_limit) {
-        throw new ApiError(
-          409,
-          "BREAK_LIMIT_REACHED",
-          "Worker break limit reached for this shift."
-        );
-      }
-
-      await incrementWorkerBreakCount(worker.id, shiftInstanceKey);
-    }
-
     const breakDurationMs = settings.worker_break_duration_minutes * 60 * 1000;
     const breakUntil = buildDeadline(breakDurationMs);
+
+    if (isEnteringBreak) {
+      await incrementWorkerBreakCount(worker.id, shiftInstanceKey);
+      // บันทึก break log เหมือนตอน Worker กดพักเอง ไม่งั้นรายงานเวลาพักไม่เห็นการพักที่ Admin สั่ง
+      await startWorkerBreakLog(worker.id, shiftInstanceKey, breakUntil);
+    }
+
     await markWorkerBreak(worker.id, breakUntil);
     await scheduleWorkerBreakReturn(
       worker.id,

@@ -229,7 +229,9 @@ export async function finalizeMarketJobFinancials(
 
   for (const ticket of completedTickets) {
     // Worker ที่หารเงินของแผงนี้ = Snapshot ที่บันทึกไว้ตอน confirm (ยัง WORKING ตอนนั้นจริง)
-    // ถ้าไม่มี Snapshot (ข้อมูลเก่าก่อนมีฟีเจอร์นี้) fallback ไปใช้ roster สุดท้ายของทั้ง Ticket แทน
+    // ถ้า Snapshot ว่าง fallback ไปใช้ roster สุดท้ายของทั้ง Ticket แทน — เกิดได้ใน flow ปัจจุบันเมื่อ Worker ที่
+    // เหลือของแผงถูกถอดทีละชั้น (ถอดคนหนึ่งออกจากแผงนี้ แล้วถอดอีกคนออกจาก roster ทั้ง Ticket) จนไม่เหลือใคร
+    // มีสิทธิ์ในแผงตอน confirm ห้าม throw ตรงนี้ เพราะจะทำให้ Vendor confirm แผงนั้น rollback ทุกครั้งจนค้างถาวร
     const snapshotWorkerIds = ticket.workerSnapshots.map(
       (snapshot) => snapshot.ticketWorkerId,
     );

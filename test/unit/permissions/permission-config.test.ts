@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ADMIN_PERMISSIONS, OWNER_ONLY_PERMISSIONS, canManagePermissionLevel, getPermissionLevelOrder, isAdminPermission, isAdminPermissionLevel } from "../../../src/config/permission.config";
+import { ADMIN_PERMISSIONS, OWNER_ONLY_PERMISSIONS, canManagePermissionLevel, getPermissionLevelOrder, isAdminPermission } from "../../../src/config/permission.config";
 
 /* -------------------------------------- Permission Config Tests -------------------------------------- */
 
@@ -42,12 +42,4 @@ test("audit:read is owner-only, so prisma/seed.ts's role permission templates (o
 
   assert.equal(ownerPermissions.includes("audit:read"), true);
   assert.equal(nonOwnerPermissions.includes("audit:read"), false);
-});
-
-test("permission config recognizes supported admin permission levels", () => {
-  assert.equal(isAdminPermissionLevel("owner"), true);
-  assert.equal(isAdminPermissionLevel("manager"), true);
-  assert.equal(isAdminPermissionLevel("supervisor"), true);
-  assert.equal(isAdminPermissionLevel("worker"), false);
-  assert.equal(isAdminPermissionLevel(null), false);
 });

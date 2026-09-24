@@ -1,9 +1,10 @@
 // Import Library
-import type { Account, AdminActionLog, DriverSession, BoothJob, MarketJob, MasterWorker, TicketCompletionSubmission, TicketProduct, TicketWorker, UserSession, TicketJob, TicketJobAssignment } from "@prisma/client";
+import type { Account, AdminActionLog, DriverSession, BoothJob, LineActionToken, MarketJob, MasterWorker, TicketCompletionSubmission, TicketProduct, TicketWorker, UserSession, TicketJob, TicketJobAssignment } from "@prisma/client";
 // Import Types
 import type { SessionDto } from "../../../types/auth.type";
 import type { DriverSessionDto } from "../../../types/driver.type";
 import type { BoothJobDto, MarketJobDto, TicketCompletionSubmissionDto, TicketProductDto, TicketWorkerDto, TicketJobAssignmentDto, TicketJobDto } from "../../../types/worker.type";
+import type { LineActionTokenDto, VendorTicketAction } from "../../../types/line.type";
 import type { AdminActionLogDto, AdminActionType } from "../../../types/shared/admin-action-log.type";
 import { ACCOUNT_ROLES, type AccountDto, type AccountRole, type MasterWorkerDto, type MasterWorkerSource, type SafeAccountDto, type WorkScheduleDto } from "../../../types/admin-workers.type";
 import { ACCOUNT_STATUSES, type AccountStatus } from "../../../types/shared/account.type";
@@ -135,6 +136,27 @@ export function mapMasterWorker(record: MasterWorker | null): MasterWorkerDto | 
     password_hash: record.passwordHash,
     created_at: toIsoString(record.createdAt),
     updated_at: toIsoString(record.updatedAt),
+  };
+}
+
+// Function type guard คัด MasterWorkerDto ที่ map สำเร็จ (ใช้กับ .filter หลัง mapMasterWorker ของหลายแถว)
+export function isMasterWorkerDto(worker: MasterWorkerDto | null): worker is MasterWorkerDto {
+  return worker !== null;
+}
+
+// Function แปลง LINE action token จาก DB
+export function mapLineActionToken(record: LineActionToken): LineActionTokenDto {
+  return {
+    id: record.id,
+    token: record.token,
+    action: record.action as VendorTicketAction,
+    ticket_id: record.ticketId,
+    submission_id: record.submissionId,
+    boothCode: record.boothCode,
+    expires_at: record.expiresAt.toISOString(),
+    used_at: record.usedAt?.toISOString() ?? null,
+    created_at: record.createdAt.toISOString(),
+    updated_at: record.updatedAt.toISOString(),
   };
 }
 

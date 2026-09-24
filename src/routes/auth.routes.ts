@@ -11,21 +11,9 @@ import * as authService from "../services/auth.service";
 import { uploadAdminProfileImage } from "../config/spaces";
 // Import Utils
 import ApiError from "../utils/api-error";
-// Import Types
-import type { Request } from "express";
-import type { SecurityAuditRequestContext } from "../types/shared/security-audit-log.type";
+import { buildSecurityAuditContext } from "../utils/security-audit-context";
 
 const router = express.Router();
-
-/* -------------------------------------- Functions -------------------------------------- */
-
-function buildSecurityAuditContext(req: Request): SecurityAuditRequestContext {
-  return {
-    ip_address: req.ip ?? null,
-    user_agent: req.header("user-agent") ?? null,
-    request_id: req.requestId ?? null,
-  };
-}
 
 /* -------------------------------------- Authentication Routes -------------------------------------- */
 

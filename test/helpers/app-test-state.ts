@@ -70,7 +70,8 @@ export const state = {
   sessions: new Map<number, Record<string, unknown>>(),
   queueJobs: new Map<
     string,
-    Map<string, { data: unknown; removed: boolean }>
+    // state จำลองสถานะ BullMQ job (ไม่ระบุ = "delayed") ให้ test จำลอง job ที่ failed/active ได้
+    Map<string, { data: unknown; removed: boolean; state?: string }>
   >(),
   workerProcessors: new Map<
     string,

@@ -16,6 +16,12 @@ const { setupWorkerWebSocket } = require("./src/websockets/worker.socket");
 const { reconcileOrphanedTicketSubmissions } = require("./src/services/shared/ticket-completion.service");
 const { logger } = require("./src/utils/logger");
 
+// ตาข่ายสุดท้ายสำหรับ Promise ที่ reject โดยไม่มีใครรับ — Node 22 ค่าเริ่มต้นจะปิด process ทั้งตัว ทำให้
+// Redis/DB สะดุดครั้งเดียวใน fire-and-forget ใดๆ ล้ม API ทั้งระบบ (ถ้าตั้ง SENTRY_DSN ไว้ Sentry จะ capture ด้วย)
+process.on("unhandledRejection", (reason: unknown) => {
+  logger.error("Unhandled promise rejection.", { error: reason });
+});
+
 const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 const server = createServer(app);

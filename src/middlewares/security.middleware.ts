@@ -13,11 +13,14 @@ type RateLimitBucket = {
 
 // Map ของ client key -> bucket สำหรับเก็บข้อมูล rate limit ของ client
 const buckets = new Map<string, RateLimitBucket>();
-// Config ของ route patterns ที่ต้อง rate limit
-const RATE_LIMITED_ROUTE_PATTERNS = [
-  /^\/api\/auth\//, 
-  /^\/api\/admin\//,
-  /^\/api\/driver\//,
+// Config ของ route patterns ที่ต้อง rate limit แยก bucket ตามกลุ่ม — login/refresh ต้องไม่ใช้โควต้าร่วมกับการเรียก
+// API ปกติของหน้า Admin (ไม่งั้น dashboard ที่ poll ถี่ทำให้ login ไม่ได้) ส่วน Gate ต้องจำกัดด้วยเพราะตรวจ
+// secret ด้วย argon2 ทุก request (ใช้ CPU สูง และเปิดช่อง brute-force secret ถ้าไม่จำกัด)
+const RATE_LIMITED_ROUTE_GROUPS = [
+  { group: "auth", pattern: /^\/api\/auth\// },
+  { group: "admin", pattern: /^\/api\/admin\// },
+  { group: "driver", pattern: /^\/api\/driver\// },
+  { group: "gate", pattern: /^\/api\/gate\// },
 ] as const;
 let cleanupTimer: NodeJS.Timeout | null = null;
 
@@ -104,7 +107,9 @@ export function rateLimitMiddleware(
   res: Response,
   next: NextFunction,
 ): void {
-  if (!RATE_LIMITED_ROUTE_PATTERNS.some((pattern) => pattern.test(req.path))) {
+  const routeGroup = RATE_LIMITED_ROUTE_GROUPS.find(({ pattern }) => pattern.test(req.path));
+
+  if (!routeGroup) {
     next();
     return;
   }
@@ -113,7 +118,7 @@ export function rateLimitMiddleware(
 
   const windowMs = requiredPositiveNumberEnv("RATE_LIMIT_WINDOW_MS");
   const maxRequests = requiredPositiveNumberEnv("RATE_LIMIT_MAX_REQUESTS");
-  const key = getClientKey(req);
+  const key = `${routeGroup.group}:${getClientKey(req)}`;
   const bucket = incrementRateLimitBucket(key, windowMs);
 
   res.setHeader("RateLimit-Limit", String(maxRequests));

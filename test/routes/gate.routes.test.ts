@@ -1,36 +1,12 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
-import { addAdmin, addDispatchableJob, addGateClient, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketFinancialService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
+import { addAdmin, addGateClient, addWorker, getPassword, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
 
 let server: TestServer;
 let password: typeof import("../../src/utils/password");
 let workerQueue: typeof import("../../src/queues/worker-queue");
-let workerDispatch: typeof import("../../src/queues/worker-dispatch");
-let ticketFinancialService: typeof import("../../src/services/shared/ticket-financial.service");
-
 /* -------------------------------------- Test Helpers -------------------------------------- */
-
-// Function เธเธฑเธ”เธเธฒเธฃ login worker เธชเธณเธซเธฃเธฑเธ test
-async function loginWorker(accountId: number): Promise<{ token: string; worker: ReturnType<typeof addWorker> }> {
-  const passwordHash = await password.hashPassword("Worker@123456");
-  const worker = addWorker(accountId, passwordHash);
-  const login = await server.request("POST", "/api/auth/login", {
-    body: {
-      username: worker.labor_code,
-      password: "Worker@123456",
-      device_id: `mobile-${accountId}`,
-      device_name: "Worker Mobile",
-    },
-  });
-
-  assert.equal(login.status, 200);
-
-  return {
-    token: login.body.access_token,
-    worker,
-  };
-}
 
 // Function เธชเธฃเนเธฒเธ gate vehicle job body เธชเธณเธซเธฃเธฑเธ test
 // Function สร้างเลข 14 หลักแบบ deterministic จาก seed string สำหรับ TicketNumber/TicketNo ใน test
@@ -113,73 +89,11 @@ async function loginJobAdmin(accountId: number): Promise<{ token: string }> {
   };
 }
 
-function bangkokDateKey(value = new Date()): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(value);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-
-  return `${year}-${month}-${day}`;
-}
-
-function bangkokDateToUtcIso(date: string, hour = 1): string {
-  return new Date(`${date}T${String(hour).padStart(2, "0")}:00:00.000+07:00`).toISOString();
-}
-
-function addAuditAssignment(input: {
-  id: number;
-  workerId: number;
-  ticketJobId: number;
-  createdAt: string;
-  status?: string;
-  acceptedAt?: string | null;
-  scannedAt?: string | null;
-  completedAt?: string | null;
-  events?: string[];
-}) {
-  const assignment = {
-    id: input.id,
-    vehicle_job_id: input.ticketJobId,
-    worker_id: input.workerId,
-    status: input.status ?? "PENDING",
-    accept_deadline_at: null,
-    scan_deadline_at: null,
-    accepted_at: input.acceptedAt ?? null,
-    scanned_at: input.scannedAt ?? null,
-    completed_at: input.completedAt ?? null,
-    created_at: input.createdAt,
-    updated_at: input.completedAt ?? input.createdAt,
-  };
-
-  state.assignments.push(assignment);
-  for (const eventType of input.events ?? []) {
-    state.workerAssignmentEvents.push({
-      id: state.nextWorkerAssignmentEventId++,
-      assignment_id: assignment.id,
-      worker_id: assignment.worker_id,
-      vehicle_job_id: assignment.vehicle_job_id,
-      event_type: eventType,
-      occurred_at: assignment.updated_at,
-      metadata: null,
-      created_at: assignment.updated_at,
-    });
-  }
-
-  return assignment;
-}
-
 /* -------------------------------------- Test Lifecycle -------------------------------------- */
 
 before(async () => {
   password = await getPassword();
   workerQueue = await getWorkerQueue();
-  workerDispatch = await getWorkerDispatch();
-  ticketFinancialService = await getTicketFinancialService();
   server = await startRouteTestServer();
 });
 
@@ -1304,6 +1218,11 @@ test("POST /api/gate/tickets allows the same TicketNo to be reused after an Admi
   assert.equal(recreated.status, 201);
   assert.equal(recreated.body.Result, "CREATED");
   assert.equal(recreated.body.Ticket.TicketNo, ticketNo);
+
+  // รถต้องถูกเปิดกลับมาทำงาน (ไม่ค้างสถานะ terminal จากการยกเลิกทุก Business Ticket) ไม่งั้น dispatch ไม่หยิบรถคันนี้
+  const reopenedVehicle = state.ticketJobs.find((job) => job.ticket_number === ticketNumber)!;
+  assert.equal(reopenedVehicle.status, "WORKING");
+  assert.equal(reopenedVehicle.dispatch_now, true);
 
   // แถวเดิมที่ถูกยกเลิกยังอยู่เป็นประวัติ ไม่ถูกลบหรือใช้ซ้ำในที่เดิม + มีแถวใหม่แยกต่างหากที่ active
   const marketJobsWithSameTicketNo = state.marketJobs.filter(

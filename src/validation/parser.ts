@@ -40,6 +40,18 @@ export function parseWithSchema<T>(
 }
 
 // Function อ่านค่า ID สำหรับ validation
+// Function อ่าน reference แบบข้อความ (เช่น TicketNumber/TicketNo/WorkerCode จาก path param) แล้ว trim — ถ้าว่าง
+// หรือไม่ได้ส่งมาให้ throw 400 ด้วย code/message ของแต่ละ endpoint (ใช้แทนการเขียน trim + เช็คซ้ำทุก service)
+export function parseRequiredReference(value: unknown, code: string, message: string): string {
+  const reference = String(value ?? "").trim();
+
+  if (!reference) {
+    throw new ApiError(400, code, message);
+  }
+
+  return reference;
+}
+
 export function parseId(value: unknown): number {
   return parseWithSchema(idSchema, value, {
     code: "VALIDATION_ERROR",

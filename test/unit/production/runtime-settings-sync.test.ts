@@ -8,7 +8,6 @@ import { FakeRedis } from "../../helpers/app-test-infra-mocks";
 /* -------------------------------------- Test Env -------------------------------------- */
 
 applyIsolatedTestEnv("runtime-settings-sync");
-process.env.WORKER_PRESENCE_STALE_SECONDS = "90";
 
 /* -------------------------------------- Module Loader Patch -------------------------------------- */
 

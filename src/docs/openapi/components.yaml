@@ -39,15 +39,14 @@
     DriverDeviceIdHeader:
       in: header
       name: X-Driver-Device-Id
-      required: false
+      required: true
       schema:
         type: string
         format: uuid
       description: >-
-        UUID ของเครื่องที่ Driver Web สุ่มสร้างครั้งแรกและเก็บถาวรใน browser storage — บังคับส่งเฉพาะเมื่อ
-        driver session นี้ถูกสร้างพร้อม DeviceId ไว้แล้ว (session รุ่นเก่าที่ไม่มี DeviceId ผูกไว้ยังไม่บังคับ
-        ชั่วคราวระหว่าง migration) ถ้าต้องส่งแต่ไม่ส่งมาจะได้ 401 MISSING_DRIVER_DEVICE_ID และถ้าส่งมาไม่ตรงกับ
-        session จะได้ 401 DRIVER_DEVICE_MISMATCH ดู POST /api/driver/qr-sessions
+        UUID ของเครื่องที่ Driver Web สุ่มสร้างครั้งแรกและเก็บถาวรใน browser storage ต้องเป็นค่าเดียวกับ DeviceId
+        ที่ใช้ตอนสร้าง session (POST /api/driver/qr-sessions) บังคับส่งทุก request ถ้าไม่ส่งจะได้ 401
+        MISSING_DRIVER_DEVICE_ID และถ้าไม่ตรงกับ session จะได้ 401 DRIVER_DEVICE_MISMATCH
   headers:
     ShouldRefreshHeader:
       description: >-

@@ -1,7 +1,7 @@
 // Import Repositories
 import * as baseMasterWorkerRepository from "./shared/master-worker.repository";
 // Import Mappers
-import { mapMasterWorker } from "./shared/mappers";
+import { isMasterWorkerDto, mapMasterWorker } from "./shared/mappers";
 import { client, requireMapped, toId } from "./shared/repository-utils";
 // Import Types
 import type { Prisma } from "@prisma/client";
@@ -21,11 +21,6 @@ const USER_LIST_SHIFT_TO_TIME_WORK: Record<UserListShift, "Morning" | "Evening">
 };
 
 /* -------------------------------------- Functions -------------------------------------- */
-
-// Function ตรวจว่า master worker DTO จาก DB
-function isMasterWorkerDto(worker: MasterWorkerDto | null): worker is MasterWorkerDto {
-  return worker !== null;
-}
 
 // Function สร้าง worker search where จาก DB
 function buildWorkerSearchWhere(search: string): Prisma.MasterWorkerWhereInput[] {

@@ -228,7 +228,9 @@ function handleWorkerSocketDisconnect(socket: WorkerSocket): void {
   workerSockets.delete(accountId);
 
   const timer = setTimeout(() => {
-    void handleWorkerSocketGraceExpired(accountId);
+    void handleWorkerSocketGraceExpired(accountId).catch((error: unknown) => {
+      logger.error("Failed to handle worker socket disconnect grace expiry.", { error, accountId });
+    });
   }, WORKER_SOCKET_DISCONNECT_GRACE_MS);
 
   disconnectTimers.set(accountId, timer);
@@ -559,12 +561,22 @@ export function setupWorkerWebSocket(server: Server): void {
     (socket: WorkerSocket, _request: IncomingMessage, auth: AccessTokenPayload) => {
       registerWorkerSocket(auth.account_id, socket);
       scheduleAccessTokenRefreshReminder(socket, auth.exp);
-      void handleWorkerSocketConnected(auth.account_id);
+      // ต้อง catch ทุก fire-and-forget ที่แตะ Redis/DB — rejection ที่ไม่มีใครรับจะทำให้ Node ปิด process ทั้งตัว
+      void handleWorkerSocketConnected(auth.account_id).catch((error: unknown) => {
+        logger.error("Failed to handle worker socket connection.", {
+          error,
+          accountId: auth.account_id,
+        });
+      });
 
       socket.on("pong", () => {
         socket.isAlive = true;
         if (socket.workerId) {
-          void recordWorkerHeartbeat(socket.workerId);
+          const workerId = socket.workerId;
+
+          void recordWorkerHeartbeat(workerId).catch((error: unknown) => {
+            logger.error("Failed to record worker heartbeat.", { error, accountId: workerId });
+          });
         }
       });
 

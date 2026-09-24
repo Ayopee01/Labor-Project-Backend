@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 import { withTransaction } from "../db/prisma";
 // Import Queues
 import { getWorkerQueueStatus, markWorkerAssigned, markWorkerOpenApp, removeAssignmentTimeout, removeScanTimeout, removeScanWarning, scheduleAssignmentTimeout, scheduleScanTimeout, scheduleScanWarning } from "../queues/worker-queue";
-import { autoReleaseTicketJobWorkersIfShiftEnded, dispatchReadyWorkers, requeueWorkersAtFrontRespectingShift, returnCompletedWorkersToQueue } from "../queues/worker-dispatch";
+import { autoReleaseTicketJobWorkersIfShiftEnded, dispatchReadyWorkers, requeueWorkersAtFrontRespectingShift, returnCompletedWorkersToQueue, sortAssignmentsByAcceptedAt } from "../queues/worker-dispatch";
 // Import Utils
 import { sendWorkerSocketEvent } from "../websockets/worker.socket";
 // Import Repositories
@@ -40,7 +40,7 @@ import type { AccessTokenPayload } from "../types/auth.type";
 import type { CompletedTicketJobResult, BoothJobDto, MarketJobDto, TicketJobAssignmentDto, TicketJobDto } from "../types/worker.type";
 import type { DbConnection } from "../types/shared/common.type";
 // Import Validation
-import { parseWithSchema } from "../validation/parser";
+import { parseRequiredReference, parseWithSchema } from "../validation/parser";
 import { adminAssignWorkersBodySchema, adminCancelAssignmentBodySchema, adminCancelBodySchema, adminDailyStallFeeQuerySchema, adminDailyWorkerIncomeQuerySchema, adminExtendScanDeadlineBodySchema, adminMonthlyStallFeeQuerySchema, adminOverrideCountBodySchema, adminReleaseWorkersBodySchema, adminTicketJobAssignmentCancelBodySchema, adminTicketJobListQuerySchema, adminTicketJobOperationsQuerySchema, adminVehicleWaitBodySchema } from "../validation/schemas";
 // Import Utils
 import { requireActorId } from "../utils/actor";
@@ -56,17 +56,6 @@ import { buildWorkerAssignedPayload } from "../utils/worker-payload";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 
 /* -------------------------------------- Functions -------------------------------------- */
-
-// Function อ่านค่า reference ใน service flow
-function parseReference(value: unknown, code: string, message: string): string {
-  const reference = String(value ?? "").trim();
-
-  if (!reference) {
-    throw new ApiError(400, code, message);
-  }
-
-  return reference;
-}
 
 // Function ระบุ Timeline type จาก WorkerAssignmentEvent ใน service flow
 function mapAssignmentEventToTimelineType(eventType: string): string {
@@ -319,8 +308,9 @@ function formatAdminHistoryWorkers(
       shirt_number: assignment.worker.coatNo ?? null,
       accepted_at: assignment.acceptedAt?.toISOString() ?? null,
       scanned_at: assignment.scannedAt?.toISOString() ?? null,
-      // Worker เริ่มงานตั้งแต่ Scan เข้างานจริง ไม่ใช่ตอนกด Accept ใช้ workStartedAt ระดับ TicketJob
-      // เป็นหลัก fallback เป็น scannedAt เฉพาะข้อมูลเก่าที่ไม่มี workStartedAt
+      // Worker เริ่มงานตั้งแต่ Scan เข้างานจริง ไม่ใช่ตอนกด Accept ใช้ workStartedAt ระดับ TicketJob เป็นหลัก
+      // (ตั้งเมื่อทีมสแกนครบทุกคน) ถ้ารถไม่เคยได้ทีมครบ เช่น ถูกยกเลิก/scan timeout ก่อนทีมครบ workStartedAt
+      // จะเป็น null จึงใช้ scannedAt ของ Worker คนนั้นแทน
       started_at: assignment.scannedAt
         ? (record.workStartedAt?.toISOString() ?? assignment.scannedAt.toISOString())
         : null,
@@ -1139,7 +1129,7 @@ async function requireTicketJobByRef(
   idParam: unknown,
   connection?: Parameters<typeof ticketJobRepository.findTicketJobByRef>[1],
 ): Promise<TicketJobDto> {
-  const ticketNumber = parseReference(
+  const ticketNumber = parseRequiredReference(
     idParam,
     "INVALID_VEHICLE_JOB_REF",
     "TicketNumber is invalid.",
@@ -1154,35 +1144,6 @@ async function requireTicketJobByRef(
   }
 
   return ticketJob;
-}
-
-// Function จัดการ assignment queue priority at ใน service flow
-function assignmentQueuePriorityAt(
-  assignment: TicketJobAssignmentDto,
-): number {
-  const value = assignment.accepted_at ?? assignment.created_at;
-  const timestamp = value
-    ? new Date(value).getTime()
-    : Number.POSITIVE_INFINITY;
-
-  return Number.isNaN(timestamp) ? Number.POSITIVE_INFINITY : timestamp;
-}
-
-// Function เรียง assignments ตาม accepted_at (fallback created_at) ใช้ร่วมกันทุกจุดที่ requeue Worker
-// กลับเข้าคิว ลำดับสัมพัทธ์ต้องอิงเวลากดรับงานเสมอ ไม่ใช่ลำดับที่ assignment ถูกสร้าง/dispatch
-function sortAssignmentsByAcceptedAt(
-  assignments: TicketJobAssignmentDto[],
-): TicketJobAssignmentDto[] {
-  return [...assignments].sort((left, right) => {
-    const leftPriorityAt = assignmentQueuePriorityAt(left);
-    const rightPriorityAt = assignmentQueuePriorityAt(right);
-
-    if (leftPriorityAt !== rightPriorityAt) {
-      return leftPriorityAt - rightPriorityAt;
-    }
-
-    return left.id - right.id;
-  });
 }
 
 // Function ต่อเวลา deadline ใน service flow
@@ -1276,7 +1237,7 @@ async function listStallJobWorkerIds(ticket: BoothJobDto): Promise<number[]> {
 export async function getTicketJobFinancials(
   ticketNumberParam: unknown,
 ): Promise<AdminTicketJobFinancialResponse> {
-  const ticketNumber = parseReference(
+  const ticketNumber = parseRequiredReference(
     ticketNumberParam,
     "INVALID_VEHICLE_JOB_REF",
     "TicketNumber is invalid.",
@@ -2037,12 +1998,12 @@ async function cancelAssignment(
   body: unknown,
   auth?: AccessTokenPayload,
 ): Promise<AdminCancelAssignmentResponse> {
-  const ticketNumber = parseReference(
+  const ticketNumber = parseRequiredReference(
     idParam,
     "INVALID_VEHICLE_JOB_REF",
     "TicketNumber is invalid.",
   );
-  const workerCode = parseReference(
+  const workerCode = parseRequiredReference(
     workerCodeParam,
     "INVALID_WORKER_CODE",
     "Worker code is invalid.",
@@ -2149,10 +2110,23 @@ async function cancelAssignment(
     reason: "admin_cancel_assignment",
   });
 
-  // แจ้งทีมที่เหลือถ้าการยกเลิกคนนี้ทำให้ workers_required ลดลงจนทีมที่เหลือ scan ครบพอดี
-  // ไม่งั้นทีมจะไม่รู้ตัวว่าเริ่มงานได้แล้วจนกว่าจะ reconnect socket หรือ refresh เอง
+  // แจ้งทีมที่เหลือตามสถานะทีมล่าสุดหลังยกเลิก (workers_required ไม่เปลี่ยน ทีมจะพร้อมก็ต่อเมื่อมีคนแทนสแกนเข้ามา)
   if (ticketJob) {
     await notifyTicketJobTeamScanReadiness(ticketJob, teamScan);
+  }
+
+  // workers_required ของรถไม่ลดตามการยกเลิก จึงต้อง dispatch หาคนแทนทันที ไม่งั้นทีมที่เหลือส่งยอดไม่ได้
+  // (WORKERS_NOT_CHECKED_IN) จนกว่าจะมี event อื่นมา trigger dispatch — best-effort ห้ามทำให้ cancel ที่ commit แล้วพัง
+  // เรียกหลัง markWorkerOpenApp ด้านบนเสมอ Worker ที่เพิ่งถูกยกเลิกจึงไม่ถูกจ่ายกลับมารถคันเดิม
+  try {
+    await dispatchReadyWorkers(undefined, {
+      vehicle_job_ids: [assignment.vehicle_job_id],
+    });
+  } catch (error) {
+    logger.error("Assignment was cancelled but replacement dispatch failed.", {
+      ticketJobId: assignment.vehicle_job_id,
+      error,
+    });
   }
   publishNotification({
     type: "ASSIGNMENT_CANCELLED",
@@ -2334,7 +2308,7 @@ async function cancelMarketJobByTicketContext(
   auth?: AccessTokenPayload,
 ): Promise<AdminMarketJobActionResponse> {
   const ticketJob = await requireTicketJobByRef(ticketNumberParam);
-  const ticketNo = parseReference(
+  const ticketNo = parseRequiredReference(
     ticketNoParam,
     "INVALID_TICKET_NO",
     "TicketNo is invalid.",
@@ -2502,12 +2476,12 @@ async function cancelStallJobByTicketContext(
   auth?: AccessTokenPayload,
 ): Promise<AdminStallJobActionResponse> {
   const ticketJob = await requireTicketJobByRef(ticketNumberParam);
-  const ticketNo = parseReference(
+  const ticketNo = parseRequiredReference(
     ticketNoParam,
     "INVALID_TICKET_NO",
     "TicketNo is invalid.",
   );
-  const stallCode = parseReference(
+  const stallCode = parseRequiredReference(
     stallCodeParam,
     "INVALID_BOOTH_CODE",
     "BoothCode is invalid.",
@@ -2685,12 +2659,12 @@ async function cancelTicketWorker(
   auth?: AccessTokenPayload,
 ): Promise<AdminCancelTicketWorkerResponse> {
   const ticketJob = await requireTicketJobByRef(ticketNumberParam);
-  const ticketNo = parseReference(
+  const ticketNo = parseRequiredReference(
     ticketNoParam,
     "INVALID_TICKET_NO",
     "TicketNo is invalid.",
   );
-  const workerCode = parseReference(
+  const workerCode = parseRequiredReference(
     workerCodeParam,
     "INVALID_WORKER_CODE",
     "Worker code is invalid.",
@@ -2811,17 +2785,17 @@ async function cancelTicketWorkerFromBooth(
   auth?: AccessTokenPayload,
 ): Promise<AdminCancelTicketWorkerFromBoothResponse> {
   const ticketJob = await requireTicketJobByRef(ticketNumberParam);
-  const ticketNo = parseReference(
+  const ticketNo = parseRequiredReference(
     ticketNoParam,
     "INVALID_TICKET_NO",
     "TicketNo is invalid.",
   );
-  const boothCode = parseReference(
+  const boothCode = parseRequiredReference(
     boothCodeParam,
     "INVALID_BOOTH_CODE",
     "BoothCode is invalid.",
   );
-  const workerCode = parseReference(
+  const workerCode = parseRequiredReference(
     workerCodeParam,
     "INVALID_WORKER_CODE",
     "Worker code is invalid.",
@@ -3037,12 +3011,12 @@ export async function overrideTicketProductCounts(
   auth?: AccessTokenPayload,
 ): Promise<AdminOverrideCountResponse> {
   const ticketJob = await requireTicketJobByRef(ticketNumberParam);
-  const ticketNo = parseReference(
+  const ticketNo = parseRequiredReference(
     ticketNoParam,
     "INVALID_TICKET_NO",
     "TicketNo is invalid.",
   );
-  const boothCode = parseReference(
+  const boothCode = parseRequiredReference(
     boothCodeParam,
     "INVALID_BOOTH_CODE",
     "BoothCode is invalid.",
@@ -3176,7 +3150,13 @@ export async function changeTicketJobToWait(
     // คนสุดท้ายที่อาจ Scan เข้ามาพร้อมกัน (เหตุผลเดียวกับ lock ใน closeCompletedTicketJobIfReady)
     await transaction.$queryRaw`SELECT id FROM ticket_jobs WHERE id = ${ticketJob.id} FOR UPDATE`;
 
-    if (TERMINAL_JOB_STATUSES.includes(ticketJob.status)) {
+    // ต้องอ่านสถานะใหม่หลังได้ lock — ticketJob ด้านนอกอ่านมาก่อน lock อาจถูกยกเลิก/ปิดไปแล้วระหว่างนั้น
+    const currentTicketJob = await ticketJobRepository.findTicketJobById(
+      ticketJob.id,
+      transaction,
+    );
+
+    if (!currentTicketJob || TERMINAL_JOB_STATUSES.includes(currentTicketJob.status)) {
       throw new ApiError(
         409,
         "VEHICLE_JOB_CLOSED",
@@ -3360,6 +3340,23 @@ export async function releaseTicketJobWorkers(
   }
 
   const releasableAssignments = await withTransaction(async (transaction) => {
+    // Lock แถวรถแล้วอ่านสถานะใหม่ก่อนเขียน RELEASED กัน race กับ Vendor confirm Booth สุดท้ายที่ปิดรถเป็น
+    // COMPLETED พร้อมกัน (ไม่งั้น RELEASED จะเขียนทับ COMPLETED ที่ finalize การเงินไปแล้ว)
+    await transaction.$queryRaw`SELECT id FROM ticket_jobs WHERE id = ${ticketJob.id} FOR UPDATE`;
+
+    const currentTicketJob = await ticketJobRepository.findTicketJobById(
+      ticketJob.id,
+      transaction,
+    );
+
+    if (!currentTicketJob || TERMINAL_JOB_STATUSES.includes(currentTicketJob.status)) {
+      throw new ApiError(
+        409,
+        "VEHICLE_JOB_CLOSED",
+        "Vehicle job is already closed; workers already returned to queue.",
+      );
+    }
+
     const lifecycleState = await ticketJobRepository.findTicketJobLifecycleState(
       ticketJob.id,
       transaction,

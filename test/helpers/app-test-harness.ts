@@ -28,7 +28,6 @@ export {
 /* -------------------------------------- Test Env -------------------------------------- */
 
 applyIsolatedTestEnv("route-test");
-process.env.WORKER_PRESENCE_STALE_SECONDS = "90";
 
 /* -------------------------------------- Test Module Loader Types -------------------------------------- */
 

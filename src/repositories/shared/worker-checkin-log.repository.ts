@@ -147,6 +147,38 @@ export async function resetAcceptTimeoutStreak(
   });
 }
 
+// Function เปิดกะที่ถูกปิดไปแล้วกลับมา (Admin force Worker กลับเข้าคิวเป็น READY/BREAK) — ล้าง closedAt/closeReason/
+// offlineAt ให้เส้นทาง requeue อัตโนมัติ (isWorkerShiftOpenForQueue) ถือว่ากะเปิดอยู่อีกครั้ง และรีเซ็ต
+// acceptTimeoutStreak กัน timeout ครั้งแรกหลัง Admin ดึงกลับปิดกะซ้ำทันทีเพราะ streak เดิมเต็ม limit อยู่แล้ว
+export async function reopenWorkerShift(
+  input: WorkerCheckinLogWriteInput,
+  connection?: DbConnection
+): Promise<WorkerCheckinLog> {
+  const db = client(connection);
+  const now = new Date();
+  const shiftSnapshot = buildShiftSnapshot(input);
+
+  return db.workerCheckinLog.upsert({
+    where: buildCheckinLogKeyWhere(input),
+    create: {
+      workerId: input.worker_id,
+      shiftInstanceKey: input.shift_instance_key,
+      ...shiftSnapshot,
+      firstOnlineAt: now,
+      lastOnlineAt: now,
+    },
+    update: {
+      ...shiftSnapshot,
+      lastOnlineAt: now,
+      closedAt: null,
+      closeReason: null,
+      offlineAt: null,
+      acceptTimeoutStreak: 0,
+      lastAcceptTimeoutAt: null,
+    },
+  });
+}
+
 // Function ปิดกะของ worker แบบ idempotent รองรับ Double-submit/Retry โดยไม่ให้ผลลัพธ์เพี้ยนไปจากครั้งแรกที่ปิดจริง
 export async function closeWorkerShift(
   input: WorkerCheckinLogWriteInput & {

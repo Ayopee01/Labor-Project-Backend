@@ -554,9 +554,14 @@ export async function findWaitingTicketCompletionSubmission(
 }
 
 // Function หา Booth ที่ค้าง DELIVERED สำหรับ startup recovery
+// is_resubmission บอกว่า Booth นี้เคยถูก Vendor reject มาก่อน (รอบนี้เป็นการส่งใหม่) เพื่อเลือก timeout ให้ถูกรอบ
 export async function listDeliveredTicketsWithLatestSubmission(
   connection?: DbConnection
-): Promise<Array<{ ticket: BoothJobDto; submission: TicketCompletionSubmissionDto }>> {
+): Promise<Array<{
+  ticket: BoothJobDto;
+  submission: TicketCompletionSubmissionDto;
+  is_resubmission: boolean;
+}>> {
   const db = client(connection);
   const tickets = await db.boothJob.findMany({
     where: {
@@ -572,17 +577,34 @@ export async function listDeliveredTicketsWithLatestSubmission(
         },
         take: 1,
       },
+      _count: {
+        select: {
+          completionSubmissions: {
+            where: {
+              status: TICKET_STATUS.REJECT,
+            },
+          },
+        },
+      },
     },
   });
 
-  const results: Array<{ ticket: BoothJobDto; submission: TicketCompletionSubmissionDto }> = [];
+  const results: Array<{
+    ticket: BoothJobDto;
+    submission: TicketCompletionSubmissionDto;
+    is_resubmission: boolean;
+  }> = [];
 
   for (const ticket of tickets) {
     const mappedTicket = mapBoothJob(ticket);
     const mappedSubmission = mapTicketCompletionSubmission(ticket.completionSubmissions[0] ?? null);
 
     if (mappedTicket && mappedSubmission) {
-      results.push({ ticket: mappedTicket, submission: mappedSubmission });
+      results.push({
+        ticket: mappedTicket,
+        submission: mappedSubmission,
+        is_resubmission: ticket._count.completionSubmissions > 0,
+      });
     }
   }
 

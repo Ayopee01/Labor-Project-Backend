@@ -12,7 +12,7 @@ export class TicketSubmissionAlreadyResolvedError extends Error {
   }
 }
 import { activateNextTicketForTicketJob, findCurrentOpenTicketForTicketJob, recordWorkerAssignmentEventOnce } from "./app-test-fixtures";
-import type { AccountRecord, AssignmentRecord, GateClientRecord, BoothJobRecord, MasterWorkerRecord, TicketWorkerRecord, TicketJobRecord, WorkerBreakLogRecord, WorkerCheckinLogRecord } from "./app-test-harness.records";
+import type { AccountRecord, GateClientRecord, MasterWorkerRecord, TicketJobRecord, WorkerBreakLogRecord, WorkerCheckinLogRecord } from "./app-test-harness.records";
 
 const ACTIVE_ASSIGNMENT_STATUSES = [
   "PENDING",
@@ -183,6 +183,55 @@ export const workerApplicationRepositoryMock = {
       }
 
       return map;
+    },
+    reopenWorkerShift: async (input: {
+      worker_id: number;
+      worker_code: string;
+      shift_instance_key: string;
+      schedule: {
+        time_work: string;
+        time_in: string;
+        time_out: string;
+      };
+    }) => {
+      const now = new Date().toISOString();
+      let attendance: WorkerCheckinLogRecord | undefined = state.checkinLogs.find(
+        (item) =>
+          item.workerId === input.worker_id &&
+          item.shiftInstanceKey === input.shift_instance_key,
+      );
+
+      if (!attendance) {
+        attendance = {
+          id: state.nextCheckinLogId++,
+          workerId: input.worker_id,
+          workerCode: input.worker_code,
+          shiftInstanceKey: input.shift_instance_key,
+          timeWork: input.schedule.time_work,
+          timeIn: input.schedule.time_in,
+          timeOut: input.schedule.time_out,
+          firstOnlineAt: now,
+          lastOnlineAt: now,
+          offlineAt: null,
+          closedAt: null,
+          closeReason: null,
+          acceptTimeoutStreak: 0,
+          lastAcceptTimeoutAt: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        state.checkinLogs.push(attendance);
+        return attendance;
+      }
+
+      attendance.lastOnlineAt = now;
+      attendance.closedAt = null;
+      attendance.closeReason = null;
+      attendance.offlineAt = null;
+      attendance.acceptTimeoutStreak = 0;
+      attendance.lastAcceptTimeoutAt = null;
+      attendance.updatedAt = now;
+      return attendance;
     },
     markWorkerShiftOnline: async (input: {
       worker_id: number;
@@ -599,16 +648,6 @@ export const workerApplicationRepositoryMock = {
     );
     return assignment;
   },
-  listAcceptedAssignmentsByTicketJob: async (
-    ticketJobId: number,
-    excludedAssignmentId?: number,
-  ) =>
-    state.assignments.filter(
-      (assignment) =>
-        assignment.vehicle_job_id === ticketJobId &&
-        assignment.status === "ACCEPTED" &&
-        assignment.id !== excludedAssignmentId,
-    ),
   updateAssignmentScanDeadline: async (
     assignmentId: number,
     scanDeadlineAt: Date,
@@ -1408,7 +1447,7 @@ export const workerApplicationRepositoryMock = {
       )
       .at(-1) ?? null,
   listDeliveredTicketsWithLatestSubmission: async () => {
-    const results: Array<{ ticket: unknown; submission: unknown }> = [];
+    const results: Array<{ ticket: unknown; submission: unknown; is_resubmission: boolean }> = [];
 
     for (const ticket of state.boothJobs) {
       if (ticket.status !== "DELIVERED") {
@@ -1423,7 +1462,13 @@ export const workerApplicationRepositoryMock = {
         .at(-1);
 
       if (submission) {
-        results.push({ ticket, submission });
+        results.push({
+          ticket,
+          submission,
+          is_resubmission: state.completionSubmissions.some(
+            (item) => item.ticket_id === ticket.id && item.status === "REJECT",
+          ),
+        });
       }
     }
 
@@ -2008,7 +2053,6 @@ const {
   getVehicleWorkReadiness,
   findTicketWorkerByMarketJobAndWorkerAccountId,
   getWorkerDailyAssignmentCounts,
-  listAcceptedAssignmentsByTicketJob,
   listActiveVendorLineTargetsForTicket,
   listDeliveredTicketsWithLatestSubmission,
   listDispatchableTicketJobs,
@@ -2106,7 +2150,7 @@ export const driverRepositoryMock = {
 
   createDriverSession: async (
     ticketJobId: number,
-    deviceId: string | null,
+    deviceId: string,
     expiresAt: Date,
   ) => {
     const now = new Date().toISOString();
@@ -2373,7 +2417,7 @@ export const ticketJobAssignmentRepositoryMock = {
         ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status),
     ),
   // Function ดึงรายการ accepted assignments ตาม vehicle job — merge ทั้ง excludedAssignmentId และ
-  // workerCodes filter ไว้ในฟังก์ชันเดียว (ทับ listAcceptedAssignmentsByTicketJob เดิมด้านบนที่ destructure มา)
+  // workerCodes filter ไว้ในฟังก์ชันเดียว
   listAcceptedAssignmentsByTicketJob: async (
     ticketJobId: number,
     filters?: { excludedAssignmentId?: number; workerCodes?: string[] },

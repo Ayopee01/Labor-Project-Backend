@@ -61,6 +61,9 @@ export type LineMessageJobData = {
   log_id: number;
   to: string;
   messages: LineMessage[];
+  // X-Line-Retry-Key (UUID) คงที่ต่อข้อความหนึ่งชิ้นตลอดทุกรอบ retry — LINE ตอบ 409 แทนการส่งซ้ำถ้าเคยรับไปแล้ว
+  // optional เพราะ job ที่ค้างอยู่ในคิวก่อน deploy ไม่มี field นี้
+  retry_key?: string;
 };
 
 // Type action ที่ token ของ vendor รองรับ

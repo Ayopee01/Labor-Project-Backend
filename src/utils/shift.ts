@@ -1,7 +1,7 @@
 // Import Dependencies
 import type { ShiftWaitInfo, WorkScheduleDto, WorkScheduleWithShiftDto } from "../types/admin-workers.type";
 import ApiError from "./api-error";
-import { BANGKOK_TIME_ZONE } from "./time";
+import { BANGKOK_TIME_ZONE, formatBangkokDate } from "./time";
 
 /* -------------------------------------- Config -------------------------------------- */
 
@@ -35,13 +35,6 @@ const bangkokTimeFormatter = new Intl.DateTimeFormat("en-GB", {
   hourCycle: "h23",
 });
 
-const bangkokDateFormatter = new Intl.DateTimeFormat("en-GB", {
-  timeZone: BANGKOK_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-});
-
 /* -------------------------------------- Functions -------------------------------------- */
 
 // Function อ่านค่า time เป็น minutes สำหรับ helper กลาง
@@ -71,16 +64,6 @@ function getBangkokTimeToMinutes(value: Date): number {
   return hour * 60 + minute;
 }
 
-// Function ดึง bangkok date string สำหรับ helper กลาง
-function getBangkokDateString(value: Date): string {
-  const parts = bangkokDateFormatter.formatToParts(value);
-  const year = parts.find((part) => part.type === "year")?.value;
-  const month = parts.find((part) => part.type === "month")?.value;
-  const day = parts.find((part) => part.type === "day")?.value;
-
-  return `${year}-${month}-${day}`;
-}
-
 // Function จัดการ add days เป็น date string สำหรับ helper กลาง
 function addDaysToDateString(date: string, days: number): string {
   const [year, month, day] = date.split("-").map(Number);
@@ -101,7 +84,7 @@ function resolveShiftStartDate(
 ): string {
   const { startMinutes, endMinutes } = parseScheduleTimeRange(schedule);
   const currentMinutes = getBangkokTimeToMinutes(value);
-  const currentDate = getBangkokDateString(value);
+  const currentDate = formatBangkokDate(value);
 
   return endMinutes <= startMinutes && currentMinutes < endMinutes
     ? addDaysToDateString(currentDate, -1)
@@ -261,35 +244,6 @@ export function isTimeInWorkSchedule(
   }
 
   return currentMinutes >= startMinutes && currentMinutes < endMinutes;
-}
-
-// Function ค้นหา active work schedule สำหรับ helper กลาง
-export function findActiveWorkSchedule(
-  schedules: WorkScheduleDto[],
-  value: Date = new Date()
-): WorkScheduleDto | null {
-  return schedules.find((schedule) => isTimeInWorkSchedule(schedule, value)) ?? null;
-}
-
-// Function ค้นหา next work schedule สำหรับ helper กลาง
-export function findNextWorkSchedule(
-  schedules: WorkScheduleDto[],
-  value: Date = new Date()
-): WorkScheduleDto | null {
-  if (schedules.length === 0) {
-    return null;
-  }
-
-  const currentMinutes = getBangkokTimeToMinutes(value);
-
-  return [...schedules].sort((first, second) => {
-    const firstStart = parseScheduleTimeRange(first).startMinutes;
-    const secondStart = parseScheduleTimeRange(second).startMinutes;
-    const firstWait = (firstStart - currentMinutes + 24 * 60) % (24 * 60);
-    const secondWait = (secondStart - currentMinutes + 24 * 60) % (24 * 60);
-
-    return firstWait - secondWait;
-  })[0];
 }
 
 // Function สร้าง shift wait info สำหรับ helper กลาง

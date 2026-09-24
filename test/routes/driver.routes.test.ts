@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
-import { addTicketForTicketJob, addDispatchableJob, resetRouteTestState, restoreRouteTestLoader, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
+import { addAdmin, addTicketForTicketJob, addDispatchableJob, addWorker, getPassword, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
 import { driverSessionRepositoryMock } from "../helpers/app-test-repository-mocks";
 import { clearDriverQrRateLimitBucketsForTest } from "../../src/middlewares/driver-qr-rate-limit.middleware";
 
 let server: TestServer;
+let password: typeof import("../../src/utils/password");
+let workerQueue: typeof import("../../src/queues/worker-queue");
+let workerDispatch: typeof import("../../src/queues/worker-dispatch");
 
 /* -------------------------------------- Test Helpers -------------------------------------- */
 
@@ -32,9 +35,28 @@ async function createDriverSession(
   });
 }
 
+// Function login admin พร้อมสิทธิ์ยกเลิก assignment สำหรับ test flow ที่ต้องยกเลิกงานของ worker
+async function loginCancelAdmin(accountId: number): Promise<{ token: string }> {
+  const passwordHash = await password.hashPassword("Admin@123456");
+  const admin = addAdmin(accountId, passwordHash);
+
+  state.adminPermissions.set(admin.id, ["jobs:read", "jobs:cancel"]);
+
+  const login = await server.request("POST", "/api/auth/login", {
+    body: { username: admin.username, password: "Admin@123456" },
+  });
+
+  assert.equal(login.status, 200);
+
+  return { token: login.body.access_token };
+}
+
 /* -------------------------------------- Hooks -------------------------------------- */
 
 before(async () => {
+  password = await getPassword();
+  workerQueue = await getWorkerQueue();
+  workerDispatch = await getWorkerDispatch();
   server = await startRouteTestServer();
 });
 
@@ -118,13 +140,14 @@ test("POST /api/driver/qr-sessions rejects a 3rd distinct device once the limit 
   assert.equal(third.body.code, "DRIVER_SESSION_LIMIT_EXCEEDED");
 });
 
-test("POST /api/driver/qr-sessions without a DeviceId (legacy client) still succeeds and counts as its own device", async () => {
+test("POST /api/driver/qr-sessions rejects a request without DeviceId", async () => {
   const job = addWaitingDriverJob(5);
 
   const result = await createDriverSession(job.driver_qr_token);
 
-  assert.equal(result.status, 201);
-  assert.equal(result.body.active_device_count, 1);
+  assert.equal(result.status, 400);
+  assert.equal(result.body.code, "VALIDATION_ERROR");
+  assert.equal(state.driverSessions.length, 0);
 });
 
 /* -------------------------------------- GET /api/driver/jobs/current -------------------------------------- */
@@ -145,7 +168,7 @@ test("GET /api/driver/jobs/current rejects an invalid session token", async () =
   assert.equal(result.body.code, "INVALID_DRIVER_SESSION");
 });
 
-test("GET /api/driver/jobs/current requires X-Driver-Device-Id when the session was created with a DeviceId", async () => {
+test("GET /api/driver/jobs/current requires an X-Driver-Device-Id matching the session DeviceId", async () => {
   const job = addWaitingDriverJob(6);
   const session = await createDriverSession(job.driver_qr_token, "device-1");
 
@@ -185,17 +208,6 @@ test("GET /api/driver/jobs/current returns the full snapshot with a canonical Op
   assert.equal(result.body.markets[0].booths.length, 1);
   // addTicketForTicketJob fixture สร้างสินค้าให้ 2 รายการต่อแผงเสมอ (Apple, Cabbage)
   assert.equal(result.body.markets[0].booths[0].products.length, 2);
-});
-
-test("GET /api/driver/jobs/current works without X-Driver-Device-Id for a legacy session created without DeviceId", async () => {
-  const job = addWaitingDriverJob(8);
-  const session = await createDriverSession(job.driver_qr_token);
-
-  const result = await server.request("GET", "/api/driver/jobs/current", {
-    token: session.body.driver_session_token,
-  });
-
-  assert.equal(result.status, 200);
 });
 
 /* -------------------------------------- POST /api/driver/jobs/:ticketNumber/ready -------------------------------------- */
@@ -434,6 +446,66 @@ test("GET /api/driver/jobs/stream auto-closes with DRIVER_SESSION_CLOSED once th
     const chunk = Buffer.from(second.value ?? new Uint8Array()).toString("utf8");
 
     assert.match(chunk, /event: DRIVER_SESSION_CLOSED/);
+  } finally {
+    controller.abort();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+});
+
+/* -------------------------------------- Auto-dispatch realtime update -------------------------------------- */
+
+test("auto-dispatch publishes DRIVER_JOB_UPDATED so Driver Web moves from WAITING_FOR_WORKER to DISPATCH_NOW without reconnecting, and back on cancel", async () => {
+  // dispatch_now=true ตั้งแต่ต้น (เหมือนงานที่ผ่าน ready ไปแล้วแต่ worker ยังมาไม่ครบ) ตรงกับ precondition
+  // ของ WAITING_FOR_WORKER ตามสเปค (active_assignment_count < workers_required)
+  const job = addDispatchableJob(19, 2);
+  const session = await createDriverSession(job.driver_qr_token, "device-1");
+
+  const controller = new AbortController();
+
+  try {
+    const response = await fetch(`${server.baseUrl}/api/driver/jobs/stream`, {
+      headers: {
+        Authorization: `Bearer ${session.body.driver_session_token}`,
+        "X-Driver-Device-Id": "device-1",
+      },
+      signal: controller.signal,
+    });
+    const reader = response.body!.getReader();
+
+    const snapshotChunk = Buffer.from((await reader.read()).value ?? new Uint8Array()).toString("utf8");
+    assert.match(snapshotChunk, /event: DRIVER_JOB_SNAPSHOT/);
+    assert.match(snapshotChunk, /"OperationStatus":"WAITING_FOR_WORKER"/);
+
+    // Worker 2 คนเข้าคิว READY พร้อมกัน — ให้ dispatchReadyWorkers (auto-dispatch) จัดสรรให้ครบพอดี
+    const workerA = addWorker(9801);
+    const workerB = addWorker(9802);
+    state.connectedWorkers.add(workerA.id);
+    state.connectedWorkers.add(workerB.id);
+    await workerQueue.enqueueWorker(workerA.id);
+    await workerQueue.enqueueWorker(workerB.id);
+
+    await workerDispatch.dispatchReadyWorkers(undefined, { vehicle_job_ids: [job.id] });
+
+    const dispatchNowChunk = Buffer.from((await reader.read()).value ?? new Uint8Array()).toString("utf8");
+    assert.match(dispatchNowChunk, /event: DRIVER_JOB_UPDATED/);
+    assert.match(dispatchNowChunk, /"OperationStatus":"DISPATCH_NOW"/);
+    assert.equal(state.assignments.length, 2);
+
+    // Admin ยกเลิก assignment ของ worker คนหนึ่ง — ทีมไม่ครบอีกครั้ง ต้องเห็น WAITING_FOR_WORKER กลับมา
+    const admin = await loginCancelAdmin(9803);
+    const cancelResult = await server.request("POST", "/api/admin/vehicle-jobs/assignment/cancel", {
+      token: admin.token,
+      body: {
+        TicketNumber: job.ticket_number,
+        WorkerCode: workerA.labor_code,
+        ReasonCode: "test_cancel",
+      },
+    });
+    assert.equal(cancelResult.status, 200);
+
+    const waitingAgainChunk = Buffer.from((await reader.read()).value ?? new Uint8Array()).toString("utf8");
+    assert.match(waitingAgainChunk, /event: DRIVER_JOB_UPDATED/);
+    assert.match(waitingAgainChunk, /"OperationStatus":"WAITING_FOR_WORKER"/);
   } finally {
     controller.abort();
     await new Promise((resolve) => setTimeout(resolve, 50));

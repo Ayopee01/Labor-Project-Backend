@@ -1,4 +1,5 @@
 // Import Library
+import { randomUUID } from "crypto";
 import { Queue, Worker, type Job } from "bullmq";
 import type { Prisma } from "@prisma/client";
 // Import Config
@@ -23,6 +24,16 @@ const lineMessageQueue = new Queue(REDIS_CONFIG.lineMessageQueueName, {
 // สร้าง worker สำหรับ LINE message queue
 let lineWorker: Worker | null = null;
 
+// Timeout ต่อหนึ่ง request ไป LINE Messaging API — ไม่งั้น request ที่ค้างจะรอ default ของ undici (~5 นาที)
+// และ worker ที่ประมวลผลทีละ job จะทำให้ข้อความของ Vendor ทุกคนค้างตามไปด้วย
+const LINE_API_TIMEOUT_MS = 10_000;
+
+// Retry สำหรับ LINE push (ติด rate limit 429/5xx เป็นครั้งคราว) — ส่งซ้ำได้ปลอดภัยเพราะใช้ X-Line-Retry-Key เดิม
+const LINE_PUSH_RETRY_OPTIONS = {
+  attempts: 5,
+  backoff: { type: "exponential", delay: 5000 },
+} as const;
+
 /* -------------------------------------- Functions -------------------------------------- */
 
 // Function ส่ง LINE push message ผ่าน LINE Messaging API
@@ -42,12 +53,19 @@ async function sendLinePushMessage(data: LineMessageJobData): Promise<void> {
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
+      ...(data.retry_key && { "X-Line-Retry-Key": data.retry_key }),
     },
     body: JSON.stringify({
       to: data.to,
       messages: data.messages,
     }),
+    signal: AbortSignal.timeout(LINE_API_TIMEOUT_MS),
   });
+
+  // 409 พร้อม retry key = LINE รับข้อความนี้ไปแล้วจากรอบก่อน (รอบก่อน timeout ฝั่งเราแต่ LINE ส่งสำเร็จ) ถือว่าสำเร็จ
+  if (response.status === 409 && data.retry_key) {
+    return;
+  }
 
   // Throw error ถ้า LINE Messaging API ส่ง response ไม่สำเร็จ
   if (!response.ok) {
@@ -81,6 +99,7 @@ export async function sendLineReplyMessage(
       replyToken,
       messages,
     }),
+    signal: AbortSignal.timeout(LINE_API_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -94,10 +113,18 @@ export async function enqueueLineMessage(
   jobName: string,
   data: LineMessageJobData
 ): Promise<void> {
-  await lineMessageQueue.add(jobName, data, {
-    removeOnComplete: true,
-    removeOnFail: 100,
-  });
+  await lineMessageQueue.add(
+    jobName,
+    {
+      ...data,
+      retry_key: data.retry_key ?? randomUUID(),
+    },
+    {
+      removeOnComplete: true,
+      removeOnFail: 100,
+      ...LINE_PUSH_RETRY_OPTIONS,
+    }
+  );
 }
 
 // Function สร้าง log การส่ง LINE และนำข้อความเข้า queue

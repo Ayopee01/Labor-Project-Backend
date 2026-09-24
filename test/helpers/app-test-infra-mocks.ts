@@ -26,10 +26,6 @@ export class FakeRedis {
     channels.forEach((channel) => this.subscribedChannels.add(channel));
   }
 
-  async unsubscribe(...channels: string[]): Promise<void> {
-    channels.forEach((channel) => this.subscribedChannels.delete(channel));
-  }
-
   async publish(channel: string, message: string): Promise<number> {
     let receiverCount = 0;
 
@@ -89,7 +85,7 @@ export class FakeRedis {
 
         return leftMember.localeCompare(rightMember);
       })
-      .slice(start, stop + 1);
+      .slice(start, stop === -1 ? undefined : stop + 1);
 
     if (withScores === "WITHSCORES") {
       return items.flatMap(([member, score]) => [member, String(score)]);
@@ -220,7 +216,13 @@ export class FakeQueue {
     }
 
     return {
+      getState: async () => job.state ?? "delayed",
       remove: async () => {
+        // BullMQ จริงไม่ยอมลบ job ที่ worker กำลังประมวลผลอยู่ (locked) — จำลองพฤติกรรมเดียวกัน
+        if (job.state === "active") {
+          throw new Error(`Job ${jobId} could not be removed because it is locked by another worker`);
+        }
+
         job.removed = true;
       },
     };

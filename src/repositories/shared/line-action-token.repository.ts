@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { Prisma } from "@prisma/client";
 // Import Utils
 import { client } from "./repository-utils";
+import { mapLineActionToken } from "./mappers";
 // Import Types
 import type { DbConnection } from "../../types/shared/common.type";
 import type { LineActionTokenDto, VendorTicketAction } from "../../types/line.type";
@@ -42,33 +43,6 @@ function buildLineActionTokenExpiresAt(): Date {
   );
 }
 
-// Function จัดการ เป็น LINE action token DTO จาก DB
-function toLineActionTokenDto(record: {
-  id: number;
-  token: string;
-  action: string;
-  ticketId: number;
-  submissionId: number;
-  boothCode: string;
-  expiresAt: Date;
-  usedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-}): LineActionTokenDto {
-  return {
-    id: record.id,
-    token: record.token,
-    action: record.action as VendorTicketAction,
-    ticket_id: record.ticketId,
-    submission_id: record.submissionId,
-    boothCode: record.boothCode,
-    expires_at: record.expiresAt.toISOString(),
-    used_at: record.usedAt?.toISOString() ?? null,
-    created_at: record.createdAt.toISOString(),
-    updated_at: record.updatedAt.toISOString(),
-  };
-}
-
 // Function สร้าง random LINE action token จาก DB
 function createRandomLineActionToken(): string {
   return crypto.randomBytes(24).toString("base64url");
@@ -99,7 +73,7 @@ export async function createLineActionToken(
         },
       });
 
-      return toLineActionTokenDto(token);
+      return mapLineActionToken(token);
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&

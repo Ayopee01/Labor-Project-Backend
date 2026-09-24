@@ -16,7 +16,7 @@ import { notifyVendorBoothDispatchResumed } from "./shared/vendor-line-notificat
 import type { DriverJobSnapshotResponse, DriverSessionContext, DriverSessionResponse, DriverTicketJobResponse } from "../types/driver.type";
 import type { TicketJobDto } from "../types/worker.type";
 // Import Validation
-import { parseWithSchema } from "../validation/parser";
+import { parseRequiredReference, parseWithSchema } from "../validation/parser";
 import { driverQrSessionBodySchema } from "../validation/schemas";
 // Import Utils
 import { formatDriverJobSnapshot } from "../utils/driver-job.formatter";
@@ -24,21 +24,6 @@ import ApiError from "../utils/api-error";
 import { logger } from "../utils/logger";
 
 /* -------------------------------------- Functions -------------------------------------- */
-
-// Function อ่านค่า reference ใน service flow
-function parseReference(value: unknown): string {
-  const reference = String(value ?? "").trim();
-
-  if (!reference) {
-    throw new ApiError(
-      400,
-      "INVALID_VEHICLE_JOB_REF",
-      "Vehicle job ref is invalid.",
-    );
-  }
-
-  return reference;
-}
 
 // Function จัดรูปแบบ driver vehicle job ใน service flow
 function formatDriverTicketJob(
@@ -92,7 +77,7 @@ export async function createDriverSessionFromQr(
     );
   }
 
-  const deviceId = input.device_id ?? null;
+  const deviceId = input.device_id;
   const deviceLimit = getDriverActiveDeviceLimit();
   const settings = await getRuntimeSettings();
   const driverSessionTtlMs = settings.driver_session_ttl_hours * 60 * 60 * 1000;
@@ -117,26 +102,18 @@ export async function createDriverSessionFromQr(
       transaction,
     );
 
-    // Session ที่ไม่มี deviceId (สร้างจาก client รุ่นเก่าก่อนขึ้น feature นี้) นับเป็นเครื่องของตัวเองเสมอ
-    // ตามเงื่อนไข migration ชั่วคราวใน 38.5 ข้อ 15 — ไม่ผูกกับ deviceId ใดจึง rotate ไม่ได้
-    const existingSameDeviceSlot =
-      deviceId !== null ? activeSlots.find((slot) => slot.device_id === deviceId) : undefined;
+    const existingSameDeviceSlot = activeSlots.find((slot) => slot.device_id === deviceId);
+    const distinctDeviceCount = new Set(activeSlots.map((slot) => slot.device_id)).size;
 
     if (existingSameDeviceSlot) {
       // Device เดิมสแกนซ้ำ — rotate session เก่าทิ้ง ไม่กิน slot เพิ่ม
       await driverRepository.revokeDriverSessionById(existingSameDeviceSlot.id, transaction);
-    } else {
-      const distinctDeviceCount = new Set(
-        activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`),
-      ).size;
-
-      if (distinctDeviceCount >= deviceLimit) {
-        throw new ApiError(
-          409,
-          "DRIVER_SESSION_LIMIT_EXCEEDED",
-          "Vehicle job already has the maximum number of active driver devices.",
-        );
-      }
+    } else if (distinctDeviceCount >= deviceLimit) {
+      throw new ApiError(
+        409,
+        "DRIVER_SESSION_LIMIT_EXCEEDED",
+        "Vehicle job already has the maximum number of active driver devices.",
+      );
     }
 
     const expiresAt = new Date(Date.now() + driverSessionTtlMs);
@@ -148,8 +125,8 @@ export async function createDriverSessionFromQr(
     );
 
     const nextActiveDeviceCount = existingSameDeviceSlot
-      ? new Set(activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`)).size
-      : new Set(activeSlots.map((slot) => slot.device_id ?? `session:${slot.id}`)).size + 1;
+      ? distinctDeviceCount
+      : distinctDeviceCount + 1;
 
     return {
       session: createdSession,
@@ -207,7 +184,7 @@ export async function markDriverJobReady(
     throw new ApiError(409, "VEHICLE_JOB_CLOSED", "Vehicle job is already closed.");
   }
 
-  const ticketNumber = parseReference(idParam);
+  const ticketNumber = parseRequiredReference(idParam, "INVALID_VEHICLE_JOB_REF", "Vehicle job ref is invalid.");
   const requestedTicketJob =
     await ticketJobRepository.findTicketJobByRef(ticketNumber);
 
@@ -224,8 +201,10 @@ export async function markDriverJobReady(
   }
 
   const ticketJobId = await withTransaction(async (transaction) => {
-    const ticketJob = await ticketJobRepository.findTicketJobByRef(
-      ticketNumber,
+    // Lock แถวรถแล้วอ่านสถานะใหม่ก่อนเช็ค WAIT กัน race กับ Admin ยกเลิกรถพร้อมกัน (ไม่งั้น update ด้านล่าง
+    // จะเปิดรถที่เพิ่งถูกยกเลิกกลับเป็น WORKING แล้ว dispatch Worker ไปรถที่ไม่มีงานแล้ว)
+    const ticketJob = await driverRepository.lockTicketJobForDriverSession(
+      requestedTicketJob.id,
       transaction,
     );
 

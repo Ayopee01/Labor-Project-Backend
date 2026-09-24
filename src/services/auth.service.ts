@@ -638,6 +638,23 @@ export async function confirmForceLogin(
   };
 
   const response = await withTransaction(async (transaction) => {
+    // ล็อกแถว MasterWorker แล้วเช็ค session เดิมซ้ำใต้ lock เหมือน login ปกติ — กันกดยืนยัน force login ซ้ำ
+    // (double-submit) สอง request ผ่านเช็คด้านนอกพร้อมกันแล้วต่างฝ่ายต่างสร้าง session ใหม่ จน active พร้อมกัน 2 session
+    await transaction.$queryRaw`SELECT id FROM master_workers WHERE id = ${worker.id} FOR UPDATE`;
+
+    const lockedOldSession = await workerSessionRepository.findActiveById(
+      oldSession.id,
+      transaction
+    );
+
+    if (!lockedOldSession || lockedOldSession.account_id !== challenge.account_id) {
+      throw new ApiError(
+        401,
+        "INVALID_LOGIN_CHALLENGE",
+        "Login challenge session is no longer active."
+      );
+    }
+
     await workerSessionRepository.revoke(oldSession.id, transaction);
     await revokeWorkerPushTokensBySession(oldSession.id, transaction);
 

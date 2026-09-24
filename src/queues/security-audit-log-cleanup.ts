@@ -1,7 +1,7 @@
 // Import Library
 import { Queue, Worker } from "bullmq";
 // Import Config
-import { buildBullConnection, REDIS_CONFIG } from "../config/redis.config";
+import { buildBullConnection } from "../config/redis.config";
 // Import Service
 import { runSecurityAuditLogRetentionCleanup } from "../services/shared/security-audit-log.service";
 // Import Utils

@@ -8,8 +8,7 @@ paths:
         ตรวจ driver QR token แล้วออก session token (อายุตาม runtime setting driver_session_ttl_hours)
         สำหรับดูงานของรถคันนั้น จำกัด active session ไม่เกิน DRIVER_ACTIVE_DEVICE_LIMIT เครื่อง (default 2)
         ต่อ vehicle job หนึ่งคัน นับตาม DeviceId ที่ไม่ซ้ำกัน — ถ้า DeviceId เดิมสแกนซ้ำจะ rotate session เดิม
-        ทิ้งแล้วออก token ใหม่โดยไม่กิน slot เพิ่ม ถ้าไม่ส่ง DeviceId มา (client รุ่นเก่า) จะนับ session
-        นั้นเป็นหนึ่งเครื่องแยกไปเลย ชั่วคราวระหว่าง migration เท่านั้น
+        ทิ้งแล้วออก token ใหม่โดยไม่กิน slot เพิ่ม ต้องส่ง DeviceId ทุกครั้ง ไม่ส่งมาจะได้ 400 VALIDATION_ERROR
       operationId: createDriverQrSession
       requestBody:
         required: true
@@ -19,13 +18,14 @@ paths:
               type: object
               required:
                 - qr_token
+                - device_id
               properties:
                 qr_token:
                   type: string
                 device_id:
                   type: string
                   format: uuid
-                  description: UUID ของเครื่องที่ Driver Web สุ่มสร้างครั้งแรกและเก็บถาวรใน browser storage — ห้ามใช้ IP/User-Agent/fingerprint เป็นตัวระบุเครื่องหลัก ไม่บังคับชั่วคราวระหว่าง migration แต่ production Driver Web รุ่นใหม่ต้องส่งมาเสมอ
+                  description: UUID ของเครื่องที่ Driver Web สุ่มสร้างครั้งแรกและเก็บถาวรใน browser storage — ห้ามใช้ IP/User-Agent/fingerprint เป็นตัวระบุเครื่องหลัก ต้องใช้ค่าเดิมทุกครั้งที่สแกนจากเครื่องเดียวกัน และส่งค่าเดียวกันเป็น X-Driver-Device-Id ใน request ถัดไป
       responses:
         "201":
           description: สร้าง driver session สำเร็จ

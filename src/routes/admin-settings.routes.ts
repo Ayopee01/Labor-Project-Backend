@@ -7,23 +7,14 @@ import roleMiddleware from "../middlewares/role.middleware";
 import sessionMiddleware from "../middlewares/session.middleware";
 // Import Services
 import * as adminSettingsService from "../services/admin-settings.service";
-// Import Types
-import type { Request } from "express";
-import type { SecurityAuditRequestContext } from "../types/shared/security-audit-log.type";
+// Import Utils
+import { buildSecurityAuditContext } from "../utils/security-audit-context";
 
 const router = express.Router();
 
 /* -------------------------------------- Admin Settings Routes -------------------------------------- */
 
 router.use(authMiddleware, sessionMiddleware, roleMiddleware(["admin"]));
-
-function buildSecurityAuditContext(req: Request): SecurityAuditRequestContext {
-  return {
-    ip_address: req.ip ?? null,
-    user_agent: req.header("user-agent") ?? null,
-    request_id: req.requestId ?? null,
-  };
-}
 
 router.get(
   "/settings",

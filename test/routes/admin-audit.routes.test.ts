@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
 
-import { addAdmin, addDispatchableJob, addGateClient, addPendingAssignment, addTicketForTicketJob, addWorker, getPassword, getTicketFinancialService, getWorkerDispatch, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
+import { addAdmin, addDispatchableJob, addTicketForTicketJob, addWorker, getPassword, getWorkerQueue, resetRouteTestState, restoreRouteTestLoader, startRouteTestServer, state, type TestServer } from "../helpers/app-test-harness";
 
 let server: TestServer;
 let password: typeof import("../../src/utils/password");
 let workerQueue: typeof import("../../src/queues/worker-queue");
-let workerDispatch: typeof import("../../src/queues/worker-dispatch");
-let ticketFinancialService: typeof import("../../src/services/shared/ticket-financial.service");
-
 /* -------------------------------------- Test Helpers -------------------------------------- */
 
 // Function เธเธฑเธ”เธเธฒเธฃ login worker เธชเธณเธซเธฃเธฑเธ test
@@ -29,48 +26,6 @@ async function loginWorker(accountId: number): Promise<{ token: string; worker: 
   return {
     token: login.body.access_token,
     worker,
-  };
-}
-
-// Function เธชเธฃเนเธฒเธ gate vehicle job body เธชเธณเธซเธฃเธฑเธ test
-function buildBoothJobJobBody(suffix: string) {
-  return {
-    TicketNo: `TKT-20260723-${suffix}`,
-    TicketCreatedAt: "2026-07-23T14:30:00+07:00",
-    BoothCount: 1,
-    MarketCode: `MARKET-${suffix}`,
-    LicensePlate: `ABC-${suffix}`,
-    LicensePlateProvince: "Bangkok",
-    VehicleTypeCode: "PICKUP",
-    VehicleTypeName: "Pickup truck",
-    Booths: [
-      {
-        BoothCode: `STALL-${suffix}`,
-        Products: [
-          {
-            ProductCode: "02020300",
-            PackageCode: "29",
-            Quantity: 180,
-          },
-        ],
-      },
-    ],
-    Dispatch: true,
-  };
-}
-
-// Function เธเธฑเธ”เธเธฒเธฃ gate auth headers เธชเธณเธซเธฃเธฑเธ test
-async function gateAuthHeaders(
-  clientId = "gate-test",
-  clientSecret = "GateSecret@123456",
-  status: "active" | "inactive" = "active"
-): Promise<Record<string, string>> {
-  if (!state.gateClients.has(clientId)) {
-    addGateClient(clientId, await password.hashPassword(clientSecret), status);
-  }
-
-  return {
-    Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
   };
 }
 
@@ -185,8 +140,6 @@ function addAuditAssignment(input: {
 before(async () => {
   password = await getPassword();
   workerQueue = await getWorkerQueue();
-  workerDispatch = await getWorkerDispatch();
-  ticketFinancialService = await getTicketFinancialService();
   server = await startRouteTestServer();
 });
 

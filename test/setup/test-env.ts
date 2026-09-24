@@ -43,7 +43,6 @@ export function applyIsolatedTestEnv(prefix = "test"): void {
   process.env.SPACES_ADMIN_BUCKET ??= `${prefix}-admin-uploads`;
   // Redis ของ docker-compose.yml ตัวนี้ map host port เป็น 6380 (REDIS_HOST_PORT default) ไม่ใช่ 6379
   process.env.REDIS_URL ??= "redis://localhost:6380/15";
-  process.env.WORKER_PRESENCE_STALE_SECONDS ??= "90";
   process.env.REDIS_WORKER_QUEUE_KEY = `${prefix}:worker:queue`;
   process.env.REDIS_WORKER_STATUS_KEY_PREFIX = `${prefix}:worker:status:`;
   process.env.REDIS_WORKER_PRESENCE_KEY_PREFIX = `${prefix}:worker:presence:`;

@@ -40,7 +40,7 @@ import type { DbConnection } from "../types/shared/common.type";
 import { ASSIGNMENT_STATUS, TICKET_SUBMITTER_ROLE, WORKER_OPEN_APP_REASON, WORKING_ASSIGNMENT_STATUSES } from "../constants/status";
 import { resolveShiftInactiveReasonText } from "../utils/shift-status-localization";
 // Import Validation
-import { parseWithSchema } from "../validation/parser";
+import { parseRequiredReference, parseWithSchema } from "../validation/parser";
 import { workerAssignmentHistoryQuerySchema, workerCheckInBarcodeBodySchema, workerEarningsSummaryQuerySchema, workerTicketCompleteBodySchema } from "../validation/schemas";
 // Import Utils
 import ApiError from "../utils/api-error";
@@ -392,10 +392,6 @@ export async function notifyTicketJobTeamScanReadiness(
   });
 }
 
-function toBangkokDateKey(value: Date | string): string {
-  return formatBangkokDate(value instanceof Date ? value : new Date(value));
-}
-
 // Function สร้าง assignment accepted socket payload ใน service flow
 function buildAssignmentAcceptedSocketPayload(
   assignment: TicketJobAssignmentDto,
@@ -447,21 +443,6 @@ async function requireWorker(auth?: AccessTokenPayload) {
   return worker;
 }
 
-// Function อ่านค่า assignment reference ใน service flow
-function parseAssignmentReference(value: unknown): string {
-  const reference = String(value ?? "").trim();
-
-  if (!reference) {
-    throw new ApiError(
-      400,
-      "INVALID_ASSIGNMENT_REF",
-      "Vehicle job ref is invalid.",
-    );
-  }
-
-  return reference;
-}
-
 // Function ค้นหา worker assignment ตาม reference ใน service flow
 async function findWorkerAssignmentByReference(
   value: unknown,
@@ -470,7 +451,7 @@ async function findWorkerAssignmentByReference(
     typeof assignmentRepository.findCurrentAssignmentByTicketJobRefAndWorker
   >[2],
 ): Promise<TicketJobAssignmentDto | null> {
-  const reference = parseAssignmentReference(value);
+  const reference = parseRequiredReference(value, "INVALID_ASSIGNMENT_REF", "Vehicle job ref is invalid.");
 
   return assignmentRepository.findCurrentAssignmentByTicketJobRefAndWorker(
     reference,
@@ -481,25 +462,13 @@ async function findWorkerAssignmentByReference(
 
 // Function ค้นหา Gate ticket สำหรับ completion จาก assignment ปัจจุบันของ worker + booth — scope
 // ด้วย vehicle_job_id ของ assignment ที่ worker active อยู่ ไม่รับ TicketNumber จาก client โดยตรง
+// ticketNo/boothCode ผ่าน workerTicketCompleteBodySchema (trim + required) มาแล้วเสมอ
 async function requireBoothJobForCompletionByCurrentAssignment(
   workerId: number,
-  ticketNoParam: unknown,
-  boothCodeParam: unknown,
-  connection?: Parameters<
-    typeof boothJobRepository.findBoothJobForCompletion
-  >[1],
-): Promise<BoothJobDto | null> {
-  const ticketNo = String(ticketNoParam ?? "").trim();
-  const boothCode = String(boothCodeParam ?? "").trim();
-
-  if (!ticketNo) {
-    throw new ApiError(400, "INVALID_TICKET_NO", "ticket_no is invalid.");
-  }
-
-  if (!boothCode) {
-    throw new ApiError(400, "INVALID_BOOTH_CODE", "BoothCode is invalid.");
-  }
-
+  ticketNo: string,
+  boothCode: string,
+  connection: DbConnection,
+): Promise<BoothJobDto> {
   const assignment = await assignmentRepository.findCurrentAssignmentByWorker(
     workerId,
     connection,
@@ -691,9 +660,15 @@ export async function workerOnline(
         );
       }
 
+      // ASSIGNED ทั้งที่ไม่มี assignment active จริงใน DB (เช็คผ่านด้านบนแล้ว) คือสถานะค้างจาก Redis กับ DB
+      // ไม่ตรงกัน (เช่น Redis ล้มหลัง timeout commit) ให้ Worker กด online เพื่อกู้กลับเข้าคิวเองได้
+      const isStaleAssigned =
+        currentQueueEntry?.status === WORKER_WORK_STATUS.ASSIGNED;
+
       if (
         attendance?.firstOnlineAt &&
-        currentQueueEntry?.status !== WORKER_WORK_STATUS.READY
+        currentQueueEntry?.status !== WORKER_WORK_STATUS.READY &&
+        !isStaleAssigned
       ) {
         throw new ApiError(
           409,
@@ -1190,7 +1165,7 @@ export async function getWorkerEarningsSummary(
 
   const details = rows.map((row) => {
     const earnings = new Prisma.Decimal(row.earnings);
-    const dateKey = toBangkokDateKey(row.completed_at);
+    const dateKey = formatBangkokDate(new Date(row.completed_at));
 
     totalEarnings = totalEarnings.plus(earnings);
     dailyEarnings.set(
@@ -1450,6 +1425,10 @@ async function resolveScanAssignmentOutcome(
   if (!assignment) {
     throw new ApiError(404, "ASSIGNMENT_NOT_FOUND", "Assignment not found.");
   }
+
+  // Lock แถวรถก่อนนับทีมที่สแกนแล้ว กัน write skew ตอน Worker คนสุดท้ายสองคนสแกนพร้อมกันคนละ transaction
+  // (ต่างฝ่ายต่างมองไม่เห็นการสแกนของอีกฝ่าย จึงไม่มีใคร mark รถเริ่มงาน/ส่ง TEAM_READY เลย)
+  await transaction.$queryRaw`SELECT id FROM ticket_jobs WHERE id = ${assignment.vehicle_job_id} FOR UPDATE`;
 
   if (assignment.status !== ASSIGNMENT_STATUS.ACCEPTED) {
     throw new ApiError(
@@ -1767,48 +1746,9 @@ export async function scanWorkerAssignment(
   return buildScannedOutcomeResponse(result, account, teamScanRemainingMinutes);
 }
 
-// Function จบงาน worker assignment ticket ใน service flow — resolve TicketNumber จาก assignment ปัจจุบันของ worker เอง
-// ไม่รับจาก client, ส่วน TicketNo (Business Ticket) ยังต้องส่งมาเพราะไม่ unique ข้ามใบในรถคันเดียวกัน
-async function completeWorkerAssignmentTicket(
-  ticketNoParam: unknown,
-  boothCodeParam: unknown,
-  body: unknown,
-  auth?: AccessTokenPayload,
-): Promise<TicketCompletionResponse> {
-  return completeResolvedWorkerTicket(
-    (connection, workerId) =>
-      requireBoothJobForCompletionByCurrentAssignment(
-        workerId,
-        ticketNoParam,
-        boothCodeParam,
-        connection,
-      ),
-    body,
-    auth,
-  );
-}
-
-// Function จบงาน worker assignment ticket โดยดึง ticket_no/boothCode จาก body
+// Function Worker ส่งยอดปิด Booth — ticket_no/boothCode มาจาก body ส่วน TicketNumber resolve จาก assignment
+// ปัจจุบันของ worker เอง (ไม่รับจาก client) TicketNo ยังต้องส่งมาเพราะ boothCode ไม่ unique ข้าม Business Ticket
 export async function completeWorkerAssignmentTicketFromBody(
-  body: unknown,
-  auth?: AccessTokenPayload,
-): Promise<TicketCompletionResponse> {
-  const parsedBody = body as { ticket_no?: unknown; boothCode?: unknown } | null;
-
-  return completeWorkerAssignmentTicket(
-    parsedBody?.ticket_no,
-    parsedBody?.boothCode,
-    body,
-    auth,
-  );
-}
-
-// Function จบงาน resolved worker ticket ใน service flow
-async function completeResolvedWorkerTicket(
-  findTicket: (
-    connection: DbConnection,
-    workerId: number,
-  ) => Promise<BoothJobDto | null>,
   body: unknown,
   auth?: AccessTokenPayload,
 ): Promise<TicketCompletionResponse> {
@@ -1816,7 +1756,13 @@ async function completeResolvedWorkerTicket(
   const input = parseWithSchema(workerTicketCompleteBodySchema, body);
   const result = await withTransaction((transaction) =>
     ticketCompletionService.submitTicketCompletion({
-      findTicket: (connection) => findTicket(connection, account.id),
+      findTicket: (connection) =>
+        requireBoothJobForCompletionByCurrentAssignment(
+          account.id,
+          input.ticket_no,
+          input.boothCode,
+          connection,
+        ),
       items: input.items,
       submittedByAccountId: account.id,
       submittedByRole: TICKET_SUBMITTER_ROLE.WORKER,

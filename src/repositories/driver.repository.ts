@@ -93,7 +93,7 @@ export async function revokeDriverSessionById(
 // Token ดิบเลย กันหลุดตรงๆ ถ้า DB รั่ว โดยคืน Token ดิบให้ Caller ครั้งเดียวตอนสร้างเท่านั้น (เหมือน Refresh Token)
 export async function createDriverSession(
   ticketJobId: number,
-  deviceId: string | null,
+  deviceId: string,
   expiresAt: Date,
   connection?: DbConnection,
 ): Promise<DriverSessionDto & { session_token: string }> {
