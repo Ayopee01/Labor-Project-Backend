@@ -623,6 +623,8 @@ export interface AdminCancelTicketWorkerResponse {
   ticket_no: string;
   worker_code: string;
   status: string;
+  // true = ใบนี้เป็นงานสุดท้ายของ Worker บนรถ assignment จึงถูกยกเลิกตามไปด้วย (Worker กลับเป็น open_app)
+  assignment_cancelled: boolean;
 }
 
 // Type response หลังถอด Worker หนึ่งคนออกจากแค่ Booth เดียว
@@ -634,6 +636,8 @@ export interface AdminCancelTicketWorkerFromBoothResponse {
   worker_code: string;
   status: string;
   booth_cancelled: boolean;
+  // true = แผงนี้เป็นงานสุดท้ายของ Worker บนรถ assignment จึงถูกยกเลิกตามไปด้วย (Worker กลับเป็น open_app)
+  assignment_cancelled: boolean;
 }
 
 // Type response ของเส้นยกเลิกรวม (POST /vehicle-jobs/assignment/cancel)

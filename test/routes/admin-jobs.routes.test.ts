@@ -2632,6 +2632,188 @@ describe("Assignment Cancel", () => {
     assert.equal(log?.metadata?.replacement_dispatched, true);
   });
 
+  // Function สร้างทีม 2 คนที่ Scan แล้วทั้งคู่บนรถ 1 คัน Business Ticket 1 ใบ (แผงเดียว) พร้อม roster WORKING ของทั้งสองคน
+  async function setupScannedTwoWorkerTeam(seed: number) {
+    const { token: workerToken, worker: removedWorker } = await loginWorker(seed);
+    const { token: adminToken } = await loginJobAdmin(seed + 1);
+    const stayingWorker = addWorker(seed + 2);
+    const job = addDispatchableJob(seed + 3, 2);
+    const ticket = addTicketForTicketJob(job.id, seed * 10 + 4);
+    const market = state.marketJobs.find((item) => item.id === ticket.market_job_id)!;
+    const scannedAt = new Date().toISOString();
+    const removedAssignment = addPendingAssignment(seed * 10 + 5, job.id, removedWorker.id);
+    const stayingAssignment = addPendingAssignment(seed * 10 + 6, job.id, stayingWorker.id);
+
+    for (const assignment of [removedAssignment, stayingAssignment]) {
+      assignment.status = "WORKING";
+      assignment.scanned_at = scannedAt;
+      state.ticketWorkers.push({
+        id: state.nextTicketWorkerId++,
+        market_job_id: ticket.market_job_id,
+        worker_id: assignment.worker_id,
+        status: "WORKING",
+        final_earning_amount: null,
+        joined_at: scannedAt,
+        cancelled_at: null,
+        completed_at: null,
+      });
+    }
+
+    await workerQueue.markWorkerAssigned(removedWorker.id);
+
+    return {
+      workerToken,
+      adminToken,
+      removedWorker,
+      stayingWorker,
+      job,
+      ticket,
+      market,
+      removedAssignment,
+      stayingAssignment,
+    };
+  }
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no + worker_code) also cancels the assignment when that Business Ticket was the worker's last remaining work, so /workers/me/status no longer reports working", async () => {
+    const setup = await setupScannedTwoWorkerTeam(9730);
+
+    const response = await server.request("POST", "/api/admin/vehicle-jobs/assignment/cancel", {
+      token: setup.adminToken,
+      body: {
+        ticket_number: setup.job.ticket_number,
+        ticket_no: setup.market.ticket_no,
+        worker_code: setup.removedWorker.labor_code,
+        reason_code: "R001",
+        reason_text: "vendor requested",
+      },
+    });
+
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.assignmentCancelled, true);
+    assert.equal(setup.removedAssignment.status, "CANCELLED");
+    assert.equal(setup.stayingAssignment.status, "WORKING");
+    // Worker ที่ถูกถอด Scan แล้ว — ลดขนาดทีม ไม่หาคนแทน
+    assert.equal(setup.job.workers_required, 1);
+
+    const statusResponse = await server.request("GET", "/api/workers/me/status", {
+      token: setup.workerToken,
+    });
+
+    assert.equal(statusResponse.status, 200);
+    assert.equal(statusResponse.body.status, "open_app");
+
+    // แจ้ง Worker ด้วย ASSIGNMENT_CANCELLED อันเดียว (socket + FCM) ไม่ส่ง TICKET_WORKER_CANCELLED ซ้ำ
+    const cancelledEvent = state.socketEvents.find(
+      (item) => item.workerId === setup.removedWorker.id && item.event === "ASSIGNMENT_CANCELLED",
+    );
+    const payload = cancelledEvent?.payload as Record<string, unknown> | undefined;
+
+    assert.ok(cancelledEvent);
+    assert.equal(payload?.reason, "admin_removed_from_last_ticket");
+    assert.equal(payload?.ticketNo, setup.market.ticket_no);
+    assert.equal(payload?.reason_text, "vendor requested");
+    assert.equal(payload?.worker_status, "open_app");
+    assert.equal(
+      state.realtimeEvents.some(
+        (item) => (item as { type?: string }).type === "TICKET_WORKER_CANCELLED",
+      ),
+      false,
+    );
+
+    const log = state.adminActionLogs.find(
+      (item) => item.vehicle_job_id === setup.job.id && item.action_type === "ASSIGNMENT_CANCELLED",
+    );
+
+    assert.equal(log?.metadata?.source, "auto_cancel_no_remaining_work_after_ticket_worker_cancelled");
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no + boothCode + worker_code) also cancels the assignment when that booth was the worker's last remaining work, while the booth stays open for the remaining worker", async () => {
+    const setup = await setupScannedTwoWorkerTeam(9740);
+
+    const response = await server.request("POST", "/api/admin/vehicle-jobs/assignment/cancel", {
+      token: setup.adminToken,
+      body: {
+        ticket_number: setup.job.ticket_number,
+        ticket_no: setup.market.ticket_no,
+        boothCode: setup.ticket.boothCode,
+        worker_code: setup.removedWorker.labor_code,
+        reason_code: "test",
+      },
+    });
+
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.boothCancelled, false);
+    assert.equal(response.body.assignmentCancelled, true);
+    assert.equal(setup.removedAssignment.status, "CANCELLED");
+    assert.equal(setup.stayingAssignment.status, "WORKING");
+    assert.notEqual(setup.ticket.status, "CANCELLED");
+    assert.equal(setup.job.workers_required, 1);
+
+    const statusResponse = await server.request("GET", "/api/workers/me/status", {
+      token: setup.workerToken,
+    });
+
+    assert.equal(statusResponse.body.status, "open_app");
+
+    const cancelledEvent = state.socketEvents.find(
+      (item) => item.workerId === setup.removedWorker.id && item.event === "ASSIGNMENT_CANCELLED",
+    );
+    const payload = cancelledEvent?.payload as Record<string, unknown> | undefined;
+
+    assert.equal(payload?.reason, "admin_removed_from_last_booth");
+    assert.equal(payload?.boothCode, setup.ticket.boothCode);
+    assert.equal(
+      state.realtimeEvents.some(
+        (item) => (item as { type?: string }).type === "TICKET_WORKER_CANCELLED_FROM_BOOTH",
+      ),
+      false,
+    );
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + ticket_no + boothCode + worker_code) leaves the assignment untouched when the worker still has another open Business Ticket on the same vehicle", async () => {
+    const setup = await setupScannedTwoWorkerTeam(9750);
+    const secondTicket = addTicketForTicketJob(setup.job.id, 97509);
+
+    state.ticketWorkers.push({
+      id: state.nextTicketWorkerId++,
+      market_job_id: secondTicket.market_job_id,
+      worker_id: setup.removedWorker.id,
+      status: "WORKING",
+      final_earning_amount: null,
+      joined_at: new Date().toISOString(),
+      cancelled_at: null,
+      completed_at: null,
+    });
+
+    const response = await server.request("POST", "/api/admin/vehicle-jobs/assignment/cancel", {
+      token: setup.adminToken,
+      body: {
+        ticket_number: setup.job.ticket_number,
+        ticket_no: setup.market.ticket_no,
+        boothCode: setup.ticket.boothCode,
+        worker_code: setup.removedWorker.labor_code,
+        reason_code: "test",
+      },
+    });
+
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(response.body.assignmentCancelled, false);
+    assert.equal(setup.removedAssignment.status, "WORKING");
+    assert.equal(setup.job.workers_required, 2);
+    assert.equal(
+      state.realtimeEvents.filter(
+        (item) => (item as { type?: string }).type === "TICKET_WORKER_CANCELLED_FROM_BOOTH",
+      ).length,
+      1,
+    );
+    assert.equal(
+      state.socketEvents.some(
+        (item) => item.workerId === setup.removedWorker.id && item.event === "ASSIGNMENT_CANCELLED",
+      ),
+      false,
+    );
+  });
+
   test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number only) also pushes VEHICLE_JOB_CANCELLED to a worker whose shift already ended (moved to open_app instead of requeued)", async () => {
     const { token: adminToken } = await loginJobAdmin(9692);
     const worker = addWorker(9693);
@@ -3283,7 +3465,8 @@ describe("Assignment Cancel", () => {
     assert.equal(firstTicketWorker?.status, "CANCELLED");
     assert.ok(firstTicketWorker?.cancelled_at);
 
-    // ต่างจาก Global Cancel: Assignment ระดับรถและ Roster ของ Ticket อื่นต้องไม่ถูกแตะ
+    // ต่างจาก Global Cancel: Assignment ระดับรถและ Roster ของ Ticket อื่นต้องไม่ถูกแตะ (ยังเหลืองานใบที่สองอยู่)
+    assert.equal(response.body.assignmentCancelled, false);
     assert.equal(secondTicketWorker?.status, "WORKING");
     assert.equal(secondTicketWorker?.cancelled_at, null);
     assert.equal(assignment.status, "SCANNED");

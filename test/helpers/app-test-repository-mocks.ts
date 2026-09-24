@@ -2621,6 +2621,43 @@ export const ticketWorkerRepositoryMock = {
   listActiveScannedAssignmentWorkerIds,
   createTicketWorkersIfMissing,
   cancelDroppedTicketWorkers,
+  // Function เลียนแบบ hasRemainingWorkOnTicketJob จริง — เงื่อนไขต้องตรงกับ query ใน ticket-worker.repository.ts
+  hasRemainingWorkOnTicketJob: async (ticketJobId: number, workerId: number) =>
+    state.marketJobs
+      .filter(
+        (market) =>
+          market.vehicle_job_id === ticketJobId &&
+          market.status !== "COMPLETED" &&
+          market.status !== "CANCELLED",
+      )
+      .some((market) => {
+        const openBooths = state.boothJobs.filter(
+          (booth) =>
+            booth.market_job_id === market.id &&
+            booth.status !== "COMPLETED" &&
+            booth.status !== "CANCELLED",
+        );
+        const ticketWorker = state.ticketWorkers.find(
+          (item) => item.market_job_id === market.id && item.worker_id === workerId,
+        );
+
+        if (!ticketWorker) {
+          return !market.worker_roster_locked_at && openBooths.length > 0;
+        }
+
+        if (ticketWorker.status !== "WORKING") {
+          return false;
+        }
+
+        return openBooths.some(
+          (booth) =>
+            !state.boothJobWorkerExclusions.some(
+              (exclusion) =>
+                exclusion.gate_ticket_id === booth.id &&
+                exclusion.ticket_worker_id === ticketWorker.id,
+            ),
+        );
+      }),
   // Function ยกเลิก TicketWorker (roster) ที่ยัง WORKING ทั้งหมดของ TicketJob — ย้ายมาจาก adminJobsRepositoryMock ตาม Fix B
   cancelTicketWorkersByTicketJob: async (ticketJobId: number) => {
     const now = new Date().toISOString();

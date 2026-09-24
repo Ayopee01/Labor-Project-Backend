@@ -5449,7 +5449,7 @@
           example: CANCELLED
     AdminCancelTicketWorkerResponse:
       type: object
-      description: ยกเลิกการเป็นสมาชิกของ Worker คนหนึ่งใน Business Ticket ใบเดียว — Worker ยังคงเช็คอินอยู่บนรถและทำงาน Business Ticket ใบอื่นต่อได้ปกติ กระทบเฉพาะรายชื่อของ ticket_no ใบนี้เท่านั้น
+      description: ยกเลิกการเป็นสมาชิกของ Worker คนหนึ่งใน Business Ticket ใบเดียว — Worker ยังคงเช็คอินอยู่บนรถและทำงาน Business Ticket ใบอื่นต่อได้ปกติ กระทบเฉพาะรายชื่อของ ticket_no ใบนี้เท่านั้น ยกเว้นใบนี้เป็นงานสุดท้ายของ Worker บนรถ ระบบจะยกเลิก assignment ตามไปด้วย (AssignmentCancelled = true, Worker กลับเป็น open_app)
       properties:
         message:
           type: string
@@ -5470,9 +5470,13 @@
           type: string
           description: สถานะปัจจุบันของข้อมูลนี้
           example: CANCELLED
+        assignment_cancelled:
+          type: boolean
+          description: true เมื่อไม่เหลืองานที่ Worker ทำได้บนรถคันนี้แล้ว ระบบจึงยกเลิก assignment ตามไปด้วย (ไม่หาคนแทนถ้า Worker Scan แล้ว)
+          example: false
     AdminCancelTicketWorkerFromBoothResponse:
       type: object
-      description: ถอด Worker คนหนึ่งออกจากตัวหารค่าแรงของแผงค้าเดียว (WorkerSnapshot ตอนยืนยัน) — ไม่แตะ TicketWorker.status เพราะฉะนั้น Worker ยังคงอยู่สถานะ WORKING ในส่วนที่เหลือของ Business Ticket และทำงานแผงค้าอื่นในใบนี้ต่อได้ปกติ
+      description: ถอด Worker คนหนึ่งออกจากตัวหารค่าแรงของแผงค้าเดียว (WorkerSnapshot ตอนยืนยัน) — ไม่แตะ TicketWorker.status เพราะฉะนั้น Worker ยังคงอยู่สถานะ WORKING ในส่วนที่เหลือของ Business Ticket และทำงานแผงค้าอื่นในใบนี้ต่อได้ปกติ ยกเว้นแผงนี้เป็นงานสุดท้ายของ Worker บนรถ ระบบจะยกเลิก assignment ตามไปด้วย (AssignmentCancelled = true, Worker กลับเป็น open_app)
       properties:
         message:
           type: string
@@ -5497,6 +5501,14 @@
           type: string
           description: สถานะปัจจุบันของข้อมูลนี้
           example: CANCELLED
+        booth_cancelled:
+          type: boolean
+          description: true เมื่อถอด Worker คนสุดท้ายของแผงนี้ออก แผงจึงถูกยกเลิกอัตโนมัติ
+          example: false
+        assignment_cancelled:
+          type: boolean
+          description: true เมื่อไม่เหลืองานที่ Worker ทำได้บนรถคันนี้แล้ว ระบบจึงยกเลิก assignment ตามไปด้วย (ไม่หาคนแทนถ้า Worker Scan แล้ว)
+          example: false
     WorkerQueueEntry:
       type: object
       properties:

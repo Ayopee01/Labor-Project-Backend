@@ -2,7 +2,7 @@
 import { Prisma } from "@prisma/client";
 
 // Import Config
-import { SCANNED_ASSIGNMENT_STATUSES, TICKET_WORKER_STATUS } from "../../constants/status";
+import { SCANNED_ASSIGNMENT_STATUSES, TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_WORKER_STATUS } from "../../constants/status";
 // Import Mappers
 import { mapTicketWorker } from "./mappers";
 import { client } from "./repository-utils";
@@ -210,4 +210,69 @@ export async function cancelTicketWorkerForMarketJob(
   });
 
   return result.count === 1;
+}
+
+// Function เช็คว่า Worker ยังมีงานที่ทำได้เหลืออยู่บน TicketJob นี้หรือไม่ (ใช้หลัง Admin ถอด Worker ออกจาก Business Ticket/Booth
+// เพื่อตัดสินว่าต้องยกเลิก assignment ต่อหรือไม่) — นับเป็นงานเหลือเมื่อมี Business Ticket ที่ยังไม่ปิดซึ่ง:
+// - Worker ยังเป็น roster WORKING และมีแผงที่ยังไม่ปิด (รวม DELIVERED/REJECT ที่รอผล Vendor) ที่ไม่ได้ถูกถอดออกอย่างน้อย 1 แผง หรือ
+// - Worker ยังไม่มีแถว roster เลยแต่ roster ยังไม่ Lock (ระบบจะ sync เพิ่มเข้าไปภายหลัง) และมีแผงที่ยังไม่ปิด
+export async function hasRemainingWorkOnTicketJob(
+  ticketJobId: number,
+  workerId: number,
+  connection?: DbConnection,
+): Promise<boolean> {
+  const db = client(connection);
+  const marketJobs = await db.marketJob.findMany({
+    where: {
+      ticketJobId,
+      status: {
+        notIn: TERMINAL_JOB_STATUSES,
+      },
+    },
+    select: {
+      workerRosterLockedAt: true,
+      ticketWorkers: {
+        where: {
+          workerId,
+        },
+        select: {
+          id: true,
+          status: true,
+        },
+      },
+      tickets: {
+        where: {
+          status: {
+            notIn: TERMINAL_TICKET_STATUSES,
+          },
+        },
+        select: {
+          workerExclusions: {
+            select: {
+              ticketWorkerId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  return marketJobs.some((marketJob) => {
+    const ticketWorker = marketJob.ticketWorkers[0];
+
+    if (!ticketWorker) {
+      return marketJob.workerRosterLockedAt === null && marketJob.tickets.length > 0;
+    }
+
+    if (ticketWorker.status !== TICKET_WORKER_STATUS.WORKING) {
+      return false;
+    }
+
+    return marketJob.tickets.some(
+      (booth) =>
+        !booth.workerExclusions.some(
+          (exclusion) => exclusion.ticketWorkerId === ticketWorker.id,
+        ),
+    );
+  });
 }
