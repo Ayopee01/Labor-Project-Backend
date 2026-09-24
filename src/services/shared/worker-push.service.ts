@@ -24,9 +24,10 @@ import { logger } from "../../utils/logger";
 // Config จำนวน token สูงสุดต่อ batch ของ Firebase Admin SDK
 const FCM_MULTICAST_LIMIT = 500;
 
-// Config error ของ Firebase ที่หมายถึง token ใน DB ควรถูกเพิกถอน
+// Config error ของ Firebase ที่หมายถึง token ใน DB ควรถูกเพิกถอน — เฉพาะ error ที่ชี้ว่า token เสียจริงเท่านั้น
+// ห้ามใส่ messaging/invalid-argument เพราะเกิดจาก payload ผิดรูปแบบได้ด้วย (ไม่ใช่ token เสีย) ถ้า revoke ตอนนั้น
+// Worker จะไม่ได้ push อะไรอีกเลยจนกว่าจะ login ใหม่ ทั้งที่ token ยังใช้ได้อยู่
 const INVALID_FCM_ERROR_CODES = new Set([
-  "messaging/invalid-argument",
   "messaging/registration-token-not-registered",
   "messaging/invalid-registration-token",
 ]);
@@ -201,6 +202,11 @@ async function sendWorkerPushNotification(
   );
 
   if (tokens.length === 0) {
+    // ไม่มี Delivery Log ในกรณีนี้ (ยังไม่เริ่มส่ง) จึงต้อง log ไว้ ไม่งั้นไล่ปัญหาไม่ได้ว่าทำไม Worker ไม่ได้รับ push
+    logger.warn("Worker push skipped because there is no active push token.", {
+      workerCodes: input.worker_codes,
+      type: input.type,
+    });
     return;
   }
 
@@ -245,6 +251,8 @@ async function sendWorkerPushNotificationToTokens(
 
   let hadChunkFailure = false;
   let lastErrorMessage: string | null = null;
+  let successCount = 0;
+  const failedErrorCodes: string[] = [];
 
   for (const tokenChunk of chunk(tokens, FCM_MULTICAST_LIMIT)) {
     try {
@@ -271,13 +279,33 @@ async function sendWorkerPushNotificationToTokens(
 
       const invalidTokenHashesInChunk: string[] = [];
 
+      successCount += response.successCount;
+
+      // sendEachForMulticast ไม่ throw เมื่อส่งไม่สำเร็จรายเครื่อง ต้องเก็บ error รายเครื่องเอง ไม่งั้น Delivery Log
+      // จะเป็น SENT ทั้งที่ FCM ปฏิเสธทุกเครื่อง
       response.responses.forEach((sendResponse, index) => {
         const errorCode = sendResponse.error?.code;
 
-        if (errorCode && INVALID_FCM_ERROR_CODES.has(errorCode)) {
+        if (!errorCode) {
+          return;
+        }
+
+        failedErrorCodes.push(errorCode);
+        lastErrorMessage = sendResponse.error?.message ?? errorCode;
+
+        if (INVALID_FCM_ERROR_CODES.has(errorCode)) {
           invalidTokenHashesInChunk.push(tokenChunk[index]?.fcm_token_hash ?? "");
         }
       });
+
+      if (response.failureCount > 0) {
+        logger.warn("FCM rejected push notification for some tokens.", {
+          type: input.type,
+          workerCodes: input.worker_codes,
+          failureCount: response.failureCount,
+          errorCodes: [...new Set(failedErrorCodes)],
+        });
+      }
 
       // Revoke Token ที่ไม่ถูกต้องของ Chunk นี้ทันที ไม่รอสะสม เพื่อไม่เสีย Progress ถ้า Chunk ถัดไป Throw
       if (invalidTokenHashesInChunk.length > 0) {
@@ -295,10 +323,15 @@ async function sendWorkerPushNotificationToTokens(
     }
   }
 
+  // FAILED เมื่อมี chunk ล้มทั้งก้อน หรือไม่มีเครื่องไหนส่งสำเร็จเลย — ส่งสำเร็จบางเครื่องถือว่า SENT แต่เก็บ error ล่าสุดไว้ดู
+  const deliveryFailed = hadChunkFailure || successCount === 0;
+
   await updateMessageDeliveryLogStatus(
     deliveryLogId,
-    hadChunkFailure ? MESSAGE_DELIVERY_STATUS.FAILED : MESSAGE_DELIVERY_STATUS.SENT,
-    lastErrorMessage,
+    deliveryFailed ? MESSAGE_DELIVERY_STATUS.FAILED : MESSAGE_DELIVERY_STATUS.SENT,
+    failedErrorCodes.length > 0
+      ? `${lastErrorMessage} (error codes: ${[...new Set(failedErrorCodes)].join(", ")})`
+      : lastErrorMessage,
   );
 }
 

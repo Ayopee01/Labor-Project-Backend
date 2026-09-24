@@ -125,6 +125,7 @@ export type TicketJobRecord = {
   license_plate_province: string | null;
   vehicle_type: string | null;
   workers_required: number;
+  removed_after_scan_count?: number;
   dispatch_now: boolean;
   status: string;
   work_started_at?: string | null;

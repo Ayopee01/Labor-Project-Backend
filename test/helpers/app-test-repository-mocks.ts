@@ -821,16 +821,21 @@ export const workerApplicationRepositoryMock = {
     job.dispatch_now = dispatchNow;
     job.status = status;
 
+    if (!dispatchNow) {
+      job.removed_after_scan_count = 0;
+    }
+
     return job;
   },
-  decrementTicketJobWorkersRequired: async (ticketJobId: number) => {
+  incrementTicketJobRemovedAfterScanCount: async (ticketJobId: number) => {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);
+    const removedCount = job?.removed_after_scan_count ?? 0;
 
-    if (!job || job.workers_required <= 1) {
+    if (!job || job.workers_required - removedCount <= 1) {
       return false;
     }
 
-    job.workers_required -= 1;
+    job.removed_after_scan_count = removedCount + 1;
 
     return true;
   },
@@ -883,6 +888,10 @@ export const workerApplicationRepositoryMock = {
   getVehicleWorkReadiness: async (ticketJobId: number) => {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);
     const workersRequired = job?.workers_required ?? 0;
+    const effectiveWorkersRequired = Math.max(
+      0,
+      workersRequired - (job?.removed_after_scan_count ?? 0),
+    );
     const checkedInCount = state.assignments.filter(
       (assignment) =>
         assignment.vehicle_job_id === ticketJobId &&
@@ -892,8 +901,8 @@ export const workerApplicationRepositoryMock = {
     return {
       workers_required: workersRequired,
       checked_in_count: checkedInCount,
-      remaining_count: Math.max(0, workersRequired - checkedInCount),
-      is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+      remaining_count: Math.max(0, effectiveWorkersRequired - checkedInCount),
+      is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
     };
   },
   getTicketJobTeamScanReadinessBatch: async (ticketJobIds: number[]) => {
@@ -901,6 +910,10 @@ export const workerApplicationRepositoryMock = {
     for (const ticketJobId of ticketJobIds) {
       const job = state.ticketJobs.find((item) => item.id === ticketJobId);
       const workersRequired = job?.workers_required ?? 0;
+      const effectiveWorkersRequired = Math.max(
+        0,
+        workersRequired - (job?.removed_after_scan_count ?? 0),
+      );
       const checkedInCount = state.assignments.filter(
         (assignment) =>
           assignment.vehicle_job_id === ticketJobId &&
@@ -909,8 +922,8 @@ export const workerApplicationRepositoryMock = {
       map.set(ticketJobId, {
         workers_required: workersRequired,
         checked_in_count: checkedInCount,
-        remaining_count: Math.max(0, workersRequired - checkedInCount),
-        is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+        remaining_count: Math.max(0, effectiveWorkersRequired - checkedInCount),
+        is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
         ticket_number: job?.ticket_number ?? null,
       });
     }
@@ -919,6 +932,10 @@ export const workerApplicationRepositoryMock = {
   getTicketJobTeamScanReadiness: async (ticketJobId: number) => {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);
     const workersRequired = job?.workers_required ?? 0;
+    const effectiveWorkersRequired = Math.max(
+      0,
+      workersRequired - (job?.removed_after_scan_count ?? 0),
+    );
     const checkedInCount = state.assignments.filter(
       (assignment) =>
         assignment.vehicle_job_id === ticketJobId &&
@@ -928,8 +945,8 @@ export const workerApplicationRepositoryMock = {
     return {
       workers_required: workersRequired,
       checked_in_count: checkedInCount,
-      remaining_count: Math.max(0, workersRequired - checkedInCount),
-      is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+      remaining_count: Math.max(0, effectiveWorkersRequired - checkedInCount),
+      is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
     };
   },
   activateNextTicketIfReady: async (ticketJobId: number) =>
@@ -2083,7 +2100,7 @@ const {
   rejectTicketCompletion,
   scanAssignment,
   setTicketJobDispatch,
-  decrementTicketJobWorkersRequired,
+  incrementTicketJobRemovedAfterScanCount,
   findMarketJobRosterLockState,
   listActiveScannedAssignmentWorkerIds,
   createTicketWorkersIfMissing,
@@ -2253,6 +2270,7 @@ export const driverRepositoryMock = {
       licensePlateProvince: job.license_plate_province,
       vehicleType: job.vehicle_type,
       workersRequired: job.workers_required,
+      removedAfterScanCount: job.removed_after_scan_count ?? 0,
       dispatchNow: job.dispatch_now,
       status: job.status,
       workStartedAt: job.work_started_at ? new Date(job.work_started_at) : null,
@@ -2358,7 +2376,7 @@ export const ticketJobRepositoryMock = {
   findTicketJobLifecycleState,
   updateTicketJobStatus,
   setTicketJobDispatch,
-  decrementTicketJobWorkersRequired,
+  incrementTicketJobRemovedAfterScanCount,
   // Function ยกเลิก TicketJob พร้อม cascade MarketJob/BoothJob ที่ยังไม่ terminal — ย้ายมาจาก adminJobsRepositoryMock ตาม Fix B
   cancelTicketJobWithCascade: async (ticketJobId: number) => {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);

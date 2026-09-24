@@ -242,6 +242,7 @@ export function mapTicketJob(record: TicketJob | null): TicketJobDto | null {
     license_plate_province: record.licensePlateProvince,
     vehicle_type: record.vehicleType,
     workers_required: record.workersRequired,
+    removed_after_scan_count: record.removedAfterScanCount,
     dispatch_now: record.dispatchNow,
     status: record.status,
     work_started_at: record.workStartedAt ? toIsoString(record.workStartedAt) : null,

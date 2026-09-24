@@ -2508,7 +2508,7 @@ describe("Assignment Cancel", () => {
     assert.equal(payload?.queue?.status, "open_app");
   });
 
-  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) of a worker who already scanned in shrinks the team instead of dispatching a replacement, so the remaining team keeps working and can submit right away", async () => {
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) of a worker who already scanned in keeps workers_required unchanged but does not dispatch a replacement, so the remaining team keeps working and can submit right away", async () => {
     const { token: workerToken, worker: stayingWorker } = await loginWorker(9710);
     const { token: adminToken } = await loginJobAdmin(9711);
     const cancelledWorker = addWorker(9712);
@@ -2540,7 +2540,9 @@ describe("Assignment Cancel", () => {
     assert.equal(response.status, 200, JSON.stringify(response.body));
     assert.equal(cancelledAssignment.status, "CANCELLED");
     assert.equal(stayingAssignment.status, "WORKING");
-    assert.equal(job.workers_required, 1);
+    // workers_required คงเดิม แต่นับคนที่ถูกถอดหลัง Scan แยกไว้ ระบบจึงไม่หาคนแทนเอง
+    assert.equal(job.workers_required, 2);
+    assert.equal(job.removed_after_scan_count, 1);
     assert.equal(
       state.assignments.some((item) => item.worker_id === queuedWorker.id),
       false,
@@ -2558,8 +2560,7 @@ describe("Assignment Cancel", () => {
     );
 
     assert.equal(log?.metadata?.replacement_dispatched, false);
-    assert.equal(log?.metadata?.workers_required_before, 2);
-    assert.equal(log?.metadata?.workers_required_after, 1);
+    assert.equal(log?.metadata?.workers_required, 2);
 
     // Admin เพิ่มคนเข้าไปเองได้ตาม flow ปกติ (ได้ assignment PENDING ต้องกดรับ/Scan เอง) และไม่ทำให้ทีมเดิมถูกหยุด
     const assignResponse = await server.request(
@@ -2620,6 +2621,7 @@ describe("Assignment Cancel", () => {
 
     assert.equal(response.status, 200, JSON.stringify(response.body));
     assert.equal(job.workers_required, 1);
+    assert.equal(job.removed_after_scan_count ?? 0, 0);
     assert.equal(
       state.assignments.find((item) => item.worker_id === queuedWorker.id)?.status,
       "PENDING",
@@ -2692,8 +2694,9 @@ describe("Assignment Cancel", () => {
     assert.equal(response.body.assignmentCancelled, true);
     assert.equal(setup.removedAssignment.status, "CANCELLED");
     assert.equal(setup.stayingAssignment.status, "WORKING");
-    // Worker ที่ถูกถอด Scan แล้ว — ลดขนาดทีม ไม่หาคนแทน
-    assert.equal(setup.job.workers_required, 1);
+    // Worker ที่ถูกถอด Scan แล้ว — workers_required คงเดิม ไม่หาคนแทน
+    assert.equal(setup.job.workers_required, 2);
+    assert.equal(setup.job.removed_after_scan_count, 1);
 
     const statusResponse = await server.request("GET", "/api/workers/me/status", {
       token: setup.workerToken,
@@ -2747,7 +2750,8 @@ describe("Assignment Cancel", () => {
     assert.equal(setup.removedAssignment.status, "CANCELLED");
     assert.equal(setup.stayingAssignment.status, "WORKING");
     assert.notEqual(setup.ticket.status, "CANCELLED");
-    assert.equal(setup.job.workers_required, 1);
+    assert.equal(setup.job.workers_required, 2);
+    assert.equal(setup.job.removed_after_scan_count, 1);
 
     const statusResponse = await server.request("GET", "/api/workers/me/status", {
       token: setup.workerToken,
@@ -2800,6 +2804,7 @@ describe("Assignment Cancel", () => {
     assert.equal(response.body.assignmentCancelled, false);
     assert.equal(setup.removedAssignment.status, "WORKING");
     assert.equal(setup.job.workers_required, 2);
+    assert.equal(setup.job.removed_after_scan_count ?? 0, 0);
     assert.equal(
       state.realtimeEvents.filter(
         (item) => (item as { type?: string }).type === "TICKET_WORKER_CANCELLED_FROM_BOOTH",
@@ -5833,6 +5838,10 @@ describe("Vehicle Job Wait", () => {
 
     // Worker คนอื่นที่ต่อคิวไว้ก่อนแล้ว ใช้พิสูจน์ว่าทีมที่ถูกคืนเข้าคิวไปอยู่ "หน้าสุด" จริง ไม่ใช่ต่อท้าย
     await workerQueue.enqueueWorker(bystander.id);
+    // จำลองว่าทีมตั้งต้น 3 คนและเคยมีคนถูก Admin ถอดออกหลัง Scan ไปแล้ว 1 คน (ต้องมีจริง 2 คน Scan แล้ว 1 ทีมจึงยังไม่พร้อม)
+    // — ปิด dispatch ต้องล้างค่านี้ ให้ทีมรอบใหม่ได้คนครบตามจำนวนเดิม
+    job.workers_required = 3;
+    job.removed_after_scan_count = 1;
 
     const response = await server.request(
       "POST",
@@ -5857,6 +5866,7 @@ describe("Vehicle Job Wait", () => {
     );
     assert.equal(job.status, "WAIT");
     assert.equal(job.dispatch_now, false);
+    assert.equal(job.removed_after_scan_count, 0);
     assert.equal(assignment1.status, "CANCELLED");
     assert.equal(assignment2.status, "CANCELLED");
     // Booth ต้องไม่ถูกแตะ เพราะยังไม่มีใครเริ่มส่งยอดเลย (ยังเป็น WAIT อยู่แล้วตั้งแต่แรก)

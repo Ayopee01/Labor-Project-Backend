@@ -7,6 +7,8 @@ import * as workerAssignmentEventRepository from "./worker-assignment-event.repo
 // Import Mappers
 import { mapTicketJobAssignment } from "./mappers";
 import { client, requireDto } from "./repository-utils";
+// Import Utils
+import { resolveEffectiveWorkersRequired } from "../../utils/team-requirement";
 // Import Types
 import type { DbConnection } from "../../types/shared/common.type";
 import type { WorkerAssignmentEventType } from "../../types/shared/worker-assignment-event.type";
@@ -277,6 +279,7 @@ export async function getTicketJobTeamScanReadiness(
 ): Promise<VehicleWorkReadinessDto> {
   const db = client(connection);
   // เทียบกับ workersRequired ไม่ใช่จำนวน assignment ที่สร้างจริง กันเข้าใจผิดว่าทีมพร้อมทั้งที่ dispatch ยังหา worker ไม่ครบ
+  // (หักจำนวนที่ Admin ถอดออกหลัง Scan แล้ว — ดู resolveEffectiveWorkersRequired)
   const [ticketJob, checkedInCount] = await Promise.all([
     db.ticketJob.findUnique({
       where: {
@@ -284,6 +287,7 @@ export async function getTicketJobTeamScanReadiness(
       },
       select: {
         workersRequired: true,
+        removedAfterScanCount: true,
       },
     }),
     db.ticketJobAssignment.count({
@@ -296,13 +300,17 @@ export async function getTicketJobTeamScanReadiness(
     }),
   ]);
   const workersRequired = ticketJob?.workersRequired ?? 0;
-  const remainingCount = Math.max(0, workersRequired - checkedInCount);
+  const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+    workersRequired,
+    ticketJob?.removedAfterScanCount,
+  );
+  const remainingCount = Math.max(0, effectiveWorkersRequired - checkedInCount);
 
   return {
     workers_required: workersRequired,
     checked_in_count: checkedInCount,
     remaining_count: remainingCount,
-    is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+    is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
   };
 }
 
@@ -325,6 +333,7 @@ export async function getTicketJobTeamScanReadinessBatch(
         id: true,
         ticketNumber: true,
         workersRequired: true,
+        removedAfterScanCount: true,
       },
     }),
     db.ticketJobAssignment.groupBy({
@@ -348,14 +357,18 @@ export async function getTicketJobTeamScanReadinessBatch(
   const map = new Map<number, VehicleWorkReadinessDto & { ticket_number: string | null }>();
   for (const ticketJob of ticketJobs) {
     const workersRequired = ticketJob.workersRequired ?? 0;
+    const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+      workersRequired,
+      ticketJob.removedAfterScanCount,
+    );
     const checkedInCount = scannedCountMap.get(ticketJob.id) ?? 0;
-    const remainingCount = Math.max(0, workersRequired - checkedInCount);
+    const remainingCount = Math.max(0, effectiveWorkersRequired - checkedInCount);
 
     map.set(ticketJob.id, {
       workers_required: workersRequired,
       checked_in_count: checkedInCount,
       remaining_count: remainingCount,
-      is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+      is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
       ticket_number: ticketJob.ticketNumber,
     });
   }

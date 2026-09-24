@@ -123,6 +123,8 @@ export interface TicketJobDto {
   license_plate_province: string | null;
   vehicle_type: string | null;
   workers_required: number;
+  // จำนวน Worker ที่ Admin ถอดออกหลัง Scan แล้ว — dispatch/ความพร้อมทีมใช้ workers_required - ค่านี้
+  removed_after_scan_count: number;
   dispatch_now: boolean;
   status: string;
   work_started_at: string | null;

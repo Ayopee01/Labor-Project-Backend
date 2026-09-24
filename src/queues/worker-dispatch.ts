@@ -32,6 +32,7 @@ import { buildWorkScheduleShiftInstanceKey, getWorkScheduleShiftEndDelayMs, isTi
 import { buildTicketCompletionResultExtraFields, buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { logger } from "../utils/logger";
 import { buildDeadline, getDelayUntil } from "../utils/time";
+import { resolveEffectiveWorkersRequired } from "../utils/team-requirement";
 import { buildWorkerAssignedPayload, buildWorkerQueueSocketPayload } from "../utils/worker-payload";
 import { ASSIGNMENT_STATUS, SUBMITTED_TICKET_STATUSES, TERMINAL_JOB_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS, WORKER_OPEN_APP_REASON } from "../constants/status";
 
@@ -138,7 +139,12 @@ async function createDispatchAssignments(
     ticketJob.id,
     connection
   );
-  let workersNeeded = ticketJob.workers_required - activeAssignments;
+  // หักจำนวนที่ Admin ถอดออกหลัง Scan แล้ว ระบบจึงไม่หาคนแทนให้เอง (Admin เพิ่มคนเองผ่าน assign-workers ได้)
+  let workersNeeded =
+    resolveEffectiveWorkersRequired(
+      ticketJob.workers_required,
+      ticketJob.removed_after_scan_count,
+    ) - activeAssignments;
   const createdAssignments: DispatchCreatedAssignment[] = [];
 
   // ลูปจบเสมอ: Worker ทุกคนที่ pop มาจะถูกสร้าง assignment (workersNeeded ลดลง) หรือถูกย้ายออกจากคิว

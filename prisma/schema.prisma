@@ -245,21 +245,23 @@ model GateRequestLog {
 }
 
 model TicketJob {
-  id                   Int       @id @default(autoincrement())
-  ticketNumber         String    @unique @map("ticket_number") @db.VarChar(100)
-  licensePlate         String    @map("license_plate") @db.VarChar(50)
-  licensePlateProvince String?   @map("license_plate_province") @db.VarChar(100)
-  vehicleType          String?   @map("vehicle_type") @db.VarChar(100)
-  workersRequired      Int       @map("workers_required")
-  dispatchNow          Boolean   @default(false) @map("dispatch_now")
-  status               String    @default("WAIT") @db.VarChar(30)
-  workStartedAt        DateTime? @map("work_started_at") @db.Timestamp(3)
-  driverQrToken        String    @unique @map("driver_qr_token") @db.VarChar(255)
-  expectedTicketCount  Int?      @map("expected_ticket_count")
-  ticketsClosedAt      DateTime? @map("tickets_closed_at") @db.Timestamp(3)
-  completedAt          DateTime? @map("completed_at") @db.Timestamp(3)
-  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamp(3)
-  updatedAt            DateTime  @updatedAt @map("updated_at") @db.Timestamp(3)
+  id                    Int       @id @default(autoincrement())
+  ticketNumber          String    @unique @map("ticket_number") @db.VarChar(100)
+  licensePlate          String    @map("license_plate") @db.VarChar(50)
+  licensePlateProvince  String?   @map("license_plate_province") @db.VarChar(100)
+  vehicleType           String?   @map("vehicle_type") @db.VarChar(100)
+  workersRequired       Int       @map("workers_required")
+  // จำนวน Worker ที่ Admin ถอดออกหลัง Scan แล้ว — dispatch/ความพร้อมทีมใช้ workersRequired - ค่านี้ (ไม่หาคนแทน)
+  removedAfterScanCount Int       @default(0) @map("removed_after_scan_count")
+  dispatchNow           Boolean   @default(false) @map("dispatch_now")
+  status                String    @default("WAIT") @db.VarChar(30)
+  workStartedAt         DateTime? @map("work_started_at") @db.Timestamp(3)
+  driverQrToken         String    @unique @map("driver_qr_token") @db.VarChar(255)
+  expectedTicketCount   Int?      @map("expected_ticket_count")
+  ticketsClosedAt       DateTime? @map("tickets_closed_at") @db.Timestamp(3)
+  completedAt           DateTime? @map("completed_at") @db.Timestamp(3)
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamp(3)
+  updatedAt             DateTime  @updatedAt @map("updated_at") @db.Timestamp(3)
 
   gateRequests     GateRequestLog[]
   marketJobs       MarketJob[]

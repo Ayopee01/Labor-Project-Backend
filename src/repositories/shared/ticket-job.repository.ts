@@ -8,6 +8,8 @@ import { countScannedAssignments } from "./ticket-job-assignment.repository";
 // Import Mappers
 import { mapBoothJob, mapMarketJob, mapTicketProduct, mapTicketJob } from "./mappers";
 import { client, requireDto } from "./repository-utils";
+// Import Utils
+import { resolveEffectiveWorkersRequired } from "../../utils/team-requirement";
 // Import Types
 import type { DbConnection } from "../../types/shared/common.type";
 import type { CurrentTicketProgressDto, TicketJobDetailResponse, TicketJobDto, VehicleWorkReadinessDto } from "../../types/worker.type";
@@ -238,20 +240,26 @@ export async function getVehicleWorkReadiness(
     },
     select: {
       workersRequired: true,
+      removedAfterScanCount: true,
     },
   });
   const workersRequired = ticketJob?.workersRequired ?? 0;
+  // หักจำนวนที่ Admin ถอดออกหลัง Scan แล้ว ทีมที่เหลือจึงส่งยอดได้โดยไม่ต้องรอคนแทน (ดู resolveEffectiveWorkersRequired)
+  const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+    workersRequired,
+    ticketJob?.removedAfterScanCount,
+  );
   const checkedInCount = await countScannedAssignments(
     ticketJobId,
     connection,
   );
-  const remainingCount = Math.max(0, workersRequired - checkedInCount);
+  const remainingCount = Math.max(0, effectiveWorkersRequired - checkedInCount);
 
   return {
     workers_required: workersRequired,
     checked_in_count: checkedInCount,
     remaining_count: remainingCount,
-    is_ready: workersRequired > 0 && checkedInCount >= workersRequired,
+    is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
   };
 }
 
@@ -388,32 +396,30 @@ export async function setTicketJobDispatch(
     data: {
       dispatchNow,
       status,
+      // ปิด dispatch = คืนทั้งทีมเข้าคิวเริ่มใหม่ ล้างจำนวนที่เคยถอดออกหลัง Scan ด้วย เปิด dispatch อีกครั้งจึงได้คนครบตามเดิม
+      ...(dispatchNow ? {} : { removedAfterScanCount: 0 }),
     },
   });
 
   return requireDto(mapTicketJob(ticketJob), "vehicle job dispatch update");
 }
 
-// Function ลด workersRequired ของ TicketJob ลง 1 เมื่อ Admin ยกเลิก Worker ที่ Scan เข้าทำงานแล้ว (ไม่หาคนแทน)
-// เขียนแบบมีเงื่อนไขในคำสั่งเดียว ไม่ให้ต่ำกว่า 1 — คืน false ถ้าเหลือ 1 อยู่แล้ว (caller ต้องปล่อยให้ dispatch หาคนแทนตามปกติ)
-export async function decrementTicketJobWorkersRequired(
+// Function นับเพิ่มจำนวน Worker ที่ Admin ถอดออกหลัง Scan แล้ว 1 คน (workers_required คงเดิม ไม่หาคนแทน)
+// เขียนแบบมีเงื่อนไขในคำสั่งเดียว ให้จำนวนที่ต้องมีจริง (workers_required - removed_after_scan_count) ไม่ต่ำกว่า 1 —
+// คืน false ถ้าเหลือ 1 อยู่แล้ว (caller ต้องปล่อยให้ dispatch หาคนแทนตามปกติ เพราะรถต้องมีคนอย่างน้อย 1)
+export async function incrementTicketJobRemovedAfterScanCount(
   ticketJobId: number,
   connection?: DbConnection,
 ): Promise<boolean> {
   const db = client(connection);
-  const result = await db.ticketJob.updateMany({
-    where: {
-      id: ticketJobId,
-      workersRequired: {
-        gt: 1,
-      },
-    },
-    data: {
-      workersRequired: {
-        decrement: 1,
-      },
-    },
-  });
+  // เทียบสองคอลัมน์ใน WHERE เดียวกัน Prisma updateMany ทำไม่ได้ จึงใช้ raw SQL ให้ยังเป็น atomic update
+  const updatedCount = await db.$executeRaw`
+    UPDATE ticket_jobs
+    SET removed_after_scan_count = removed_after_scan_count + 1,
+        updated_at = NOW()
+    WHERE id = ${ticketJobId}
+      AND workers_required - removed_after_scan_count > 1
+  `;
 
-  return result.count > 0;
+  return updatedCount > 0;
 }

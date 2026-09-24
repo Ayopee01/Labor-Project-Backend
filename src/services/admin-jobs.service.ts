@@ -2061,12 +2061,13 @@ async function cancelAssignmentInTransaction(
     );
   }
 
-  // Worker ที่ Scan เข้าทำงานแล้ว (SCANNED/WORKING/ส่งยอดแล้ว) ถูกยกเลิก = ลดขนาดทีมลง ไม่หาคนแทน ทีมที่เหลือ
-  // ทำงาน/ส่งยอดต่อได้ทันที (จำนวนที่ Scan กับ workers_required ลดลงเท่ากัน ความพร้อมของทีมจึงไม่เปลี่ยน)
-  // ถ้า workers_required เหลือ 1 อยู่แล้วจะลดไม่ได้ (รถต้องมีคนอย่างน้อย 1) — ปล่อยให้ dispatch หาคนแทนตามเดิม
-  // ส่วน Worker ที่ยังไม่ Scan (PENDING/ACCEPTED) ถูกยกเลิก workers_required คงเดิม dispatch หาคนแทนตามปกติ
+  // Worker ที่ Scan เข้าทำงานแล้ว (SCANNED/WORKING/ส่งยอดแล้ว) ถูกยกเลิก = ไม่หาคนแทน ทีมที่เหลือทำงาน/ส่งยอดต่อได้ทันที
+  // workers_required คงเดิม (Admin เพิ่มคนกลับเข้าไปเองได้) แต่นับเพิ่ม removed_after_scan_count ที่ dispatch/ความพร้อมทีม
+  // ใช้หักออก (จำนวนที่ Scan กับจำนวนที่ต้องมีจริงลดลงเท่ากัน ความพร้อมของทีมจึงไม่เปลี่ยน) ถ้าจำนวนที่ต้องมีจริงเหลือ 1
+  // อยู่แล้วจะนับเพิ่มไม่ได้ (รถต้องมีคนอย่างน้อย 1) — ปล่อยให้ dispatch หาคนแทนตามเดิม
+  // ส่วน Worker ที่ยังไม่ Scan (PENDING/ACCEPTED) ถูกยกเลิก dispatch หาคนแทนตามปกติ
   const replacementNotNeeded = wasScanned
-    ? await ticketJobRepository.decrementTicketJobWorkersRequired(
+    ? await ticketJobRepository.incrementTicketJobRemovedAfterScanCount(
         assignment.vehicle_job_id,
         transaction,
       )
@@ -2098,8 +2099,7 @@ async function cancelAssignmentInTransaction(
         worker_code: workerCode,
         previous_status: currentAssignment?.status ?? null,
         replacement_dispatched: !replacementNotNeeded,
-        workers_required_before: teamScanBefore.workers_required,
-        workers_required_after: teamScan.workers_required,
+        workers_required: teamScan.workers_required,
         ...(extraMetadata ?? {}),
       },
     },
@@ -2193,7 +2193,6 @@ async function finalizeCancelledAssignment(
       status: cancelledAssignment.status,
       reason: options.reason,
       replacement_dispatched: !replacementNotNeeded,
-      workers_required: teamScan.workers_required,
     },
     audience: {
       roles: ["admin"],

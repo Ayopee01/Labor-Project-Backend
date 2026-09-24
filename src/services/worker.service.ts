@@ -49,6 +49,7 @@ import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, formatScheduleWi
 import { buildBangkokDateRange, buildBangkokDateSpanRange, buildDeadline, buildLatestCompletedBangkokDateRange, buildRemainingBreakTime, formatBangkokDate, formatBangkokDisplayDate, formatBangkokDisplayDateTime, getDelayUntil, toUnixMs } from "../utils/time";
 import { buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { buildWorkerQueueSocketPayload } from "../utils/worker-payload";
+import { resolveEffectiveWorkersRequired } from "../utils/team-requirement";
 import { resolveShiftActiveStatus, resolveWorkerWorkStatus } from "../utils/worker-status";
 
 /* -------------------------------------- Config -------------------------------------- */
@@ -111,6 +112,7 @@ function buildWorkerAssignmentAcceptResponse(
     team_accept: buildWorkerTeamAcceptResponse(
       detail.vehicle_job.workers_required,
       acceptedCount,
+      detail.vehicle_job.removed_after_scan_count,
     ),
     team: team.map((member) => ({
       full_name: member.full_name,
@@ -198,6 +200,7 @@ function buildWorkerCurrentJobResponse(
     team_accept: buildWorkerTeamAcceptResponse(
       detail.vehicle_job.workers_required,
       acceptedCount,
+      detail.vehicle_job.removed_after_scan_count,
     ),
     team_scan: buildWorkerTeamScanResponse(teamScan),
     markets: detail.markets.map((market) => ({
@@ -244,13 +247,19 @@ function buildWorkerTeamScanResponse(readiness: VehicleWorkReadinessDto) {
 function buildWorkerTeamAcceptResponse(
   workersRequired: number,
   acceptedCount: number,
+  removedAfterScanCount: number,
 ): WorkerCurrentJobTeamAcceptResponse {
-  const remainingCount = Math.max(0, workersRequired - acceptedCount);
+  // workers_required แสดงขนาดทีมตั้งต้น ส่วน remaining/is_ready หักคนที่ Admin ถอดออกหลัง Scan แล้วเหมือน team_scan
+  const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+    workersRequired,
+    removedAfterScanCount,
+  );
+  const remainingCount = Math.max(0, effectiveWorkersRequired - acceptedCount);
   return {
     workers_required: workersRequired,
     accepted_count: acceptedCount,
     remaining_count: remainingCount,
-    is_ready: workersRequired > 0 && acceptedCount >= workersRequired,
+    is_ready: effectiveWorkersRequired > 0 && acceptedCount >= effectiveWorkersRequired,
   };
 }
 
@@ -1545,7 +1554,13 @@ async function resolveScanAssignmentOutcome(
 
   const shortenedAssignments: TicketJobAssignmentDto[] = [];
 
-  if (ticketJob.workers_required > 1 && scannedCount === 1) {
+  if (
+    resolveEffectiveWorkersRequired(
+      ticketJob.workers_required,
+      ticketJob.removed_after_scan_count,
+    ) > 1 &&
+    scannedCount === 1
+  ) {
     const remainingAssignments =
       await assignmentRepository.listAcceptedAssignmentsByTicketJob(
         assignment.vehicle_job_id,
