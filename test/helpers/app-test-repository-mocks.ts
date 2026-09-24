@@ -831,7 +831,7 @@ export const workerApplicationRepositoryMock = {
     const job = state.ticketJobs.find((item) => item.id === ticketJobId);
     const removedCount = job?.removed_after_scan_count ?? 0;
 
-    if (!job || job.workers_required - removedCount <= 1) {
+    if (!job || removedCount >= job.workers_required) {
       return false;
     }
 
@@ -1170,6 +1170,21 @@ export const workerApplicationRepositoryMock = {
         ticket.vehicle_job_id === ticketJobId &&
         (ticket.status === "DELIVERED" || ticket.status === "REJECT"),
     ),
+  hasSubmittedOrCompletedBoothsForTicketJob: async (ticketJobId: number) =>
+    state.boothJobs.some(
+      (ticket) =>
+        ticket.vehicle_job_id === ticketJobId &&
+        ["DELIVERED", "REJECT", "COMPLETED"].includes(ticket.status),
+    ),
+  listUnsubmittedOpenBoothIdsByTicketJobId: async (ticketJobId: number) =>
+    state.boothJobs
+      .filter(
+        (ticket) =>
+          ticket.vehicle_job_id === ticketJobId &&
+          !["COMPLETED", "CANCELLED", "DELIVERED", "REJECT"].includes(ticket.status),
+      )
+      .map((ticket) => ticket.id)
+      .sort((a, b) => a - b),
   findBoothJobWorkerExclusion: async (
     boothJobId: number,
     ticketWorkerId: number,
@@ -2064,6 +2079,8 @@ const {
   findBoothJobForCompletionByWorkerHistoryAndTicketNoAndBoothCode,
   hasSubmittedActiveTicketsForMarketJob,
   hasSubmittedActiveTicketsForTicketJob,
+  hasSubmittedOrCompletedBoothsForTicketJob,
+  listUnsubmittedOpenBoothIdsByTicketJobId,
   findBoothJobWorkerExclusion,
   createBoothJobWorkerExclusion,
   countEligibleWorkersForBooth,
@@ -2487,7 +2504,11 @@ export const ticketJobAssignmentRepositoryMock = {
     return assignment;
   },
   // Function ยกเลิก assignment พร้อมถอด Worker ออกจาก Booth ที่ยังไม่ Complete — ย้ายมาจาก adminJobsRepositoryMock ตาม Fix A
-  cancelAssignment: async (assignmentId: number) => {
+  cancelAssignment: async (
+    assignmentId: number,
+    _connection?: unknown,
+    options: { keepRosterForSubmittedMarkets?: boolean } = {},
+  ) => {
     const assignment = state.assignments.find(
       (item) => item.id === assignmentId,
     );
@@ -2522,9 +2543,16 @@ export const ticketJobAssignmentRepositoryMock = {
           (market) => market.id === ticketWorker.market_job_id,
         );
 
+        const hasSubmittedBooth = state.boothJobs.some(
+          (booth) =>
+            booth.market_job_id === ticketWorker.market_job_id &&
+            ["DELIVERED", "REJECT"].includes(booth.status),
+        );
+
         return (
           marketJob?.vehicle_job_id === assignment.vehicle_job_id &&
-          !["COMPLETED", "CANCELLED"].includes(marketJob.status)
+          !["COMPLETED", "CANCELLED"].includes(marketJob.status) &&
+          !(options.keepRosterForSubmittedMarkets && hasSubmittedBooth)
         );
       })
       .forEach((ticketWorker) => {
@@ -2564,6 +2592,8 @@ export const boothJobRepositoryMock = {
   findBoothJobForCompletionByWorkerHistoryAndTicketNoAndBoothCode,
   hasSubmittedActiveTicketsForMarketJob,
   hasSubmittedActiveTicketsForTicketJob,
+  hasSubmittedOrCompletedBoothsForTicketJob,
+  listUnsubmittedOpenBoothIdsByTicketJobId,
   findBoothJobWorkerExclusion,
   createBoothJobWorkerExclusion,
   countEligibleWorkersForBooth,
@@ -4380,6 +4410,7 @@ function buildAdminTicketJobHistoryRecordForTest(ticketJobId: number) {
     licensePlateProvince: ticketJob.license_plate_province,
     vehicleType: ticketJob.vehicle_type,
     workersRequired: ticketJob.workers_required,
+    removedAfterScanCount: ticketJob.removed_after_scan_count ?? 0,
     dispatchNow: ticketJob.dispatch_now,
     status: ticketJob.status,
     workStartedAt: ticketJob.work_started_at ? new Date(ticketJob.work_started_at) : null,

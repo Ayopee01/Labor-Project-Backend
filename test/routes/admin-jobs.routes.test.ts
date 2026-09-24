@@ -2562,6 +2562,21 @@ describe("Assignment Cancel", () => {
     assert.equal(log?.metadata?.replacement_dispatched, false);
     assert.equal(log?.metadata?.workers_required, 2);
 
+    // สถานะงานรถต้องไม่ถอยกลับเป็นรอแรงงาน (wait_worker) เพราะระบบไม่หาคนแทนและทีมที่เหลือยังทำงานต่อ
+    const operationsResponse = await server.request(
+      "GET",
+      "/api/admin/vehicle-jobs/operations?status=WORKING",
+      { token: adminToken },
+    );
+    const operationItem = operationsResponse.body.data.find(
+      (item: { vehicle_job: { ticket_number: string } }) =>
+        item.vehicle_job.ticket_number === job.ticket_number,
+    );
+
+    assert.ok(operationItem);
+    assert.notEqual(operationItem.operation_status, "wait_worker");
+    assert.equal(operationItem.vehicle_job.workers_required, 2);
+
     // Admin เพิ่มคนเข้าไปเองได้ตาม flow ปกติ (ได้ assignment PENDING ต้องกดรับ/Scan เอง) และไม่ทำให้ทีมเดิมถูกหยุด
     const assignResponse = await server.request(
       "POST",
@@ -2576,6 +2591,27 @@ describe("Assignment Cancel", () => {
     assert.equal(
       state.assignments.find((item) => item.worker_id === queuedWorker.id)?.status,
       "PENDING",
+    );
+
+    // ทีมกลับมาครบ workers_required (2 คน) แล้ว Admin เพิ่มเกินจำนวนนี้ไม่ได้
+    const extraWorker = addWorker(9715);
+
+    await workerQueue.enqueueWorker(extraWorker.id);
+
+    const overAssignResponse = await server.request(
+      "POST",
+      `/api/admin/vehicle-jobs/${job.ticket_number}/assign-workers`,
+      {
+        token: adminToken,
+        body: { worker_codes: [extraWorker.labor_code], reason_code: "MANUAL_ASSIGNMENT" },
+      },
+    );
+
+    assert.equal(overAssignResponse.status, 409, JSON.stringify(overAssignResponse.body));
+    assert.equal(overAssignResponse.body.code, "WORKERS_REQUIRED_EXCEEDED");
+    assert.equal(
+      state.assignments.some((item) => item.worker_id === extraWorker.id),
+      false,
     );
 
     const products = state.ticketProducts.filter((product) => product.ticket_id === ticket.id);
@@ -2599,11 +2635,12 @@ describe("Assignment Cancel", () => {
     assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.body));
   });
 
-  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) of the only scanned worker on a one-worker vehicle still dispatches a replacement, since workers_required cannot drop below 1", async () => {
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) removing the last scanned worker before any booth was submitted cancels the whole vehicle job instead of dispatching a replacement", async () => {
     const { token: adminToken } = await loginJobAdmin(9720);
     const cancelledWorker = addWorker(9721);
     const queuedWorker = addWorker(9722);
     const job = addDispatchableJob(9723, 1);
+    const ticket = addTicketForTicketJob(job.id, 197231);
     const assignment = addPendingAssignment(197230, job.id, cancelledWorker.id);
     assignment.status = "WORKING";
     assignment.scanned_at = new Date().toISOString();
@@ -2620,18 +2657,205 @@ describe("Assignment Cancel", () => {
     });
 
     assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(assignment.status, "CANCELLED");
+    assert.equal(job.status, "CANCELLED");
+    assert.equal(ticket.status, "CANCELLED");
     assert.equal(job.workers_required, 1);
-    assert.equal(job.removed_after_scan_count ?? 0, 0);
     assert.equal(
-      state.assignments.find((item) => item.worker_id === queuedWorker.id)?.status,
-      "PENDING",
+      state.assignments.some((item) => item.worker_id === queuedWorker.id),
+      false,
     );
 
     const log = state.adminActionLogs.find(
       (item) => item.vehicle_job_id === job.id && item.action_type === "ASSIGNMENT_CANCELLED",
     );
 
-    assert.equal(log?.metadata?.replacement_dispatched, true);
+    assert.equal(log?.metadata?.last_worker_follow_up, "cancel_vehicle_job");
+    assert.ok(
+      state.adminActionLogs.some(
+        (item) => item.vehicle_job_id === job.id && item.action_type === "VEHICLE_JOB_CANCELLED",
+      ),
+    );
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) removing the last scanned worker while a booth awaits vendor confirmation cancels the unsubmitted booths but keeps the worker on that roster, so the vendor confirmation still pays them and closes the vehicle job", async () => {
+    const { token: workerToken, worker } = await loginWorker(9770);
+    const { token: adminToken } = await loginJobAdmin(9771);
+    const job = addDispatchableJob(9772, 1);
+    const firstTicket = addTicketForTicketJob(job.id, 197720);
+    const secondTicket = addTicketForTicketJob(job.id, 197721);
+    const sharedMarket = state.marketJobs.find((item) => item.id === firstTicket.market_job_id)!;
+
+    assert.equal(firstTicket.market_job_id, secondTicket.market_job_id);
+    secondTicket.status = "WAIT";
+    sharedMarket.booth_count = 2;
+
+    const assignment = addPendingAssignment(197722, job.id, worker.id);
+    assignment.status = "SCANNED";
+    assignment.scanned_at = new Date().toISOString();
+
+    const firstProducts = state.ticketProducts.filter(
+      (product) => product.ticket_id === firstTicket.id,
+    );
+    const submitResponse = await server.request(
+      "POST",
+      "/api/workers/me/assignments/tickets/complete",
+      {
+        token: workerToken,
+        body: {
+          ticket_no: sharedMarket.ticket_no,
+          boothCode: firstTicket.boothCode,
+          items: firstProducts.map((product, index) => ({
+            productCode: product.productCode,
+            packageCode: product.packageCode,
+            confirmed_quantity: index === 0 ? 10 : 4,
+          })),
+        },
+      },
+    );
+
+    assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.body));
+    assert.equal(firstTicket.status, "DELIVERED");
+
+    const response = await server.request("POST", "/api/admin/vehicle-jobs/assignment/cancel", {
+      token: adminToken,
+      body: {
+        ticket_number: job.ticket_number,
+        worker_code: worker.labor_code,
+        reason_code: "test",
+      },
+    });
+
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal(assignment.status, "CANCELLED");
+    assert.equal(secondTicket.status, "CANCELLED");
+    assert.equal(firstTicket.status, "DELIVERED");
+    assert.notEqual(job.status, "CANCELLED");
+
+    const ticketWorker = state.ticketWorkers.find(
+      (item) => item.market_job_id === firstTicket.market_job_id && item.worker_id === worker.id,
+    );
+
+    // roster ใน Business Ticket ที่มีแผงรอ Vendor ต้องคงไว้ ไม่งั้นตอน Vendor ยืนยันจะไม่มีใครให้จ่ายเงิน
+    assert.equal(ticketWorker?.status, "WORKING");
+
+    workerDispatch.startAssignmentTimeoutProcessing();
+
+    const processor = state.workerProcessors.get(
+      process.env.BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE as string,
+    );
+    const submission = state.completionSubmissions.at(-1);
+
+    assert.ok(processor);
+    assert.ok(submission);
+
+    await processor({
+      data: { ticketId: firstTicket.id, submissionId: submission.id, kind: "vendor_confirm" },
+    });
+
+    assert.equal(firstTicket.status, "COMPLETED");
+    assert.ok(firstTicket.financialized_at);
+    assert.equal(job.status, "COMPLETED");
+    assert.ok(
+      state.ticketWorkerPayments.some((payment) => payment.ticket_worker_id === ticketWorker?.id),
+    );
+  });
+
+  test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) removing the last scanned worker after a booth was completed cancels only the unsubmitted booths, then the vehicle job closes normally and the completed booth is paid", async () => {
+    const { token: workerToken, worker } = await loginWorker(9760);
+    const { token: adminToken } = await loginJobAdmin(9761);
+    const queuedWorker = addWorker(9762);
+    const job = addDispatchableJob(9763, 1);
+    const firstTicket = addTicketForTicketJob(job.id, 197630);
+    const secondTicket = addTicketForTicketJob(job.id, 197631);
+    const sharedMarket = state.marketJobs.find((item) => item.id === firstTicket.market_job_id)!;
+
+    assert.equal(firstTicket.market_job_id, secondTicket.market_job_id);
+    secondTicket.status = "WAIT";
+    sharedMarket.booth_count = 2;
+
+    const assignment = addPendingAssignment(197632, job.id, worker.id);
+    assignment.status = "SCANNED";
+    assignment.scanned_at = new Date().toISOString();
+
+    const firstProducts = state.ticketProducts.filter(
+      (product) => product.ticket_id === firstTicket.id,
+    );
+    const submitResponse = await server.request(
+      "POST",
+      "/api/workers/me/assignments/tickets/complete",
+      {
+        token: workerToken,
+        body: {
+          ticket_no: sharedMarket.ticket_no,
+          boothCode: firstTicket.boothCode,
+          items: firstProducts.map((product, index) => ({
+            productCode: product.productCode,
+            packageCode: product.packageCode,
+            confirmed_quantity: index === 0 ? 10 : 4,
+          })),
+        },
+      },
+    );
+
+    assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.body));
+
+    workerDispatch.startAssignmentTimeoutProcessing();
+
+    const processor = state.workerProcessors.get(
+      process.env.BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE as string,
+    );
+    const submission = state.completionSubmissions.at(-1);
+
+    assert.ok(processor);
+    assert.ok(submission);
+
+    await processor({
+      data: { ticketId: firstTicket.id, submissionId: submission.id, kind: "vendor_confirm" },
+    });
+
+    assert.equal(firstTicket.status, "COMPLETED");
+
+    await workerQueue.enqueueWorker(queuedWorker.id);
+
+    const response = await server.request("POST", "/api/admin/vehicle-jobs/assignment/cancel", {
+      token: adminToken,
+      body: {
+        ticket_number: job.ticket_number,
+        worker_code: worker.labor_code,
+        reason_code: "test",
+      },
+    });
+
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    // แผงที่ยังไม่ได้ส่งถูกยกเลิก เพราะไม่เหลือใครส่งแล้ว — ไม่หาคนแทน และไม่ยกเลิกทั้งคัน
+    assert.equal(secondTicket.status, "CANCELLED");
+    assert.equal(firstTicket.status, "COMPLETED");
+    // ทุกแผง terminal แล้วรถจึงปิดงานตามปกติ assignment ถูกปิดเป็น COMPLETED (ไม่ใช่ CANCELLED)
+    assert.equal(job.status, "COMPLETED");
+    assert.equal(assignment.status, "COMPLETED");
+    assert.equal(
+      state.assignments.some((item) => item.worker_id === queuedWorker.id),
+      false,
+    );
+    assert.equal(
+      state.adminActionLogs.some(
+        (item) => item.vehicle_job_id === job.id && item.action_type === "VEHICLE_JOB_CANCELLED",
+      ),
+      false,
+    );
+
+    // แผงที่ทำเสร็จแล้วต้องถูกปิดยอดและจ่ายค่าแรงให้ Worker ที่ทำจริง แม้ Worker จะถูกถอดออกไปแล้ว
+    assert.ok(firstTicket.financialized_at);
+
+    const ticketWorker = state.ticketWorkers.find(
+      (item) => item.market_job_id === firstTicket.market_job_id && item.worker_id === worker.id,
+    );
+
+    assert.ok(ticketWorker);
+    assert.ok(
+      state.ticketWorkerPayments.some((payment) => payment.ticket_worker_id === ticketWorker.id),
+    );
   });
 
   // Function สร้างทีม 2 คนที่ Scan แล้วทั้งคู่บนรถ 1 คัน Business Ticket 1 ใบ (แผงเดียว) พร้อม roster WORKING ของทั้งสองคน
@@ -3949,7 +4173,13 @@ describe("Financialization Correctness", () => {
     const { token: replacementToken, worker: replacementWorker } = await loginWorker(9802);
     const { token: adminToken } = await loginJobAdmin(9800);
 
-    const job = addDispatchableJob(980, 1);
+    // รถ 2 คน: มี Worker อีกคนทำงานต่ออยู่ Worker ที่ถูกถอดจึงไม่ใช่คนสุดท้าย (ถ้าเป็นคนสุดท้าย แผงที่เหลือจะถูกยกเลิกแทน —
+    // ดู test "removing the last scanned worker after a booth was completed")
+    const job = addDispatchableJob(980, 2);
+    const stayingWorker = addWorker(9803);
+    const stayingAssignment = addPendingAssignment(19803, job.id, stayingWorker.id);
+    stayingAssignment.status = "SCANNED";
+    stayingAssignment.scanned_at = new Date().toISOString();
     const firstTicket = addTicketForTicketJob(job.id, 19800);
     const secondTicket = addTicketForTicketJob(job.id, 19801);
 

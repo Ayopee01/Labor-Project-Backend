@@ -659,10 +659,12 @@
       description: >
         Admin ส่ง TicketNumber และตัวเลือก ticketNo, boothCode หรือ workerCode เพื่อยกเลิกทั้งรถ ทั้ง Business Ticket เฉพาะ Booth หรือ Worker รายคนใน endpoint เดียว
         กรณียกเลิก Worker รายคน (TicketNumber + workerCode) ถ้า Worker คนนั้น Scan เข้าทำงานแล้ว (SCANNED/WORKING/ส่งยอดแล้ว)
-        WorkersRequired ของรถคงเดิม แต่ระบบจะไม่หาคนแทน และทีมที่เหลือทำงานและส่งยอดต่อได้ทันที (dispatch และความพร้อมทีม
-        หักจำนวนคนที่ถูกถอดหลัง Scan ออก ยกเว้นจำนวนที่ต้องมีจริงเหลือ 1 อยู่แล้วจะหาคนแทนตามปกติ) ถ้า Worker ยังไม่ Scan
-        (PENDING/ACCEPTED) ระบบจะหาคนแทนจากคิวทันทีเหมือนเดิม Admin เพิ่ม Worker กลับเข้าไปให้ครบจำนวนเดิมได้ผ่าน
-        assign-workers โดย Worker ต้องกดรับและ Scan ตาม flow ปกติ ระหว่างนั้นทีมเดิมยังส่งยอดได้
+        WorkersRequired ของรถคงเดิม ระบบไม่หาคนแทน สถานะงานรถไม่เปลี่ยน และทีมที่เหลือทำงานและส่งยอดต่อได้ทันที
+        (dispatch ความพร้อมทีม และ OperationStatus หักจำนวนคนที่ถูกถอดหลัง Scan ออก) ถ้า Worker ยังไม่ Scan
+        (PENDING/ACCEPTED) ระบบจะหาคนแทนจากคิวทันทีเหมือนเดิม Admin เพิ่ม Worker กลับเข้าไปได้ผ่าน assign-workers
+        ไม่เกิน WorkersRequired โดย Worker ต้องกดรับและ Scan ตาม flow ปกติ ระหว่างนั้นทีมเดิมยังส่งยอดได้
+        ถ้าถอดจนไม่เหลือ Worker ที่ทำงานอยู่บนรถ: รถยังไม่เคยส่งยอดแผงไหนเลย = ยกเลิกงานรถทั้งคัน,
+        เคยส่งยอด/ทำเสร็จไปบางแผงแล้ว = ยกเลิกเฉพาะแผงที่ยังไม่ได้ส่ง (แผงที่ส่งแล้วรอผล Vendor ตามปกติ และค่าแรงของแผงที่ทำไปแล้วยังได้ครบ)
         ถ้าใช้ ticketNo + workerCode หรือ ticketNo + boothCode + workerCode แล้วใบ/แผงนั้นเป็นงานสุดท้ายของ Worker บนรถ
         ระบบจะยกเลิก assignment ตามไปด้วยแบบเดียวกัน
       operationId: cancelAdminVehicleJobAssignment
@@ -764,6 +766,15 @@
             มี Worker ในรายการอยู่นอกเวลากะของตัวเอง (WORKER_OUTSIDE_WORK_SHIFT) — เช็คแม้สถานะ queue ของ
             Worker จะแสดงว่า ready แล้ว เพราะ ready อย่างเดียวไม่ได้การันตีว่า Worker อยู่ในช่วงเวลากะปัจจุบันจริง
             หรือบัญชี Admin ที่ login อยู่ไม่มี permission jobs:assign
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            เพิ่ม Worker แล้วจะเกิน WorkersRequired ของรถ (WORKERS_REQUIRED_EXCEEDED — details มี workers_required,
+            active_assignment_count, available_slots) Worker มีงานอื่นอยู่แล้ว (WORKER_HAS_ACTIVE_ASSIGNMENT)
+            Worker ไม่ได้อยู่ในคิวพร้อมรับงาน (WORKER_NOT_READY) หรืองานรถปิดไปแล้ว (VEHICLE_JOB_CLOSED)
           content:
             application/json:
               schema:

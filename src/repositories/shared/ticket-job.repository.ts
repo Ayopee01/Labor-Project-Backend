@@ -9,7 +9,7 @@ import { countScannedAssignments } from "./ticket-job-assignment.repository";
 import { mapBoothJob, mapMarketJob, mapTicketProduct, mapTicketJob } from "./mappers";
 import { client, requireDto } from "./repository-utils";
 // Import Utils
-import { resolveEffectiveWorkersRequired } from "../../utils/team-requirement";
+import { resolveTeamReadinessThreshold } from "../../utils/team-requirement";
 // Import Types
 import type { DbConnection } from "../../types/shared/common.type";
 import type { CurrentTicketProgressDto, TicketJobDetailResponse, TicketJobDto, VehicleWorkReadinessDto } from "../../types/worker.type";
@@ -244,8 +244,8 @@ export async function getVehicleWorkReadiness(
     },
   });
   const workersRequired = ticketJob?.workersRequired ?? 0;
-  // หักจำนวนที่ Admin ถอดออกหลัง Scan แล้ว ทีมที่เหลือจึงส่งยอดได้โดยไม่ต้องรอคนแทน (ดู resolveEffectiveWorkersRequired)
-  const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+  // หักจำนวนที่ Admin ถอดออกหลัง Scan แล้ว ทีมที่เหลือจึงส่งยอดได้โดยไม่ต้องรอคนแทน (ดู resolveTeamReadinessThreshold)
+  const readinessThreshold = resolveTeamReadinessThreshold(
     workersRequired,
     ticketJob?.removedAfterScanCount,
   );
@@ -253,13 +253,13 @@ export async function getVehicleWorkReadiness(
     ticketJobId,
     connection,
   );
-  const remainingCount = Math.max(0, effectiveWorkersRequired - checkedInCount);
+  const remainingCount = Math.max(0, readinessThreshold - checkedInCount);
 
   return {
     workers_required: workersRequired,
     checked_in_count: checkedInCount,
     remaining_count: remainingCount,
-    is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
+    is_ready: readinessThreshold > 0 && checkedInCount >= readinessThreshold,
   };
 }
 
@@ -405,8 +405,7 @@ export async function setTicketJobDispatch(
 }
 
 // Function นับเพิ่มจำนวน Worker ที่ Admin ถอดออกหลัง Scan แล้ว 1 คน (workers_required คงเดิม ไม่หาคนแทน)
-// เขียนแบบมีเงื่อนไขในคำสั่งเดียว ให้จำนวนที่ต้องมีจริง (workers_required - removed_after_scan_count) ไม่ต่ำกว่า 1 —
-// คืน false ถ้าเหลือ 1 อยู่แล้ว (caller ต้องปล่อยให้ dispatch หาคนแทนตามปกติ เพราะรถต้องมีคนอย่างน้อย 1)
+// เขียนแบบมีเงื่อนไขในคำสั่งเดียว ไม่ให้เกิน workers_required — คืน false ถ้านับครบแล้ว
 export async function incrementTicketJobRemovedAfterScanCount(
   ticketJobId: number,
   connection?: DbConnection,
@@ -418,7 +417,7 @@ export async function incrementTicketJobRemovedAfterScanCount(
     SET removed_after_scan_count = removed_after_scan_count + 1,
         updated_at = NOW()
     WHERE id = ${ticketJobId}
-      AND workers_required - removed_after_scan_count > 1
+      AND removed_after_scan_count < workers_required
   `;
 
   return updatedCount > 0;

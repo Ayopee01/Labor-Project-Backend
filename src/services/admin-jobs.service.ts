@@ -1608,7 +1608,15 @@ async function cancelTicketJobAndRequeue(
   body: unknown,
   auth?: AccessTokenPayload,
 ): Promise<AdminCancelTicketJobAndRequeueResponse> {
-  const actorId = requireActorId(auth);
+  return cancelTicketJobAndRequeueByActor(idParam, body, requireActorId(auth));
+}
+
+// Function ยกเลิก vehicle job และ requeue โดยรับ actorId ตรงๆ — ใช้ทั้งจาก endpoint ยกเลิกรถ และตอนถอด Worker คนสุดท้ายออกจากรถ
+async function cancelTicketJobAndRequeueByActor(
+  idParam: unknown,
+  body: unknown,
+  actorId: number,
+): Promise<AdminCancelTicketJobAndRequeueResponse> {
   const { ticketJob, activeAssignments, ticketNos, activeBooths } =
     await performTicketJobCancellation(idParam, body, actorId);
 
@@ -1838,6 +1846,29 @@ export async function assignTicketJobWorkers(
         );
       }
 
+      // Lock แถวรถก่อนนับคนที่ยังทำงานอยู่ (lock เดียวกับ dispatch) กัน Admin สองคนหรือ dispatch เพิ่มคนพร้อมกันจนเกินจำนวน
+      // Admin เพิ่มคนได้สูงสุดเท่า workers_required ตั้งต้น (รวมกรณีเติมคนกลับหลังถอดคนที่ Scan แล้วออกไป)
+      await transaction.$queryRaw`SELECT id FROM ticket_jobs WHERE id = ${ticketJobId} FOR UPDATE`;
+
+      const activeAssignmentCount = await assignmentRepository.countActiveAssignments(
+        ticketJobId,
+        transaction,
+      );
+      const availableSlots = Math.max(0, ticketJob.workers_required - activeAssignmentCount);
+
+      if (workerCodes.length > availableSlots) {
+        throw new ApiError(
+          409,
+          "WORKERS_REQUIRED_EXCEEDED",
+          `Vehicle job needs at most ${ticketJob.workers_required} workers; only ${availableSlots} more can be assigned.`,
+          {
+            workers_required: ticketJob.workers_required,
+            active_assignment_count: activeAssignmentCount,
+            available_slots: availableSlots,
+          },
+        );
+      }
+
       const createdAssignments: TicketJobAssignmentDto[] = [];
 
       for (const workerCode of workerCodes) {
@@ -2015,6 +2046,18 @@ type CancelledAssignmentResult = {
   teamScan: VehicleWorkReadinessDto;
   wasTeamReady: boolean;
   replacementNotNeeded: boolean;
+  // สิ่งที่เกิดขึ้นเมื่อ Worker ที่ถูกยกเลิกเป็นคนสุดท้ายที่ยังทำงานอยู่บนรถ (ดู cancelAssignmentInTransaction)
+  lastWorkerFollowUp: "none" | "cancel_vehicle_job" | "cancel_unsubmitted_booths";
+  // false = ไม่ได้ยกเลิก assignment จริง เพราะการยกเลิกแผงที่ยังไม่ส่งทำให้รถปิดงานไปเอง (assignment ถูกปิดเป็น COMPLETED)
+  assignmentCancelled: boolean;
+  // แผงที่ถูกยกเลิกใน transaction นี้ (ถอดคนสุดท้ายหลังมีแผงส่งยอดแล้ว) — ต้องแจ้ง Driver/Admin/Vendor ต่อหลัง commit
+  cancelledBooths: Array<{
+    ticket: BoothJobDto;
+    completedTicketJob: CompletedTicketJobResult | null;
+  }>;
+  reasonCode: string | null;
+  reasonText: string | null;
+  actorId: number;
 };
 
 // Function ยกเลิก assignment หนึ่งตัวภายใน transaction ของ caller (DB เท่านั้น: สถานะ, roster, workers_required, Audit Log)
@@ -2046,9 +2089,119 @@ async function cancelAssignmentInTransaction(
       transaction,
     );
 
+  // Worker ที่ถูกยกเลิกเป็นคนสุดท้ายที่ยังทำงานอยู่บนรถ (Scan แล้ว และไม่มี assignment active อื่นเหลือ):
+  // - รถยังไม่เคยส่งยอด/ทำเสร็จแผงไหนเลย = ยกเลิกงานรถทั้งคันตาม flow ยกเลิกรถเดิม (ทำหลัง commit)
+  // - เคยส่งยอด/ทำเสร็จไปบางแผงแล้ว = ยกเลิกแผงที่ยังไม่ได้ส่งตรงนี้เลย เพราะไม่เหลือใครส่งแล้ว แผงที่ส่งแล้วรอผล Vendor ตามปกติ
+  //   (แผงที่ถูกตีกลับยกเลิกไม่ได้ ต้องให้ Admin ส่งแทนหรือเพิ่มคนเข้าไปส่งใหม่)
+  const activeAssignmentCount = await assignmentRepository.countActiveAssignments(
+    assignment.vehicle_job_id,
+    transaction,
+  );
+  const isLastWorkingWorker =
+    wasScanned &&
+    activeAssignmentCount === 1 &&
+    ACTIVE_ASSIGNMENT_STATUSES.includes(currentAssignment?.status ?? "");
+  let lastWorkerFollowUp: CancelledAssignmentResult["lastWorkerFollowUp"] = "none";
+  const cancelledBooths: CancelledAssignmentResult["cancelledBooths"] = [];
+
+  if (isLastWorkingWorker) {
+    const hasBoothWork =
+      await boothJobRepository.hasSubmittedOrCompletedBoothsForTicketJob(
+        assignment.vehicle_job_id,
+        transaction,
+      );
+
+    lastWorkerFollowUp = hasBoothWork ? "cancel_unsubmitted_booths" : "cancel_vehicle_job";
+
+    if (hasBoothWork) {
+      // ต้องยกเลิกแผง "ก่อน" ยกเลิก assignment เสมอ ตอนนี้ roster ของ Worker ยัง WORKING อยู่ Business Ticket ที่แผงครบ
+      // terminal จากการยกเลิกนี้จึงปิดยอดเงินจ่ายให้ Worker ที่ทำแผงเสร็จไปแล้วได้ (ปิดยอดต้องมี roster WORKING อย่างน้อย 1 คน)
+      const boothIds = await boothJobRepository.listUnsubmittedOpenBoothIdsByTicketJobId(
+        assignment.vehicle_job_id,
+        transaction,
+      );
+
+      for (const boothId of boothIds) {
+        await transaction.$queryRaw`SELECT id FROM booth_jobs WHERE id = ${boothId} FOR UPDATE`;
+
+        const booth = await boothJobRepository.findBoothJobForCompletion(boothId, transaction);
+
+        if (
+          !booth ||
+          TERMINAL_TICKET_STATUSES.includes(booth.status) ||
+          booth.status === TICKET_STATUS.DELIVERED ||
+          booth.status === TICKET_STATUS.REJECT
+        ) {
+          continue;
+        }
+
+        cancelledBooths.push(
+          await cancelStallJobRecord(booth, reasonCode, reasonText, actorId, transaction, {
+            source: "auto_cancel_last_worker_removed",
+            triggered_by_worker_code: workerCode,
+          }),
+        );
+      }
+    }
+  }
+
+  // ยกเลิกแผงที่เหลือจนรถปิดงานเอง (ทุกแผง terminal) — assignment ถูกปิดเป็น COMPLETED และ Worker จะถูกคืนคิวผ่าน cascade
+  // จึงไม่ต้องยกเลิก assignment ซ้ำ แต่ยังบันทึก Audit Log ของการกดถอดครั้งนี้ไว้
+  if (cancelledBooths.some((item) => item.completedTicketJob)) {
+    const closedAssignment = await assignmentRepository.findAssignmentById(
+      assignment.id,
+      transaction,
+    );
+    const teamScanAfterClose =
+      await assignmentRepository.getTicketJobTeamScanReadiness(
+        assignment.vehicle_job_id,
+        transaction,
+      );
+
+    await adminActionLogRepository.create(
+      {
+        vehicle_job_id: assignment.vehicle_job_id,
+        action_type: ADMIN_ACTION_TYPE.ASSIGNMENT_CANCELLED,
+        reason_code: reasonCode,
+        reason_text: reasonText,
+        actor_account_id: actorId,
+        metadata: {
+          assignment_id: assignment.id,
+          worker_id: assignment.worker_id,
+          worker_code: workerCode,
+          previous_status: currentAssignment?.status ?? null,
+          replacement_dispatched: false,
+          workers_required: teamScanAfterClose.workers_required,
+          last_worker_follow_up: lastWorkerFollowUp,
+          vehicle_job_closed: true,
+          ...(extraMetadata ?? {}),
+        },
+      },
+      transaction,
+    );
+
+    return {
+      cancelledAssignment: closedAssignment ?? assignment,
+      teamScan: teamScanAfterClose,
+      wasTeamReady: teamScanBefore.is_ready,
+      replacementNotNeeded: true,
+      lastWorkerFollowUp,
+      assignmentCancelled: false,
+      cancelledBooths,
+      reasonCode,
+      reasonText,
+      actorId,
+    };
+  }
+
   const result = await assignmentRepository.cancelAssignment(
     assignment.id,
     transaction,
+    {
+      // Business Ticket ที่มีแผงส่งยอดแล้วรอผล Vendor/ถูกตีกลับ ต้องคง roster ของคนสุดท้ายไว้ ไม่งั้นตอน Vendor ยืนยัน
+      // จะไม่มี Worker ให้จ่ายค่าแรงและปิดยอดไม่ได้ (แผงที่ยังไม่ส่งของใบนั้นถูกยกเลิกไปแล้วด้านบน จึงไม่ได้เงินเกินที่ทำจริง)
+      keepRosterForSubmittedMarkets: lastWorkerFollowUp === "cancel_unsubmitted_booths",
+    },
   );
 
   if (!result) {
@@ -2062,9 +2215,8 @@ async function cancelAssignmentInTransaction(
   }
 
   // Worker ที่ Scan เข้าทำงานแล้ว (SCANNED/WORKING/ส่งยอดแล้ว) ถูกยกเลิก = ไม่หาคนแทน ทีมที่เหลือทำงาน/ส่งยอดต่อได้ทันที
-  // workers_required คงเดิม (Admin เพิ่มคนกลับเข้าไปเองได้) แต่นับเพิ่ม removed_after_scan_count ที่ dispatch/ความพร้อมทีม
-  // ใช้หักออก (จำนวนที่ Scan กับจำนวนที่ต้องมีจริงลดลงเท่ากัน ความพร้อมของทีมจึงไม่เปลี่ยน) ถ้าจำนวนที่ต้องมีจริงเหลือ 1
-  // อยู่แล้วจะนับเพิ่มไม่ได้ (รถต้องมีคนอย่างน้อย 1) — ปล่อยให้ dispatch หาคนแทนตามเดิม
+  // workers_required คงเดิม (Admin เพิ่มคนกลับเข้าไปเองได้ไม่เกินจำนวนนี้) แต่นับเพิ่ม removed_after_scan_count ที่
+  // dispatch/ความพร้อมทีม/สถานะงานรถใช้หักออก (จำนวนที่ Scan กับจำนวนที่ต้องมีจริงลดลงเท่ากัน ความพร้อมของทีมจึงไม่เปลี่ยน)
   // ส่วน Worker ที่ยังไม่ Scan (PENDING/ACCEPTED) ถูกยกเลิก dispatch หาคนแทนตามปกติ
   const replacementNotNeeded = wasScanned
     ? await ticketJobRepository.incrementTicketJobRemovedAfterScanCount(
@@ -2100,6 +2252,7 @@ async function cancelAssignmentInTransaction(
         previous_status: currentAssignment?.status ?? null,
         replacement_dispatched: !replacementNotNeeded,
         workers_required: teamScan.workers_required,
+        last_worker_follow_up: lastWorkerFollowUp,
         ...(extraMetadata ?? {}),
       },
     },
@@ -2111,11 +2264,18 @@ async function cancelAssignmentInTransaction(
     teamScan,
     wasTeamReady: teamScanBefore.is_ready,
     replacementNotNeeded,
+    lastWorkerFollowUp,
+    assignmentCancelled: true,
+    cancelledBooths,
+    reasonCode,
+    reasonText,
+    actorId,
   };
 }
 
 // Function ทำ side effect หลัง commit การยกเลิก assignment: เคลียร์ timer, ย้าย Worker ไป open_app, แจ้ง Worker
 // (ASSIGNMENT_CANCELLED มี socket + FCM), แจ้ง Admin SSE, แจ้งทีมที่เหลือ และ dispatch หาคนแทนเมื่อจำเป็น
+// กรณีถอดคนสุดท้าย: แจ้งผลการยกเลิกแผงที่ยังไม่ส่ง หรือยกเลิกงานรถทั้งคันต่อ (ดู cancelAssignmentInTransaction)
 async function finalizeCancelledAssignment(
   assignment: TicketJobAssignmentDto,
   ticketJob: TicketJobDto | null,
@@ -2127,40 +2287,102 @@ async function finalizeCancelledAssignment(
     workerPayload?: Record<string, unknown>;
   },
 ): Promise<void> {
-  const { cancelledAssignment, teamScan, wasTeamReady, replacementNotNeeded } = result;
+  const {
+    cancelledAssignment,
+    teamScan,
+    wasTeamReady,
+    replacementNotNeeded,
+    lastWorkerFollowUp,
+    assignmentCancelled,
+    cancelledBooths,
+  } = result;
 
-  // แจ้ง Driver Web ว่า assignment ถูกยกเลิก — เรียกหลัง transaction ของ caller commit สำเร็จแล้วเท่านั้น
-  publishDriverJobUpdate(assignment.vehicle_job_id, "DRIVER_JOB_UPDATED");
-
-  await removeAssignmentTimeout(assignment.id);
-  await removeScanTimeout(assignment.id);
-  await removeScanWarning(assignment.id);
-  const queue = await markWorkerOpenApp(
-    assignment.worker_id,
-    WORKER_OPEN_APP_REASON.ADMIN_CANCEL_ASSIGNMENT,
-  );
-  const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
-    assignment.vehicle_job_id,
-  );
-
-  // แนบ worker_status/queue ไปด้วย ให้ Mobile อัปเดตสถานะตัวเองเป็น open_app ได้จาก event เดียว ไม่ต้องยิง API ถามซ้ำ
-  sendWorkerSocketEvent(assignment.worker_id, "ASSIGNMENT_CANCELLED", {
-    ticketNumber: ticketJob?.ticket_number ?? null,
-    ticketNos,
-    ...(options.workerPayload ?? {}),
-    reason: options.reason,
-    worker_status: WORKER_WORK_STATUS.OPEN_APP,
-    queue: buildWorkerQueueSocketPayload(queue, workerCode),
+  publishNotification({
+    type: "ASSIGNMENT_CANCELLED",
+    title: "Assignment cancelled",
+    message: `Assignment for ${workerCode} on ${ticketJob?.ticket_number ?? "-"} was cancelled by admin.`,
+    payload: {
+      ticketNumber: ticketJob?.ticket_number ?? null,
+      worker_code: workerCode,
+      status: cancelledAssignment.status,
+      reason: options.reason,
+      replacement_dispatched: !replacementNotNeeded,
+      last_worker_follow_up: lastWorkerFollowUp,
+      cancelled_booth_codes: cancelledBooths.map((item) => item.ticket.boothCode),
+    },
+    audience: {
+      roles: ["admin"],
+    },
   });
-  // แจ้ง Admin SSE แยกจาก ASSIGNMENT_CANCELLED ด้านบน (event นั้นไม่มี queue snapshot ของ worker) —
-  // ให้ตาราง worker status ฝั่ง Admin dashboard refresh ทันทีแบบเดียวกับจุดอื่นที่ worker กลับไป open_app
-  publishAdminWorkerStatusChanged({
-    title: "Worker moved to open_app",
-    message: `Worker ${workerCode} moved to open_app after admin cancelled the assignment.`,
-    workerCode,
-    queue,
-    reason: options.reason,
-  });
+
+  if (assignmentCancelled) {
+    // แจ้ง Driver Web ว่า assignment ถูกยกเลิก — เรียกหลัง transaction ของ caller commit สำเร็จแล้วเท่านั้น
+    publishDriverJobUpdate(assignment.vehicle_job_id, "DRIVER_JOB_UPDATED");
+
+    await removeAssignmentTimeout(assignment.id);
+    await removeScanTimeout(assignment.id);
+    await removeScanWarning(assignment.id);
+    const queue = await markWorkerOpenApp(
+      assignment.worker_id,
+      WORKER_OPEN_APP_REASON.ADMIN_CANCEL_ASSIGNMENT,
+    );
+    const ticketNos = await marketJobRepository.listActiveTicketNosByTicketJobId(
+      assignment.vehicle_job_id,
+    );
+
+    // แนบ worker_status/queue ไปด้วย ให้ Mobile อัปเดตสถานะตัวเองเป็น open_app ได้จาก event เดียว ไม่ต้องยิง API ถามซ้ำ
+    sendWorkerSocketEvent(assignment.worker_id, "ASSIGNMENT_CANCELLED", {
+      ticketNumber: ticketJob?.ticket_number ?? null,
+      ticketNos,
+      ...(options.workerPayload ?? {}),
+      reason: options.reason,
+      worker_status: WORKER_WORK_STATUS.OPEN_APP,
+      queue: buildWorkerQueueSocketPayload(queue, workerCode),
+    });
+    // แจ้ง Admin SSE แยกจาก ASSIGNMENT_CANCELLED ด้านบน (event นั้นไม่มี queue snapshot ของ worker) —
+    // ให้ตาราง worker status ฝั่ง Admin dashboard refresh ทันทีแบบเดียวกับจุดอื่นที่ worker กลับไป open_app
+    publishAdminWorkerStatusChanged({
+      title: "Worker moved to open_app",
+      message: `Worker ${workerCode} moved to open_app after admin cancelled the assignment.`,
+      workerCode,
+      queue,
+      reason: options.reason,
+    });
+  }
+
+  // แผงที่ไม่เหลือใครส่งแล้วถูกยกเลิกใน transaction — แจ้ง Driver/Admin/Vendor และคืนคิวถ้ารถปิดงานจากการยกเลิกนี้
+  // ไม่ส่ง STALL_JOB_CANCELLED ให้ Worker ที่เพิ่งถูกถอด เพราะได้ ASSIGNMENT_CANCELLED ไปแล้ว กัน push ซ้ำ
+  for (const { ticket, completedTicketJob } of cancelledBooths) {
+    await publishStallJobCancelledSideEffects(ticket, completedTicketJob, {
+      excludeWorkerIds: [assignment.worker_id],
+    });
+  }
+
+  if (lastWorkerFollowUp === "cancel_unsubmitted_booths") {
+    return;
+  }
+
+  // ไม่เหลือใครทำงานบนรถแล้วและยังไม่เคยส่งยอดแผงไหน — ยกเลิกงานรถทั้งคันด้วย flow ยกเลิกรถเดิม
+  // (ยกเลิกแผง แจ้ง LINE แผง แจ้ง Driver/Admin) best-effort: ไม่ throw เพราะการยกเลิก Worker commit ไปแล้ว
+  if (lastWorkerFollowUp === "cancel_vehicle_job" && ticketJob) {
+    try {
+      await cancelTicketJobAndRequeueByActor(
+        ticketJob.ticket_number,
+        {
+          reason_code: result.reasonCode ?? undefined,
+          reason_text: result.reasonText,
+        },
+        result.actorId,
+      );
+    } catch (error) {
+      logger.error("Last worker was removed but the vehicle job could not be cancelled.", {
+        ticketJobId: assignment.vehicle_job_id,
+        error,
+      });
+    }
+
+    return;
+  }
 
   // แจ้งทีมที่เหลือตามสถานะทีมล่าสุดหลังยกเลิก — ไม่ประกาศ TEAM_READY (มี push) ซ้ำถ้าทีมพร้อมทำงานอยู่ก่อนแล้ว
   if (ticketJob) {
@@ -2169,9 +2391,9 @@ async function finalizeCancelledAssignment(
     });
   }
 
-  // ยกเลิกคนที่ยังไม่ Scan: workers_required คงเดิม ต้อง dispatch หาคนแทนทันที ไม่งั้นทีมส่งยอดไม่ได้ (WORKERS_NOT_CHECKED_IN)
-  // จนกว่าจะมี event อื่นมา trigger dispatch — ยกเลิกคนที่ Scan แล้ว workers_required ลดลงแล้ว dispatch จึงไม่ได้ใครเพิ่ม
-  // (เติมแค่ช่องที่ขาดอยู่เดิมก่อนยกเลิกถ้ามี) best-effort ห้ามทำให้ cancel ที่ commit แล้วพัง
+  // ยกเลิกคนที่ยังไม่ Scan: ต้อง dispatch หาคนแทนทันที ไม่งั้นทีมส่งยอดไม่ได้ (WORKERS_NOT_CHECKED_IN) จนกว่าจะมี event อื่นมา
+  // trigger dispatch — ยกเลิกคนที่ Scan แล้วนับเป็น removed_after_scan_count แล้ว dispatch จึงไม่ได้ใครเพิ่ม (เติมแค่ช่องที่ขาด
+  // อยู่เดิมก่อนยกเลิกถ้ามี) best-effort ห้ามทำให้ cancel ที่ commit แล้วพัง
   // เรียกหลัง markWorkerOpenApp ด้านบนเสมอ Worker ที่เพิ่งถูกยกเลิกจึงไม่ถูกจ่ายกลับมารถคันเดิม
   try {
     await dispatchReadyWorkers(undefined, {
@@ -2183,21 +2405,6 @@ async function finalizeCancelledAssignment(
       error,
     });
   }
-  publishNotification({
-    type: "ASSIGNMENT_CANCELLED",
-    title: "Assignment cancelled",
-    message: `Assignment for ${workerCode} on ${ticketJob?.ticket_number ?? "-"} was cancelled by admin.`,
-    payload: {
-      ticketNumber: ticketJob?.ticket_number ?? null,
-      worker_code: workerCode,
-      status: cancelledAssignment.status,
-      reason: options.reason,
-      replacement_dispatched: !replacementNotNeeded,
-    },
-    audience: {
-      roles: ["admin"],
-    },
-  });
 }
 
 // Function ยกเลิก assignment ใน service flow (ถอด Worker ออกจากรถทั้งคัน)
@@ -2753,8 +2960,28 @@ async function cancelStallJobById(
     return cancelStallJobRecord(current, reasonCode, reasonText, actorId, transaction);
   });
 
+  const { ticketJob, marketJob } = await publishStallJobCancelledSideEffects(
+    ticket,
+    completedTicketJob,
+  );
+
+  return formatStallJobActionResponse(
+    "Stall job cancelled successfully.",
+    ticket,
+    ticketJob,
+    marketJob,
+  );
+}
+
+// Function ทำ side effect หลัง commit การยกเลิกแผงหนึ่งแผง: แจ้ง Driver Web, แจ้ง Admin/Worker (STALL_JOB_CANCELLED),
+// แจ้ง LINE แผง และคืนคิว Worker ถ้ารถปิดงานจากการยกเลิกนี้ — ใช้ร่วมกันระหว่างยกเลิกแผงตรงๆ กับถอด Worker คนสุดท้าย
+async function publishStallJobCancelledSideEffects(
+  ticket: BoothJobDto,
+  completedTicketJob: CompletedTicketJobResult | null,
+  options: { excludeWorkerIds?: number[] } = {},
+): Promise<{ ticketJob: TicketJobDto | null; marketJob: MarketJobDto | null }> {
   // แจ้ง Driver Web ว่าแผงถูกยกเลิก (หรือรถจบงานไปเลยถ้านี่คือแผงสุดท้าย) — เรียกหลัง transaction
-  // ข้างบน commit สำเร็จแล้วเท่านั้น
+  // ของ caller commit สำเร็จแล้วเท่านั้น
   publishDriverJobUpdate(
     ticket.vehicle_job_id,
     completedTicketJob ? "DRIVER_JOB_TERMINAL" : "DRIVER_JOB_UPDATED",
@@ -2766,6 +2993,8 @@ async function cancelStallJobById(
   const marketJob = await marketJobRepository.findMarketJobById(
     ticket.market_job_id,
   );
+  const excludedWorkerIds = new Set(options.excludeWorkerIds ?? []);
+
   publishRealtimeEvent({
     type: "STALL_JOB_CANCELLED",
     title: "Stall job cancelled",
@@ -2786,7 +3015,9 @@ async function cancelStallJobById(
       confirmation_status: ticket.confirmation_status,
     },
     admin: true,
-    worker_ids: await listStallJobWorkerIds(ticket),
+    worker_ids: (await listStallJobWorkerIds(ticket)).filter(
+      (workerId) => !excludedWorkerIds.has(workerId),
+    ),
   });
 
   await notifyVendorBoothCancelled({
@@ -2800,12 +3031,7 @@ async function cancelStallJobById(
 
   await handleTicketJobClosedByCascadeCancellation(completedTicketJob);
 
-  return formatStallJobActionResponse(
-    "Stall job cancelled successfully.",
-    ticket,
-    ticketJob,
-    marketJob,
-  );
+  return { ticketJob, marketJob };
 }
 
 // Function ยกเลิก Worker หนึ่งคนออกจาก Business Ticket ใบเดียว ต่างจาก cancelAssignment ที่ cascade

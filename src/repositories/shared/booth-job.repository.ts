@@ -54,6 +54,54 @@ export async function hasSubmittedActiveTicketsForTicketJob(
   return count > 0;
 }
 
+// Function เช็คว่ารถคันนี้เคยมีแผงที่ส่งยอดแล้วหรือไม่ (DELIVERED/REJECT) หรือทำเสร็จแล้ว (COMPLETED) — ใช้ตัดสินตอน Admin
+// ถอด Worker คนสุดท้ายออก: ยังไม่เคยส่งเลย = ยกเลิกงานรถทั้งคัน, เคยส่งแล้ว = ยกเลิกเฉพาะแผงที่ยังไม่ได้ส่ง
+export async function hasSubmittedOrCompletedBoothsForTicketJob(
+  ticketJobId: number,
+  connection?: DbConnection
+): Promise<boolean> {
+  const db = client(connection);
+  const count = await db.boothJob.count({
+    where: {
+      ticketJobId,
+      status: {
+        in: [TICKET_STATUS.DELIVERED, TICKET_STATUS.REJECT, TICKET_STATUS.COMPLETED],
+      },
+    },
+  });
+
+  return count > 0;
+}
+
+// Function ดึง id ของแผงที่ยังไม่ปิดและยังไม่เคยส่งยอด (ไม่ใช่ COMPLETED/CANCELLED/DELIVERED/REJECT) ของรถคันนี้
+// ใช้ยกเลิกแผงที่ไม่เหลือใครส่งแล้วหลัง Admin ถอด Worker คนสุดท้ายออก
+export async function listUnsubmittedOpenBoothIdsByTicketJobId(
+  ticketJobId: number,
+  connection?: DbConnection
+): Promise<number[]> {
+  const db = client(connection);
+  const booths = await db.boothJob.findMany({
+    where: {
+      ticketJobId,
+      status: {
+        notIn: [
+          ...TERMINAL_TICKET_STATUSES,
+          TICKET_STATUS.DELIVERED,
+          TICKET_STATUS.REJECT,
+        ],
+      },
+    },
+    select: {
+      id: true,
+    },
+    orderBy: {
+      id: "asc",
+    },
+  });
+
+  return booths.map((booth) => booth.id);
+}
+
 // Function เช็คว่า worker ถูกถอดออกจาก Booth นี้ไปแล้วหรือยัง
 export async function findBoothJobWorkerExclusion(
   boothJobId: number,

@@ -51,6 +51,7 @@ export function formatDriverJobSnapshot(
       status: record.status,
       dispatch_now: record.dispatchNow,
       workers_required: record.workersRequired,
+      removed_after_scan_count: record.removedAfterScanCount,
       active_assignment_count: activeAssignmentCount,
       work_started_at: record.workStartedAt,
       has_rejected_booth: hasRejectedBooth,

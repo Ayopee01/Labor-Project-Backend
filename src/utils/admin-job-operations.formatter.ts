@@ -8,6 +8,7 @@ import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, SCANNED_ASSIGNMENT_STATU
 // Import Utils
 import { calculateShiftName } from "../utils/shift";
 import { resolveVehicleOperationStatus as resolveVehicleOperationStatusCore } from "../utils/vehicle-operation-status";
+import { resolveTeamReadinessThreshold } from "../utils/team-requirement";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 
 /* -------------------------------------- Functions -------------------------------------- */
@@ -183,6 +184,7 @@ function resolveVehicleOperationStatus(
     status: record.status,
     dispatch_now: record.dispatchNow,
     workers_required: record.workersRequired,
+    removed_after_scan_count: record.removedAfterScanCount,
     active_assignment_count: workerSummary.active,
     work_started_at: record.workStartedAt,
     has_rejected_booth: rejectedBoothCount > 0,
@@ -299,7 +301,12 @@ export function formatVehicleOperationItem(
     scan_summary: {
       required: record.workersRequired,
       scanned: workerSummary.scanned,
-      remaining: Math.max(0, record.workersRequired - workerSummary.scanned),
+      // required แสดงขนาดทีมตั้งต้น ส่วน remaining หักคนที่ถูกถอดหลัง Scan แล้วเหมือนความพร้อมทีมที่ใช้ตัดสินส่งยอด
+      remaining: Math.max(
+        0,
+        resolveTeamReadinessThreshold(record.workersRequired, record.removedAfterScanCount) -
+          workerSummary.scanned,
+      ),
     },
     timing: buildOperationTiming(record),
     workers: record.assignments.map((assignment) => ({

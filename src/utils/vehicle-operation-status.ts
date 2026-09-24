@@ -1,5 +1,7 @@
 // Import Config
 import { VEHICLE_JOB_STATUS, VEHICLE_OPERATION_STATUS } from "../constants/status";
+// Import Utils
+import { resolveTeamReadinessThreshold } from "./team-requirement";
 // Import Types
 import type { VehicleOperationStatus } from "../types/admin-jobs.type";
 
@@ -12,6 +14,8 @@ export interface VehicleOperationStatusInput {
   status: string;
   dispatch_now: boolean;
   workers_required: number;
+  // จำนวน Worker ที่ Admin ถอดออกหลัง Scan แล้ว — ไม่นับเป็นช่องที่ขาด สถานะงานรถจึงไม่ถอยกลับไปรอแรงงาน
+  removed_after_scan_count: number;
   active_assignment_count: number;
   work_started_at: Date | null;
   has_rejected_booth: boolean;
@@ -49,9 +53,16 @@ export function resolveVehicleOperationStatus(
     return VEHICLE_OPERATION_STATUS.WAIT_UNLOAD;
   }
 
+  // เทียบกับจำนวนที่ต้องมีจริง (หักคนที่ Admin ถอดออกหลัง Scan แล้ว) ไม่ใช่ workers_required ตั้งต้น
+  // ไม่งั้นถอดคนออกจากทีมที่ทำงานอยู่แล้วสถานะจะถอยกลับเป็น wait_worker ทั้งที่ระบบไม่หาคนแทนและทีมยังทำงานต่อได้
+  const readinessThreshold = resolveTeamReadinessThreshold(
+    input.workers_required,
+    input.removed_after_scan_count,
+  );
+
   if (
-    input.workers_required > 0 &&
-    input.active_assignment_count < input.workers_required
+    readinessThreshold > 0 &&
+    input.active_assignment_count < readinessThreshold
   ) {
     return VEHICLE_OPERATION_STATUS.WAIT_WORKER;
   }

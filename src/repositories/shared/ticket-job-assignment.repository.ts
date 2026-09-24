@@ -8,7 +8,7 @@ import * as workerAssignmentEventRepository from "./worker-assignment-event.repo
 import { mapTicketJobAssignment } from "./mappers";
 import { client, requireDto } from "./repository-utils";
 // Import Utils
-import { resolveEffectiveWorkersRequired } from "../../utils/team-requirement";
+import { resolveTeamReadinessThreshold } from "../../utils/team-requirement";
 // Import Types
 import type { DbConnection } from "../../types/shared/common.type";
 import type { WorkerAssignmentEventType } from "../../types/shared/worker-assignment-event.type";
@@ -279,7 +279,7 @@ export async function getTicketJobTeamScanReadiness(
 ): Promise<VehicleWorkReadinessDto> {
   const db = client(connection);
   // เทียบกับ workersRequired ไม่ใช่จำนวน assignment ที่สร้างจริง กันเข้าใจผิดว่าทีมพร้อมทั้งที่ dispatch ยังหา worker ไม่ครบ
-  // (หักจำนวนที่ Admin ถอดออกหลัง Scan แล้ว — ดู resolveEffectiveWorkersRequired)
+  // (หักจำนวนที่ Admin ถอดออกหลัง Scan แล้ว — ดู resolveTeamReadinessThreshold)
   const [ticketJob, checkedInCount] = await Promise.all([
     db.ticketJob.findUnique({
       where: {
@@ -300,17 +300,17 @@ export async function getTicketJobTeamScanReadiness(
     }),
   ]);
   const workersRequired = ticketJob?.workersRequired ?? 0;
-  const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+  const readinessThreshold = resolveTeamReadinessThreshold(
     workersRequired,
     ticketJob?.removedAfterScanCount,
   );
-  const remainingCount = Math.max(0, effectiveWorkersRequired - checkedInCount);
+  const remainingCount = Math.max(0, readinessThreshold - checkedInCount);
 
   return {
     workers_required: workersRequired,
     checked_in_count: checkedInCount,
     remaining_count: remainingCount,
-    is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
+    is_ready: readinessThreshold > 0 && checkedInCount >= readinessThreshold,
   };
 }
 
@@ -357,18 +357,18 @@ export async function getTicketJobTeamScanReadinessBatch(
   const map = new Map<number, VehicleWorkReadinessDto & { ticket_number: string | null }>();
   for (const ticketJob of ticketJobs) {
     const workersRequired = ticketJob.workersRequired ?? 0;
-    const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+    const readinessThreshold = resolveTeamReadinessThreshold(
       workersRequired,
       ticketJob.removedAfterScanCount,
     );
     const checkedInCount = scannedCountMap.get(ticketJob.id) ?? 0;
-    const remainingCount = Math.max(0, effectiveWorkersRequired - checkedInCount);
+    const remainingCount = Math.max(0, readinessThreshold - checkedInCount);
 
     map.set(ticketJob.id, {
       workers_required: workersRequired,
       checked_in_count: checkedInCount,
       remaining_count: remainingCount,
-      is_ready: effectiveWorkersRequired > 0 && checkedInCount >= effectiveWorkersRequired,
+      is_ready: readinessThreshold > 0 && checkedInCount >= readinessThreshold,
       ticket_number: ticketJob.ticketNumber,
     });
   }
@@ -666,10 +666,13 @@ export async function cancelActiveAssignmentsForTicketJob(
 export async function cancelAssignment(
   assignmentId: number,
   connection?: DbConnection,
+  // keepRosterForSubmittedMarkets = ไม่ถอด roster ใน Business Ticket ที่มีแผงส่งยอดแล้ว (DELIVERED/REJECT) — ใช้ตอนถอดคนสุดท้าย
+  // ซึ่งต้องคง roster ไว้ให้ Vendor ยืนยันแล้วจ่ายค่าแรง/ปิดยอดได้
+  options: { keepRosterForSubmittedMarkets?: boolean } = {},
 ): Promise<TicketJobAssignmentDto | null> {
   if (!connection) {
     return withTransaction((transaction) =>
-      cancelAssignment(assignmentId, transaction),
+      cancelAssignment(assignmentId, transaction, options),
     );
   }
 
@@ -724,6 +727,18 @@ export async function cancelAssignment(
         status: {
           notIn: [TICKET_STATUS.COMPLETED, TICKET_STATUS.CANCELLED],
         },
+
+        ...(options.keepRosterForSubmittedMarkets
+          ? {
+              tickets: {
+                none: {
+                  status: {
+                    in: [TICKET_STATUS.DELIVERED, TICKET_STATUS.REJECT],
+                  },
+                },
+              },
+            }
+          : {}),
       },
     },
 

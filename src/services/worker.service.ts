@@ -49,7 +49,7 @@ import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, formatScheduleWi
 import { buildBangkokDateRange, buildBangkokDateSpanRange, buildDeadline, buildLatestCompletedBangkokDateRange, buildRemainingBreakTime, formatBangkokDate, formatBangkokDisplayDate, formatBangkokDisplayDateTime, getDelayUntil, toUnixMs } from "../utils/time";
 import { buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { buildWorkerQueueSocketPayload } from "../utils/worker-payload";
-import { resolveEffectiveWorkersRequired } from "../utils/team-requirement";
+import { resolveTeamReadinessThreshold } from "../utils/team-requirement";
 import { resolveShiftActiveStatus, resolveWorkerWorkStatus } from "../utils/worker-status";
 
 /* -------------------------------------- Config -------------------------------------- */
@@ -250,16 +250,16 @@ function buildWorkerTeamAcceptResponse(
   removedAfterScanCount: number,
 ): WorkerCurrentJobTeamAcceptResponse {
   // workers_required แสดงขนาดทีมตั้งต้น ส่วน remaining/is_ready หักคนที่ Admin ถอดออกหลัง Scan แล้วเหมือน team_scan
-  const effectiveWorkersRequired = resolveEffectiveWorkersRequired(
+  const readinessThreshold = resolveTeamReadinessThreshold(
     workersRequired,
     removedAfterScanCount,
   );
-  const remainingCount = Math.max(0, effectiveWorkersRequired - acceptedCount);
+  const remainingCount = Math.max(0, readinessThreshold - acceptedCount);
   return {
     workers_required: workersRequired,
     accepted_count: acceptedCount,
     remaining_count: remainingCount,
-    is_ready: effectiveWorkersRequired > 0 && acceptedCount >= effectiveWorkersRequired,
+    is_ready: readinessThreshold > 0 && acceptedCount >= readinessThreshold,
   };
 }
 
@@ -1555,7 +1555,7 @@ async function resolveScanAssignmentOutcome(
   const shortenedAssignments: TicketJobAssignmentDto[] = [];
 
   if (
-    resolveEffectiveWorkersRequired(
+    resolveTeamReadinessThreshold(
       ticketJob.workers_required,
       ticketJob.removed_after_scan_count,
     ) > 1 &&
