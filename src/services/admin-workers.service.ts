@@ -31,7 +31,7 @@ import type { AccessTokenPayload } from "../types/auth.type";
 import type { AccountStatus } from "../types/shared/account.type";
 import type { DbConnection } from "../types/shared/common.type";
 import { MASTER_WORKER_STATUS } from "../types/admin-workers.type";
-import type { AdminWorkerBoardStatus, AdminWorkerStatusItem, MasterWorkerDto, PaginationMeta, UserDetailResponse, UserListItem, UserListFilters, UserListSchedule, WorkScheduleDto, WorkScheduleWithShiftDto } from "../types/admin-workers.type";
+import type { AdminWorkerBoardStatus, AdminWorkerStatusItem, MasterWorkerDto, PaginationMeta, UserDetailResponse, UserListItem, UserListFilters, UserListSchedule, WorkScheduleDto } from "../types/admin-workers.type";
 import type { TicketJobAssignmentDto, VehicleWorkReadinessDto, WorkerPresenceDto, WorkerQueueEntryDto } from "../types/worker.type";
 import type { SecurityAuditRequestContext } from "../types/shared/security-audit-log.type";
 // Import Validation
@@ -42,7 +42,7 @@ import { requireActorId } from "../utils/actor";
 import ApiError from "../utils/api-error";
 import { logger } from "../utils/logger";
 import { hashPassword, normalizePhoneDigits } from "../utils/password";
-import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, formatScheduleWithShift, isTimeInWorkSchedule, resolveTimeWorkFromTimeIn, resolveTimeWorkPreset } from "../utils/shift";
+import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, isTimeInWorkSchedule } from "../utils/shift";
 import { buildDeadline, formatBangkokDate, toUnixMs } from "../utils/time";
 import { buildWorkerQueueSocketPayload } from "../utils/worker-payload";
 import { buildWorkerCode } from "../utils/worker-code";
@@ -113,17 +113,16 @@ function buildPaginationMeta(
 
 // Function จัดรูปแบบ user list schedule ใน service flow
 function formatUserListSchedule(
-  schedule: WorkScheduleWithShiftDto | null
+  schedule: WorkScheduleDto | null
 ): UserListSchedule | null {
   if (!schedule) {
     return null;
   }
 
   return {
-    time_work: schedule.time_work,
+    shift_name: schedule.shift_name,
     time_in: schedule.time_in,
     time_out: schedule.time_out,
-    shift_name: schedule.shift_name,
   };
 }
 
@@ -134,7 +133,7 @@ function toAccountStatus(status: number | null): AccountStatus {
 
 // Function จัดรูปแบบ user list item ใน service flow
 function formatUserListItem(worker: MasterWorkerDto): UserListItem {
-  const schedule = formatScheduleWithShift(scheduleFromWorker(worker));
+  const schedule = scheduleFromWorker(worker);
 
   return {
     worker_code: worker.labor_code,
@@ -152,7 +151,7 @@ function formatUserListItem(worker: MasterWorkerDto): UserListItem {
 // Function สร้าง WorkScheduleDto จาก field shift บน MasterWorker เอง (schedule ไม่ใช่ entity แยก)
 function scheduleFromWorker(worker: MasterWorkerDto): WorkScheduleDto | null {
   if (
-    worker.time_work === null ||
+    worker.shift_name === null ||
     worker.time_in === null ||
     worker.time_out === null
   ) {
@@ -162,7 +161,7 @@ function scheduleFromWorker(worker: MasterWorkerDto): WorkScheduleDto | null {
   return {
     id: worker.id,
     worker_id: worker.id,
-    time_work: worker.time_work,
+    shift_name: worker.shift_name,
     work_date: worker.work_start_date ?? worker.created_at.slice(0, 10),
     time_in: worker.time_in,
     time_out: worker.time_out,
@@ -176,7 +175,7 @@ function scheduleFromWorker(worker: MasterWorkerDto): WorkScheduleDto | null {
 
 // Function จัดรูปแบบ user detail ใน service flow
 function formatUserDetail(worker: MasterWorkerDto): UserDetailResponse {
-  const schedule = formatScheduleWithShift(scheduleFromWorker(worker));
+  const schedule = scheduleFromWorker(worker);
 
   return {
     image_url: worker.image_url,
@@ -188,10 +187,9 @@ function formatUserDetail(worker: MasterWorkerDto): UserDetailResponse {
       nationality: worker.nationality,
       labor_color: worker.labor_color,
       work_start_date: worker.work_start_date,
-      time_work: schedule?.time_work ?? null,
+      shift_name: schedule?.shift_name ?? null,
       time_in: schedule?.time_in ?? null,
       time_out: schedule?.time_out ?? null,
-      shift_name: schedule?.shift_name ?? null,
     },
   };
 }
@@ -336,7 +334,9 @@ export async function createUser(
     shirt_type: shirtType,
     shirt_number: shirtNumber,
     work_start_date: workStartDate,
-    time_work: timeWork,
+    shift_name: shiftName,
+    time_in: timeIn,
+    time_out: timeOut,
     status,
   } = parseWithSchema(createUserBodySchema, body);
   const workerCode = buildWorkerCode({
@@ -346,7 +346,6 @@ export async function createUser(
   });
   const laborCode = requestedUsername ?? workerCode;
   const initialWorkStartDate = workStartDate ?? formatBangkokDate();
-  const timeWorkPreset = resolveTimeWorkPreset(timeWork);
   // เก็บ telephone ลง DB เป็นตัวเลขล้วนเสมอ (ตัดขีด/วงเล็บ/เว้นวรรค) — ใช้ค่าเดียวกันทั้ง telephone column และตอนสร้าง password กันไม่ให้ไม่ตรงกัน
   const normalizedPhone = normalizePhoneDigits(phone);
   assertNormalizedPhoneHasDigits(normalizedPhone);
@@ -367,9 +366,9 @@ export async function createUser(
           work_start_date: initialWorkStartDate,
           work_code: workCode,
           coat_no: shirtNumber,
-          time_work: timeWorkPreset.time_work,
-          time_in: timeWorkPreset.time_in,
-          time_out: timeWorkPreset.time_out,
+          shift_name: shiftName,
+          time_in: timeIn,
+          time_out: timeOut,
           status: status === "active" ? MASTER_WORKER_STATUS.ACTIVE : MASTER_WORKER_STATUS.INACTIVE,
         },
         transaction
@@ -405,7 +404,9 @@ export async function createUser(
           after: {
             full_name: fullName,
             status,
-            time_work: timeWorkPreset.time_work,
+            shift_name: shiftName,
+            time_in: timeIn,
+            time_out: timeOut,
           },
         },
       },
@@ -473,12 +474,14 @@ export async function updateUser(
     shirt_type: shirtType,
     shirt_number: shirtNumber,
     work_start_date: workStartDate,
+    shift_name: shiftName,
     time_in: timeIn,
     time_out: timeOut,
     status,
   } = parseWithSchema(updateUserBodySchema, body);
   const hasScheduleTimeInput =
     timeIn !== undefined || timeOut !== undefined;
+  const hasShiftInput = shiftName !== undefined || hasScheduleTimeInput;
   // เก็บ telephone ลง DB เป็นตัวเลขล้วนเสมอเช่นเดียวกับตอนสร้าง (undefined = ไม่ได้แก้เบอร์)
   const normalizedPhone = phone !== undefined ? normalizePhoneDigits(phone) : undefined;
 
@@ -549,8 +552,8 @@ export async function updateUser(
       }
     }
 
-    if (hasScheduleTimeInput) {
-      if (timeIn === undefined || timeOut === undefined) {
+    if (hasShiftInput) {
+      if (hasScheduleTimeInput && (timeIn === undefined || timeOut === undefined)) {
         throw new ApiError(
           400,
           "TIME_PAIR_REQUIRED",
@@ -558,12 +561,20 @@ export async function updateUser(
         );
       }
 
-      const resolvedTimeWork = resolveTimeWorkFromTimeIn(timeIn);
+      // ชื่อกะไม่คำนวณจาก time_in แล้ว — ถ้าจะตั้งเวลากะให้ worker ที่ยังไม่มีชื่อกะ ต้องส่ง ShiftName มาด้วย
+      // ไม่งั้น schedule จะยังเป็น null (mapWorkerSchedule ต้องมีครบทั้ง shift_name/time_in/time_out)
+      if (hasScheduleTimeInput && shiftName === undefined && worker.shift_name === null) {
+        throw new ApiError(
+          400,
+          "SHIFT_NAME_REQUIRED",
+          "ShiftName is required when setting TimeIn and TimeOut for a worker without a shift name."
+        );
+      }
 
       await adminWorkersRepository.updateShift(
         worker.id,
         {
-          time_work: resolvedTimeWork,
+          shift_name: shiftName,
           time_in: timeIn,
           time_out: timeOut,
           work_start_date: workStartDate,
@@ -581,7 +592,7 @@ export async function updateUser(
       "labor_color",
       "work_start_date",
       "status",
-      "time_work",
+      "shift_name",
       "time_in",
       "time_out",
     ]);
@@ -822,7 +833,6 @@ function formatAdminWorkerStatusItem(
   attendance: Pick<WorkerCheckinLog, "closedAt" | "closeReason" | "firstOnlineAt"> | null = null,
   settings: Pick<RuntimeSettings, "worker_accept_timeout_limit" | "worker_break_retry"> | null = null,
 ): AdminWorkerStatusItem {
-  const scheduleWithShift = formatScheduleWithShift(schedule);
   const status = resolveWorkerWorkStatus(queue, assignment, teamScanReadiness);
   const isOvertime =
     assignment !== null && (!schedule || !isTimeInWorkSchedule(schedule));
@@ -843,7 +853,7 @@ function formatAdminWorkerStatusItem(
     labor_color: worker.labor_color,
     shirt_number: worker.coat_no,
     image_url: worker.image_url,
-    shift_name: scheduleWithShift?.shift_name ?? null,
+    shift_name: schedule?.shift_name ?? null,
     latest_activity_at: resolveLatestActivityAt(queue, assignment, presence),
     status_entered_at: resolveStatusEnteredAt(status, queue, assignment, presence),
     queue_position: status === WORKER_WORK_STATUS.READY && queueRank !== null ? queueRank + 1 : null,

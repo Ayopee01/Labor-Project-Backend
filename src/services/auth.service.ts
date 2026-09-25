@@ -25,7 +25,7 @@ import { SECURITY_AUDIT_EVENT_TYPE, SECURITY_AUDIT_OUTCOME } from "../types/shar
 import type { AccessTokenPayload, AuthSuccessResponse, AuthTokens, MeResponse, ProfileCardShift, SessionDto, UpdateLangResponse } from "../types/auth.type";
 import type { DbConnection } from "../types/shared/common.type";
 import { MASTER_WORKER_STATUS } from "../types/admin-workers.type";
-import type { AccountDto, MasterWorkerDto } from "../types/admin-workers.type";
+import type { AccountDto, MasterWorkerDto, WorkScheduleDto } from "../types/admin-workers.type";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 import type { SecurityAuditRequestContext } from "../types/shared/security-audit-log.type";
 // Import Validation
@@ -37,7 +37,6 @@ import { signAccessToken, signLoginChallengeToken, signRefreshToken, verifyLogin
 import { logger } from "../utils/logger";
 import { hashPassword, verifyPassword } from "../utils/password";
 import { hashRefreshToken, refreshTokenHashesMatch } from "../utils/refresh-token-hash";
-import { formatScheduleWithShift } from "../utils/shift";
 
 /* -------------------------------------- Config -------------------------------------- */
 
@@ -93,7 +92,7 @@ function buildAdminEmployeeCode(accountId: number): string {
 
 // Function จัดรูปแบบ profile card shift ใน service flow
 function formatProfileCardShift(
-  schedule: ReturnType<typeof formatScheduleWithShift>
+  schedule: WorkScheduleDto | null
 ): ProfileCardShift | null {
   if (!schedule) {
     return null;
@@ -136,12 +135,12 @@ async function buildAdminMeResponse(
 
 // Function สร้าง me response ของ Worker ใน service flow
 function buildWorkerMeResponse(worker: MasterWorkerDto): MeResponse {
-  const schedule = formatScheduleWithShift(
-    worker.time_work !== null && worker.time_in !== null && worker.time_out !== null
+  const schedule: WorkScheduleDto | null =
+    worker.shift_name !== null && worker.time_in !== null && worker.time_out !== null
       ? {
           id: worker.id,
           worker_id: worker.id,
-          time_work: worker.time_work,
+          shift_name: worker.shift_name,
           work_date: worker.work_start_date ?? worker.created_at.slice(0, 10),
           time_in: worker.time_in,
           time_out: worker.time_out,
@@ -151,8 +150,7 @@ function buildWorkerMeResponse(worker: MasterWorkerDto): MeResponse {
           created_at: worker.created_at,
           updated_at: worker.updated_at,
         }
-      : null
-  );
+      : null;
 
   return {
     role: "worker",

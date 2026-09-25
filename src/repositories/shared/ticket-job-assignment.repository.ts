@@ -928,6 +928,49 @@ export async function setVehicleAssignmentsStatus(
   return result.count;
 }
 
+// Function ปิด assignment ที่ยังไม่ Scan (PENDING/ACCEPTED) เป็น CANCELLED ตอนรถปิดงานก่อน Worker เข้างาน พร้อมบันทึก
+// event CLOSED_BEFORE_SCAN — เขียนแบบมีเงื่อนไขสถานะ กัน race กับ Worker ที่ Scan เข้ามาพร้อมกัน
+export async function cancelAssignmentsClosedBeforeScan(
+  assignments: Array<Pick<TicketJobAssignmentDto, "id" | "worker_id" | "vehicle_job_id">>,
+  closedAt: Date,
+  connection?: DbConnection,
+): Promise<number> {
+  if (assignments.length === 0) {
+    return 0;
+  }
+
+  const db = client(connection);
+  const result = await db.ticketJobAssignment.updateMany({
+    where: {
+      id: {
+        in: assignments.map((assignment) => assignment.id),
+      },
+      status: {
+        in: [ASSIGNMENT_STATUS.PENDING, ASSIGNMENT_STATUS.ACCEPTED],
+      },
+    },
+    data: {
+      status: ASSIGNMENT_STATUS.CANCELLED,
+    },
+  });
+
+  await workerAssignmentEventRepository.createManyOnce(
+    assignments.map((assignment) => ({
+      assignment_id: assignment.id,
+      worker_id: assignment.worker_id,
+      vehicle_job_id: assignment.vehicle_job_id,
+      event_type: WORKER_ASSIGNMENT_EVENT_TYPE.CLOSED_BEFORE_SCAN,
+      occurred_at: closedAt,
+      metadata: {
+        source: "vehicle_job_closed_before_scan",
+      },
+    })),
+    connection,
+  );
+
+  return result.count;
+}
+
 // Function เปลี่ยนสถานะ assignment หลายใบเป็น COMPLETED พร้อมกัน
 export async function completeAssignments(
   assignmentIds: number[],

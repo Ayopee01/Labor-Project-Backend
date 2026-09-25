@@ -298,7 +298,7 @@ test(
           laborCode: `E2E-WORKER-${suffix}`,
           status: 1,
           fullName: "E2E Test Worker",
-          timeWork: "Morning",
+          shiftName: "Morning",
           timeIn: schedule.time_in,
           timeOut: schedule.time_out,
           passwordHash: await hashPassword(workerPassword),

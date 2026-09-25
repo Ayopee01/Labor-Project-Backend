@@ -41,9 +41,9 @@ const timeString = trimmedString.pipe(
   z.iso.time({ precision: -1, error: "Must use HH:mm format." })
 );
 
-// Format กะมาตรฐานของ worker: Morning = กะเช้า, Evening = กะเย็น
-const timeWorkSchema = z.enum(["Morning", "Evening"], {
-  error: "TimeWork must be Morning or Evening.",
+// Format ชื่อกะของ worker ตามค่าที่ใช้จริงใน master DB (LaborMaster.TimeWork) — backend ไม่คำนวณชื่อกะเอง
+const shiftNameSchema = z.enum(["Morning", "Evening", "Not specified"], {
+  error: "ShiftName must be Morning, Evening or Not specified.",
 });
 
 // Function แปลง empty string เป็น undefined ก่อน validate optional field
@@ -375,7 +375,9 @@ export const createUserBodySchema = z
     shirt_type: workerShirtTypeSchema,
     shirt_number: trimmedString,
     work_start_date: optionalDateString,
-    time_work: timeWorkSchema,
+    shift_name: shiftNameSchema,
+    time_in: timeString,
+    time_out: timeString,
     status: defaultActiveStatusSchema,
   });
 
@@ -388,7 +390,7 @@ export const updateUserBodySchema = z.object({
   shirt_type: optionalWorkerShirtTypeSchema,
   shirt_number: optionalTrimmedString,
   work_start_date: optionalDateString,
-  time_work: z.never("TimeWork cannot be updated. Send TimeIn and TimeOut instead.").optional(),
+  shift_name: z.preprocess(emptyStringToUndefined, shiftNameSchema.optional()),
   time_in: z.preprocess(emptyStringToUndefined, timeString.optional()),
   time_out: z.preprocess(emptyStringToUndefined, timeString.optional()),
   profile: updateProfileInputSchema.optional(),

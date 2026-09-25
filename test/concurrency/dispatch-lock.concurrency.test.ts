@@ -111,7 +111,7 @@ test(
           data: {
             laborCode: `CC-DISPATCH-${suffix}-${index}`,
             status: 1,
-            timeWork: "Morning",
+            shiftName: "Morning",
             timeIn: schedule.time_in,
             timeOut: schedule.time_out,
           },

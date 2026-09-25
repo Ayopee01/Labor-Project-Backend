@@ -6,6 +6,8 @@ export const WORKER_ASSIGNMENT_EVENT_TYPE = {
   SCAN_TIMEOUT: "SCAN_TIMEOUT",
   COMPLETED: "COMPLETED",
   ADMIN_CANCELLED: "ADMIN_CANCELLED",
+  // รถปิดงาน (ทุกแผงจบ) ก่อน Worker คนนี้ Scan เข้างาน — ไม่ได้ทำงานจริง assignment จึงถูกปิดเป็น CANCELLED ไม่ใช่ COMPLETED
+  CLOSED_BEFORE_SCAN: "CLOSED_BEFORE_SCAN",
 } as const;
 
 export type WorkerAssignmentEventType =

@@ -58,7 +58,9 @@ test(
           shirt_number: shirtNumber,
           work_start_date: "2024-07-15",
           status: "active",
-          time_work: "Morning",
+          shift_name: "Morning",
+          time_in: "05:00",
+          time_out: "21:00",
         },
         {
           account_id: 1,
@@ -208,9 +210,9 @@ test(
       assert.equal(createdUser.status, "active");
       assert.equal(createdUser.work_start_date, "2024-07-15");
       assert.equal((createdUser as { work_schedules?: unknown }).work_schedules, undefined);
-      assert.equal(createdUser.work_schedule?.time_work, "Morning");
-      assert.equal(createdUser.work_schedule?.time_in, "08:00");
-      assert.equal(createdUser.work_schedule?.time_out, "18:00");
+      assert.equal(createdUser.work_schedule?.shift_name, "Morning");
+      assert.equal(createdUser.work_schedule?.time_in, "05:00");
+      assert.equal(createdUser.work_schedule?.time_out, "21:00");
       assert.ok(createdUser.work_schedule?.shift_name);
       assert.equal(
         (createdUser.work_schedule as { id?: number } | null)?.id,
@@ -244,7 +246,8 @@ test(
         workerCode,
         {
           status: "inactive",
-          time_in: "18:00",
+          shift_name: "Evening",
+          time_in: "15:00",
           time_out: "06:00",
         },
         {
@@ -259,8 +262,8 @@ test(
       assert.equal(updated.worker_code, workerCode);
       assert.equal(updated.details.work_start_date, "2024-07-15");
       assert.equal((updated.details as { work_schedules?: unknown }).work_schedules, undefined);
-      assert.equal(updated.details.time_work, "Evening");
-      assert.equal(updated.details.time_in, "18:00");
+      assert.equal(updated.details.shift_name, "Evening");
+      assert.equal(updated.details.time_in, "15:00");
       assert.equal(updated.details.time_out, "06:00");
       assert.ok(updated.details.shift_name);
     } finally {

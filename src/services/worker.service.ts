@@ -45,7 +45,7 @@ import { workerAssignmentHistoryQuerySchema, workerCheckInBarcodeBodySchema, wor
 // Import Utils
 import ApiError from "../utils/api-error";
 import { logger } from "../utils/logger";
-import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, formatScheduleWithShift, isTimeInWorkSchedule } from "../utils/shift";
+import { buildShiftWaitInfo, buildWorkScheduleShiftInstanceKey, isTimeInWorkSchedule } from "../utils/shift";
 import { buildBangkokDateRange, buildBangkokDateSpanRange, buildDeadline, buildLatestCompletedBangkokDateRange, buildRemainingBreakTime, formatBangkokDate, formatBangkokDisplayDate, formatBangkokDisplayDateTime, getDelayUntil, toUnixMs } from "../utils/time";
 import { buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { buildWorkerQueueSocketPayload } from "../utils/worker-payload";
@@ -967,7 +967,6 @@ export async function getWorkerStatus(
       assignmentRepository.findCurrentAssignmentByWorker(account.id),
       getRuntimeSettings(),
     ]);
-  const schedule = formatScheduleWithShift(currentSchedule);
   let status = resolveWorkerWorkStatus(queueEntry, currentAssignment);
   const dailySummary = await buildWorkerDailySummary(
     account.id,
@@ -1009,11 +1008,11 @@ export async function getWorkerStatus(
     nationality: account.nationality,
     work_start_date: account.work_start_date,
     phone: account.telephone,
-    shift: schedule
+    shift: currentSchedule
       ? {
-          name: schedule.shift_name,
-          start_time: schedule.time_in,
-          end_time: schedule.time_out,
+          name: currentSchedule.shift_name,
+          start_time: currentSchedule.time_in,
+          end_time: currentSchedule.time_out,
         }
       : null,
     shift_active: shiftActive,

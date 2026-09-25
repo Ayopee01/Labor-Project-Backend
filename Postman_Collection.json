@@ -1432,7 +1432,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/users/{{workerCode}}\nAuth: Required via Authorization header\nHeaders: Authorization: Bearer {{accessToken}}, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: None\nNotes: Admin only. {{workerCode}} must be WorkerCode, for example MN000012. Response is trimmed for worker edit UI: ImageUrl, WorkerCode, FullName, Status, and Details. Details includes Phone, Position, Nationality, ShirtNumber, ShirtType, WorkStartDate, TimeWork, TimeIn, TimeOut, and ShiftName."
+            "description": "Method: GET\nURL: {{baseUrl}}/api/admin/users/{{workerCode}}\nAuth: Required via Authorization header\nHeaders: Authorization: Bearer {{accessToken}}, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: None\nNotes: Admin only. {{workerCode}} must be WorkerCode, for example MN000012. Response is trimmed for worker edit UI: ImageUrl, WorkerCode, FullName, Status, and Details. Details includes Phone, Position, Nationality, ShirtNumber, ShirtType, WorkStartDate, ShiftName, TimeIn, and TimeOut. ShiftName comes straight from the master DB value (Morning, Evening, Not specified) and is never derived from TimeIn."
           },
           "response": []
         },
@@ -1501,10 +1501,22 @@
                   "description": "Optional. First working date. If omitted, backend uses the current Bangkok date."
                 },
                 {
-                  "key": "TimeWork",
+                  "key": "ShiftName",
                   "value": "Morning",
                   "type": "text",
-                  "description": "Required. Morning = shift preset 08:00-18:00, Evening = shift preset 18:00-08:00."
+                  "description": "Required. Shift name as stored in the master DB (LaborMaster.TimeWork): Morning, Evening, or Not specified. Saved as-is; the backend does not derive it from TimeIn."
+                },
+                {
+                  "key": "TimeIn",
+                  "value": "05:00",
+                  "type": "text",
+                  "description": "Required. Shift start time, HH:mm."
+                },
+                {
+                  "key": "TimeOut",
+                  "value": "21:00",
+                  "type": "text",
+                  "description": "Required. Shift end time, HH:mm (may be earlier than TimeIn for an overnight shift)."
                 },
                 {
                   "key": "Status",
@@ -1527,7 +1539,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: POST\nURL: {{baseUrl}}/api/admin/users\nAuth: Required via Authorization header\nHeaders: Authorization: Bearer {{accessToken}}. Do not set Content-Type manually for multipart/form-data; Postman sets the boundary., X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: multipart/form-data. ImageUrl (text, optional) — leave blank or omit entirely for null; the frontend passes a URL string here (e.g. a pre-uploaded CDN link), not a file. Text fields: FullName, Phone, Nationality, ShirtType, ShirtNumber, TimeWork, optional WorkStartDate, Status.\nResponse: message only, Worker created successfully.\nNotes: Admin only. username defaults to WorkerCode generated from nationality + ShirtType + ShirtNumber, such as MN000012. nationality accepts Myanmar or Cambodia. ShirtType accepts Navy, Blue, or Green. ShirtNumber is unique and cannot be reused. Worker password is always the hashed value of phone, and phone is saved to accounts.phone. TimeWork Morning uses preset 08:00-18:00 and TimeWork Evening uses preset 18:00-08:00. WorkStartDate is optional; if omitted, backend uses the current Bangkok date. ImageUrl is saved as-is to accounts.image_url — no upload/processing happens server-side for this field. A real binary file upload is still accepted too, via a separate multipart file field named Image (not shown in this example) which the backend saves under /uploads/workers and uses instead of ImageUrl if both are sent."
+            "description": "Method: POST\nURL: {{baseUrl}}/api/admin/users\nAuth: Required via Authorization header\nHeaders: Authorization: Bearer {{accessToken}}. Do not set Content-Type manually for multipart/form-data; Postman sets the boundary., X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: multipart/form-data. ImageUrl (text, optional) — leave blank or omit entirely for null; the frontend passes a URL string here (e.g. a pre-uploaded CDN link), not a file. Text fields: FullName, Phone, Nationality, ShirtType, ShirtNumber, ShiftName, TimeIn, TimeOut, optional WorkStartDate, Status.\nResponse: message only, Worker created successfully.\nNotes: Admin only. username defaults to WorkerCode generated from nationality + ShirtType + ShirtNumber, such as MN000012. nationality accepts Myanmar or Cambodia. ShirtType accepts Navy, Blue, or Green. ShirtNumber is unique and cannot be reused. Worker password is always the hashed value of phone, and phone is saved to accounts.phone. ShiftName, TimeIn and TimeOut are all required and saved exactly as sent (no preset times, no derived shift name). WorkStartDate is optional; if omitted, backend uses the current Bangkok date. ImageUrl is saved as-is to accounts.image_url — no upload/processing happens server-side for this field. A real binary file upload is still accepted too, via a separate multipart file field named Image (not shown in this example) which the backend saves under /uploads/workers and uses instead of ImageUrl if both are sent."
           },
           "response": []
         },
@@ -1585,7 +1597,7 @@
             "auth": {
               "type": "noauth"
             },
-            "description": "Method: PATCH\nURL: {{baseUrl}}/api/admin/users/{{workerCode}}\nAuth: Required via Authorization header\nHeaders: Authorization: Bearer {{accessToken}}, Content-Type: application/json, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: JSON fields from worker edit UI: ImageUrl/img, WorkerCode, FullName, Phone, Nationality, Status, Position, ShirtNumber, ShirtType, optional WorkStartDate, TimeIn, TimeOut. nationality accepts Myanmar or Cambodia. ShirtType accepts Navy, Blue, or Green. ShirtNumber is unique and cannot be reused. TimeWork cannot be updated in this body. Admin edits only TimeIn and TimeOut; backend derives TimeWork and ShiftName from TimeIn. TimeIn and TimeOut must be time only in HH:mm and must be sent together.\nNotes: Admin only. {{workerCode}} must be WorkerCode. If nationality, ShirtType, or ShirtNumber is sent without WorkerCode, backend regenerates WorkerCode/username from nationality + ShirtType + ShirtNumber, using existing profile values for fields omitted from the request. status inactive revokes active worker sessions. Password reset remains separate at PATCH /api/admin/users/{{workerCode}}/password."
+            "description": "Method: PATCH\nURL: {{baseUrl}}/api/admin/users/{{workerCode}}\nAuth: Required via Authorization header\nHeaders: Authorization: Bearer {{accessToken}}, Content-Type: application/json, X-Request-Id (optional, correlation id), X-Client-Version (optional)\nQuery: None\nBody: JSON fields from worker edit UI: ImageUrl/img, WorkerCode, FullName, Phone, Nationality, Status, Position, ShirtNumber, ShirtType, optional WorkStartDate, ShiftName, TimeIn, TimeOut. nationality accepts Myanmar or Cambodia. ShirtType accepts Navy, Blue, or Green. ShirtNumber is unique and cannot be reused. ShiftName (Morning, Evening, Not specified) can be sent on its own or together with TimeIn/TimeOut; it is never derived from TimeIn. TimeIn and TimeOut must be time only in HH:mm and must be sent together. Sending TimeIn/TimeOut for a worker that has no ShiftName yet without also sending ShiftName returns 400 SHIFT_NAME_REQUIRED.\nNotes: Admin only. {{workerCode}} must be WorkerCode. If nationality, ShirtType, or ShirtNumber is sent without WorkerCode, backend regenerates WorkerCode/username from nationality + ShirtType + ShirtNumber, using existing profile values for fields omitted from the request. status inactive revokes active worker sessions. Password reset remains separate at PATCH /api/admin/users/{{workerCode}}/password."
           },
           "response": []
         },

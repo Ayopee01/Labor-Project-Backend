@@ -66,7 +66,7 @@ export interface MasterWorkerDto {
   labor_color: string | null;
   labor_coat: string | null;
   coat_no: string | null;
-  time_work: string | null;
+  shift_name: string | null;
   time_in: string | null;
   time_out: string | null;
   image_url: string | null;
@@ -81,7 +81,7 @@ export interface MasterWorkerDto {
 export interface WorkScheduleDto {
   id: number;
   worker_id: number;
-  time_work: string;
+  shift_name: string;
   work_date: string;
   time_in: string;
   time_out: string;
@@ -90,10 +90,6 @@ export interface WorkScheduleDto {
   updated_by: number | null;
   created_at: string;
   updated_at: string;
-}
-
-export interface WorkScheduleWithShiftDto extends WorkScheduleDto {
-  shift_name: string;
 }
 
 export type ShiftWaitInfo = {
@@ -128,7 +124,7 @@ export interface MasterWorkerCreateInput {
   work_start_date?: string | null;
   work_code?: number | null;
   coat_no?: string | null;
-  time_work?: string | null;
+  shift_name?: string | null;
   time_in?: string | null;
   time_out?: string | null;
   status?: number;
@@ -170,10 +166,9 @@ export interface PaginationMeta {
 }
 
 export interface UserListSchedule {
-  time_work: string;
+  shift_name: string;
   time_in: string;
   time_out: string;
-  shift_name: string;
 }
 
 export interface UserListItem {
@@ -193,10 +188,9 @@ interface UserDetailInfo {
   nationality: string | null;
   labor_color: string | null;
   work_start_date: string | null;
-  time_work: string | null;
+  shift_name: string | null;
   time_in: string | null;
   time_out: string | null;
-  shift_name: string | null;
 }
 
 export interface UserDetailResponse {

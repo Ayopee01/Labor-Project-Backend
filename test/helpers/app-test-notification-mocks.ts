@@ -8,8 +8,18 @@ async function resolveTicketResultAudience(ticket: { id: number; market_job_id?:
   const marketJobId =
     ticket.market_job_id ??
     state.boothJobs.find((item) => item.id === ticket.id)?.market_job_id;
+  // ตัดคนที่ถูกถอดออกไปแล้ว (roster CANCELLED หรือถูกถอดเฉพาะแผงนี้) เหมือนของจริง
   const ticketWorkerIds = state.ticketWorkers
-    .filter((worker) => worker.market_job_id === marketJobId)
+    .filter(
+      (worker) =>
+        worker.market_job_id === marketJobId &&
+        worker.status !== "CANCELLED" &&
+        !state.boothJobWorkerExclusions.some(
+          (exclusion) =>
+            exclusion.gate_ticket_id === ticket.id &&
+            exclusion.ticket_worker_id === worker.id,
+        ),
+    )
     .map((worker) => worker.worker_id);
 
   return [...new Set(ticketWorkerIds)];

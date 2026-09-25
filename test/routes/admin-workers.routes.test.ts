@@ -88,7 +88,7 @@ test("GET /api/admin/users filters by worker_code, full_name, shirt_number, and 
   const { token } = await loginJobAdmin(9720);
   const morningWorker = addWorker(9721);
   const eveningWorker = addWorker(9722);
-  eveningWorker.time_work = "Evening";
+  eveningWorker.shift_name = "Evening";
 
   const byWorkerCode = await server.request(
     "GET",
@@ -181,7 +181,9 @@ test("POST /api/admin/users writes a worker_account_created SecurityAuditLog wit
       nationality: "Myanmar",
       shirt_type: "Navy",
       shirt_number: "9731",
-      time_work: "Morning",
+      shift_name: "Morning",
+      time_in: "05:00",
+      time_out: "21:00",
       status: "active",
     },
   });
@@ -199,6 +201,70 @@ test("POST /api/admin/users writes a worker_account_created SecurityAuditLog wit
     (log.metadata as { targetWorkerCode?: string } | null)?.targetWorkerCode,
     "MN009731",
   );
+});
+
+test("POST /api/admin/users stores ShiftName/TimeIn/TimeOut exactly as sent without deriving the shift", async () => {
+  const { token } = await loginJobAdmin(9732);
+
+  const response = await server.request("POST", "/api/admin/users", {
+    token,
+    body: {
+      full_name: "New Worker 9733",
+      phone: "0891119733",
+      nationality: "Myanmar",
+      shirt_type: "Navy",
+      shirt_number: "9733",
+      shift_name: "Evening",
+      time_in: "15:00",
+      time_out: "06:00",
+    },
+  });
+
+  assert.equal(response.status, 201, JSON.stringify(response.body));
+
+  const detail = await server.request("GET", "/api/admin/users/MN009733", { token });
+
+  assert.equal(detail.status, 200, JSON.stringify(detail.body));
+  assert.equal(detail.body.details.shift_name, "Evening");
+  assert.equal(detail.body.details.time_in, "15:00");
+  assert.equal(detail.body.details.time_out, "06:00");
+  assert.equal("time_work" in detail.body.details, false);
+});
+
+test("PATCH /api/admin/users/:workerCode updates ShiftName independently and requires it for workers without one", async () => {
+  const { token } = await loginJobAdmin(9734);
+  const worker = addWorker(9735);
+
+  const renamed = await server.request("PATCH", `/api/admin/users/${worker.labor_code}`, {
+    token,
+    body: { shift_name: "Evening" },
+  });
+
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  assert.equal(worker.shift_name, "Evening");
+  assert.equal(worker.time_in, "00:00");
+  assert.equal(worker.time_out, "23:59");
+
+  // เวลา 05:00 ไม่ถูกใช้ตัดสินชื่อกะอีกต่อไป ชื่อกะเดิมต้องคงอยู่
+  const retimed = await server.request("PATCH", `/api/admin/users/${worker.labor_code}`, {
+    token,
+    body: { time_in: "05:00", time_out: "21:00" },
+  });
+
+  assert.equal(retimed.status, 200, JSON.stringify(retimed.body));
+  assert.equal(worker.shift_name, "Evening");
+  assert.equal(worker.time_in, "05:00");
+
+  const unnamedWorker = addWorker(9736);
+  unnamedWorker.shift_name = null;
+
+  const missingShiftName = await server.request("PATCH", `/api/admin/users/${unnamedWorker.labor_code}`, {
+    token,
+    body: { time_in: "05:00", time_out: "21:00" },
+  });
+
+  assert.equal(missingShiftName.status, 400, JSON.stringify(missingShiftName.body));
+  assert.equal(missingShiftName.body.code, "SHIFT_NAME_REQUIRED");
 });
 
 test("PATCH /api/admin/users/:workerCode writes a worker_account_updated SecurityAuditLog with only the changed fields, and skips writing when nothing changes", async () => {

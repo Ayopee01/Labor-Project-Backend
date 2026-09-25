@@ -1,11 +1,14 @@
 // Import Services
 import { publishNotification } from "../notifications.service";
 // Import Repositories
+import * as boothJobRepository from "../../repositories/shared/booth-job.repository";
 import * as masterWorkerRepository from "../../repositories/shared/master-worker.repository";
 import * as ticketWorkerRepository from "../../repositories/shared/ticket-worker.repository";
 import * as workerNotificationRepository from "../../repositories/shared/worker-notification.repository";
 // Import Services
 import { sendWorkerPushNotificationByWorkerIds } from "./worker-push.service";
+// Import Config
+import { TICKET_WORKER_STATUS } from "../../constants/status";
 // Import Utils
 import { sendWorkerSocketEvent } from "../../websockets/worker.socket";
 import { logger } from "../../utils/logger";
@@ -100,17 +103,28 @@ export function publishRealtimeEvent(input: PublishRealtimeEventInput): void {
   }
 }
 
-// Function หา Worker ที่ต้องได้รับแจ้งเตือนผลของ Ticket — คืนเฉพาะ worker id (ไม่รวม Admin เพราะ
+// Function หา Worker ที่ต้องได้รับแจ้งเตือนของแผงนี้ — คืนเฉพาะ worker id (ไม่รวม Admin เพราะ
 // MasterWorker.id เป็นคนละ id space กับ Account.id — Admin ถูกแจ้งแยกผ่าน publishRealtimeEvent ด้วย admin: true)
+// ตัดคนที่ถูกถอดออกไปแล้วเสมอ: roster ที่ CANCELLED (ถูกถอดจาก Business Ticket/ออกจากรถ) และคนที่ถูกถอดเฉพาะแผงนี้
+// ไม่งั้นคนที่ไม่ได้อยู่ในงานแล้วจะยังได้แจ้งเตือนส่งยอด/ผล Vendor/แผงถูกยกเลิกของงานนั้นต่อ
 export async function resolveTicketResultAudience(
   ticket: BoothJobDto,
   connection?: DbConnection
 ): Promise<number[]> {
   // Roster เป็นระดับ Business Ticket (market job) ไม่ใช่ระดับ Booth แล้ว
-  const ticketWorkers = await ticketWorkerRepository.listTicketWorkers(ticket.market_job_id, connection);
+  const [ticketWorkers, excludedTicketWorkerIds] = await Promise.all([
+    ticketWorkerRepository.listTicketWorkers(ticket.market_job_id, connection),
+    boothJobRepository.listExcludedTicketWorkerIdsForBooth(ticket.id, connection),
+  ]);
+  const excluded = new Set(excludedTicketWorkerIds);
   const receiverIds = new Set<number>();
 
-  ticketWorkers.forEach((worker) => receiverIds.add(worker.worker_id));
+  ticketWorkers
+    .filter(
+      (worker) =>
+        worker.status !== TICKET_WORKER_STATUS.CANCELLED && !excluded.has(worker.id),
+    )
+    .forEach((worker) => receiverIds.add(worker.worker_id));
 
   return Array.from(receiverIds);
 }

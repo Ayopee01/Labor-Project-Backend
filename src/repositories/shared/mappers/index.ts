@@ -119,7 +119,7 @@ export function mapMasterWorker(record: Omit<MasterWorker, "picture"> | null): M
     labor_color: record.laborColor,
     labor_coat: record.laborCoat,
     coat_no: record.coatNo,
-    time_work: record.timeWork,
+    shift_name: record.shiftName,
     time_in: record.timeIn,
     time_out: record.timeOut,
     image_url: record.imageUrl,
@@ -158,7 +158,7 @@ export function mapLineActionToken(record: LineActionToken): LineActionTokenDto 
 export function mapWorkerSchedule(record: MasterWorker | null): WorkScheduleDto | null {
   if (
     !record ||
-    record.timeWork === null ||
+    record.shiftName === null ||
     record.timeIn === null ||
     record.timeOut === null
   ) {
@@ -168,7 +168,7 @@ export function mapWorkerSchedule(record: MasterWorker | null): WorkScheduleDto 
   return {
     id: record.id,
     worker_id: record.id,
-    time_work: record.timeWork,
+    shift_name: record.shiftName,
     work_date: record.workStartDate ? toDateString(record.workStartDate) : toDateString(record.createdAt),
     time_in: record.timeIn,
     time_out: record.timeOut,

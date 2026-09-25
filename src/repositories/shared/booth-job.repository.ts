@@ -102,6 +102,24 @@ export async function listUnsubmittedOpenBoothIdsByTicketJobId(
   return booths.map((booth) => booth.id);
 }
 
+// Function ดึง TicketWorker id ที่ถูกถอดออกจาก Booth นี้ (BoothJobWorkerExclusion) — ใช้กรองผู้รับแจ้งเตือนของแผงนี้
+export async function listExcludedTicketWorkerIdsForBooth(
+  boothJobId: number,
+  connection?: DbConnection
+): Promise<number[]> {
+  const db = client(connection);
+  const exclusions = await db.boothJobWorkerExclusion.findMany({
+    where: {
+      boothJobId,
+    },
+    select: {
+      ticketWorkerId: true,
+    },
+  });
+
+  return exclusions.map((exclusion) => exclusion.ticketWorkerId);
+}
+
 // Function เช็คว่า worker ถูกถอดออกจาก Booth นี้ไปแล้วหรือยัง
 export async function findBoothJobWorkerExclusion(
   boothJobId: number,

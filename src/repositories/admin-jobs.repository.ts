@@ -617,7 +617,7 @@ function buildDailyWorkerIncomeWhere(
       },
     }),
     ...(options.includeShift && filters.shift !== undefined && {
-      timeWork: filters.shift,
+      shiftName: filters.shift,
     }),
   };
 
@@ -788,7 +788,7 @@ export async function listDailyWorkerIncome(
       select: {
         worker: {
           select: {
-            timeWork: true,
+            shiftName: true,
           },
         },
       },
@@ -800,8 +800,8 @@ export async function listDailyWorkerIncome(
   const availableShifts = Array.from(
     new Set(
       shiftRows
-        .map((row) => row.worker.timeWork)
-        .filter((timeWork): timeWork is string => timeWork !== null),
+        .map((row) => row.worker.shiftName)
+        .filter((shiftName): shiftName is string => shiftName !== null),
     ),
   ).sort();
 

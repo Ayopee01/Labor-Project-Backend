@@ -12,7 +12,7 @@ import type { WorkerCheckinLogKeyInput, WorkerCheckinLogWriteInput, WorkerShiftC
 function buildShiftSnapshot(input: WorkerCheckinLogWriteInput) {
   return {
     workerCode: input.worker_code,
-    timeWork: input.schedule.time_work,
+    shiftName: input.schedule.shift_name,
     timeIn: input.schedule.time_in,
     timeOut: input.schedule.time_out,
   };

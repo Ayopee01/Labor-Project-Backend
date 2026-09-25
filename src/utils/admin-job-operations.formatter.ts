@@ -6,7 +6,6 @@ import type { AdminTicketJobOperationItemResponse, AdminTicketJobOperationMarket
 import { ACTIVE_ASSIGNMENT_STATUSES, ASSIGNMENT_STATUS, SCANNED_ASSIGNMENT_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS } from "../constants/status";
 
 // Import Utils
-import { calculateShiftName } from "../utils/shift";
 import { resolveVehicleOperationStatus as resolveVehicleOperationStatusCore } from "../utils/vehicle-operation-status";
 import { resolveTeamReadinessThreshold } from "../utils/team-requirement";
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
@@ -48,19 +47,11 @@ function toOperationWorkerStatus(assignmentStatus: string): string {
   return WORKER_WORK_STATUS.OPEN_APP;
 }
 
-// Function หา label กะของ worker จากตารางกะที่เก็บบน master_workers (ชื่อกะตัดสินจาก time_in อย่างเดียว)
+// Function หา label กะของ worker จากชื่อกะที่เก็บบน master_workers (ตาม master DB ไม่คำนวณเอง)
 function resolveOperationWorkerShiftName(
   worker: TicketJobOperationRecord["assignments"][number]["worker"]
 ): string | null {
-  if (
-    worker.timeWork === null ||
-    worker.timeIn === null ||
-    worker.timeOut === null
-  ) {
-    return null;
-  }
-
-  return calculateShiftName(worker.timeIn);
+  return worker.shiftName;
 }
 
 // Function ตรวจว่า ticket อยู่สถานะ REJECT หรือไม่

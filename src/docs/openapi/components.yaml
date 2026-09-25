@@ -91,7 +91,7 @@
             name:
               type: string
               description: ชื่อ
-              example: Morning shift
+              example: Morning
             start_time:
               type: string
               description: เวลาเริ่มกะ (HH:mm)
@@ -507,12 +507,13 @@
           type: string
           description: รหัส Worker
           example: MN000142
-        time_work:
+        shift_name:
           type: string
           enum:
             - Morning
             - Evening
-          description: หมวดกะปัจจุบันของ Worker
+            - Not specified
+          description: ชื่อกะตามค่าใน master DB (LaborMaster.TimeWork) backend ไม่คำนวณเอง
           example: Morning
         work_date:
           type: string
@@ -529,10 +530,6 @@
           description: เวลาออกงานอย่างเดียว รูปแบบ HH:mm เป็นเวลากะที่วนซ้ำทุกวัน
           pattern: "^\\d{2}:\\d{2}$"
           example: "17:00"
-        shift_name:
-          type: string
-          description: ชื่อกะทำงาน
-          example: day
         is_current:
           type: boolean
           description: true เมื่อเป็นตารางกะที่มีผลอยู่ในปัจจุบัน
@@ -877,7 +874,9 @@
         - nationality
         - shirt_type
         - shirt_number
-        - time_work
+        - shift_name
+        - time_in
+        - time_out
       properties:
         username:
           type: string
@@ -919,13 +918,24 @@
           format: date
           description: วันที่เริ่มงาน (ไม่บังคับ) ถ้าไม่ส่งมา backend จะใช้วันที่ปัจจุบันตามเวลาไทย
           example: 2026-07-03
-        time_work:
+        shift_name:
           type: string
           enum:
             - Morning
             - Evening
-          description: จำเป็นต้องระบุ Morning = ค่ากะสำเร็จรูป 08:00-18:00, Evening = ค่ากะสำเร็จรูป 18:00-08:00
+            - Not specified
+          description: จำเป็นต้องระบุ ชื่อกะตามค่าใน master DB (LaborMaster.TimeWork) บันทึกตามที่ส่งมา backend ไม่คำนวณจาก time_in
           example: Morning
+        time_in:
+          type: string
+          description: จำเป็นต้องระบุ เวลาเข้างาน รูปแบบ HH:mm
+          pattern: "^\\d{2}:\\d{2}$"
+          example: "05:00"
+        time_out:
+          type: string
+          description: จำเป็นต้องระบุ เวลาออกงาน รูปแบบ HH:mm (น้อยกว่า time_in ได้ ถือเป็นกะข้ามคืน)
+          pattern: "^\\d{2}:\\d{2}$"
+          example: "21:00"
         status:
           type: string
           enum:
@@ -942,7 +952,9 @@
         - nationality
         - shirt_type
         - shirt_number
-        - time_work
+        - shift_name
+        - time_in
+        - time_out
       properties:
         image:
           type: string
@@ -984,13 +996,24 @@
           format: date
           description: วันที่เริ่มงาน (ไม่บังคับ) ถ้าไม่ส่งมา backend จะใช้วันที่ปัจจุบันตามเวลาไทย
           example: 2026-07-03
-        time_work:
+        shift_name:
           type: string
           enum:
             - Morning
             - Evening
-          description: จำเป็นต้องระบุ Morning = ค่ากะสำเร็จรูป 08:00-18:00, Evening = ค่ากะสำเร็จรูป 18:00-08:00
+            - Not specified
+          description: จำเป็นต้องระบุ ชื่อกะตามค่าใน master DB (LaborMaster.TimeWork) บันทึกตามที่ส่งมา backend ไม่คำนวณจาก time_in
           example: Morning
+        time_in:
+          type: string
+          description: จำเป็นต้องระบุ เวลาเข้างาน รูปแบบ HH:mm
+          pattern: "^\\d{2}:\\d{2}$"
+          example: "05:00"
+        time_out:
+          type: string
+          description: จำเป็นต้องระบุ เวลาออกงาน รูปแบบ HH:mm (น้อยกว่า time_in ได้ ถือเป็นกะข้ามคืน)
+          pattern: "^\\d{2}:\\d{2}$"
+          example: "21:00"
         status:
           type: string
           enum:
@@ -1055,9 +1078,17 @@
           format: date
           description: วันที่เริ่มงาน (ไม่บังคับ)
           example: 2026-07-03
+        shift_name:
+          type: string
+          enum:
+            - Morning
+            - Evening
+            - Not specified
+          description: ชื่อกะ (ไม่บังคับ) ส่งอย่างเดียวได้ หรือส่งพร้อม time_in/time_out ก็ได้ ถ้า Worker ยังไม่มีชื่อกะแล้วส่ง time_in/time_out มา ต้องส่ง shift_name มาด้วย ไม่งั้นได้ 400 SHIFT_NAME_REQUIRED
+          example: Evening
         time_in:
           type: string
-          description: เวลาเข้างานที่กำหนดเองสำหรับ Worker คนนี้ (ไม่บังคับ) ต้องส่งคู่กับ time_out รูปแบบ HH:mm backend จะคำนวณ TimeWork และ ShiftName จากเวลาเริ่มนี้
+          description: เวลาเข้างานที่กำหนดเองสำหรับ Worker คนนี้ (ไม่บังคับ) ต้องส่งคู่กับ time_out รูปแบบ HH:mm ไม่มีผลต่อ shift_name
           pattern: "^\\d{2}:\\d{2}$"
           example: "18:00"
         time_out:
@@ -1133,12 +1164,9 @@
     UserListSchedule:
       type: object
       properties:
-        time_work:
+        shift_name:
           type: string
-          enum:
-            - Morning
-            - Evening
-          description: ป้ายกะที่คำนวณจาก TimeIn/TimeOut ของ Worker
+          description: ชื่อกะตามค่าใน master DB (LaborMaster.TimeWork) backend ไม่คำนวณเอง
           example: Morning
         time_in:
           type: string
@@ -1150,10 +1178,6 @@
           pattern: "^\\d{2}:\\d{2}$"
           description: เวลาออกงานอย่างเดียว รูปแบบ HH:mm เป็นเวลากะที่วนซ้ำทุกวัน
           example: "17:00"
-        shift_name:
-          type: string
-          description: ชื่อกะทำงาน
-          example: Morning shift
     UserListResponse:
       type: object
       properties:
@@ -1250,13 +1274,10 @@
               format: date
               description: วันที่เริ่มงาน (ไม่บังคับ)
               example: 2026-07-03
-            time_work:
+            shift_name:
               type: string
               nullable: true
-              enum:
-                - Morning
-                - Evening
-              description: ป้ายกะที่คำนวณจาก TimeIn/TimeOut ของ Worker
+              description: ชื่อกะตามค่าใน master DB (LaborMaster.TimeWork) backend ไม่คำนวณเอง
               example: Morning
             time_in:
               type: string
@@ -1268,11 +1289,6 @@
               nullable: true
               description: เวลาออกงานอย่างเดียว รูปแบบ HH:mm เป็นเวลากะที่วนซ้ำทุกวัน
               example: "17:00"
-            shift_name:
-              type: string
-              nullable: true
-              description: ชื่อกะทำงาน
-              example: Morning shift
           description: รายละเอียดแยกย่อย
     RuntimeSettings:
       type: object
@@ -3545,8 +3561,8 @@
         shift_name:
           type: string
           nullable: true
-          description: ชื่อกะทำงาน
-          example: Morning shift
+          description: ชื่อกะตามค่าใน master DB (LaborMaster.TimeWork) backend ไม่คำนวณเอง
+          example: Morning
         assignment_status:
           type: string
           description: สถานะของ assignment
@@ -4386,7 +4402,9 @@
         reason_code:
           type: string
           nullable: true
-          description: รหัสเหตุผล คู่กับ reason_text
+          description: >-
+            รหัสเหตุผล คู่กับ reason_text — ระดับ Worker มีค่าพิเศษ vehicle_job_closed_before_scan เมื่อรถปิดงาน
+            (ทุกแผงจบ) ก่อน Worker คนนั้น Scan เข้างาน เช่น Admin เพิ่มเข้ามาแทนแต่ทีมเดิมส่งยอดจนจบก่อน — ไม่ได้ทำงานจริงและไม่ได้ค่าแรง
         reason_text:
           type: string
           nullable: true
@@ -4394,7 +4412,7 @@
         cancelled_by_type:
           type: string
           nullable: true
-          description: บทบาทของ Admin ที่ยกเลิก (AdminActionLog.actor_role)
+          description: บทบาทของ Admin ที่ยกเลิก (AdminActionLog.actor_role) หรือ system เมื่อระบบปิดให้เอง (vehicle_job_closed_before_scan)
         cancelled_by_name:
           type: string
           nullable: true
@@ -6888,8 +6906,8 @@
         shift_name:
           type: string
           nullable: true
-          description: ชื่อกะทำงาน
-          example: Morning shift
+          description: ชื่อกะตามค่าใน master DB (LaborMaster.TimeWork) backend ไม่คำนวณเอง
+          example: Morning
         latest_activity_at:
           type: string
           nullable: true

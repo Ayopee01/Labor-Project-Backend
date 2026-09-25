@@ -60,9 +60,9 @@ model MasterWorker {
   laborCoat  String? @map("labor_coat") @db.VarChar(50)
   coatNo     String? @map("coat_no") @db.VarChar(50)
 
-  timeWork String? @map("time_work") @db.VarChar(50)
-  timeIn   String? @map("time_in") @db.Char(5)
-  timeOut  String? @map("time_out") @db.Char(5)
+  shiftName String? @map("shift_name") @db.VarChar(50)
+  timeIn    String? @map("time_in") @db.Char(5)
+  timeOut   String? @map("time_out") @db.Char(5)
 
   picture Bytes?
 
@@ -118,7 +118,7 @@ model WorkerCheckinLog {
   workerId            Int       @map("worker_id")
   workerCode          String    @map("worker_code") @db.VarChar(100)
   shiftInstanceKey    String    @map("shift_instance_key") @db.VarChar(100)
-  timeWork            String    @map("time_work") @db.VarChar(50)
+  shiftName           String    @map("shift_name") @db.VarChar(50)
   timeIn              String    @map("time_in") @db.Char(5)
   timeOut             String    @map("time_out") @db.Char(5)
   firstOnlineAt       DateTime? @map("first_online_at") @db.Timestamp(3)

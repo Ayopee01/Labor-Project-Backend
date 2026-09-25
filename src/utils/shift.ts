@@ -1,32 +1,9 @@
 // Import Dependencies
-import type { ShiftWaitInfo, WorkScheduleDto, WorkScheduleWithShiftDto } from "../types/admin-workers.type";
+import type { ShiftWaitInfo, WorkScheduleDto } from "../types/admin-workers.type";
 import ApiError from "./api-error";
 import { BANGKOK_TIME_ZONE, formatBangkokDate } from "./time";
 
 /* -------------------------------------- Config -------------------------------------- */
-
-const MORNING_SHIFT = "Morning shift";
-
-const NIGHT_SHIFT = "Evening shift";
-
-// เวลาเริ่มกะตั้งแต่ 18:00 ขึ้นไปถือเป็นกะดึก ใช้ค่าเดียวกันทั้ง calculateShiftName และ
-// resolveTimeWorkFromTimeIn กันไม่ให้ boundary เพี้ยนไปคนละค่ากัน
-const NIGHT_SHIFT_START_MINUTES = 18 * 60;
-
-const TIME_WORK_PRESETS = {
-  Morning: {
-    time_work: "Morning",
-    time_in: "08:00",
-    time_out: "18:00",
-    shift_name: MORNING_SHIFT,
-  },
-  Evening: {
-    time_work: "Evening",
-    time_in: "18:00",
-    time_out: "08:00",
-    shift_name: NIGHT_SHIFT,
-  },
-} as const;
 
 const bangkokTimeFormatter = new Intl.DateTimeFormat("en-GB", {
   timeZone: BANGKOK_TIME_ZONE,
@@ -163,74 +140,6 @@ function parseScheduleTimeRange(schedule: WorkScheduleDto): {
   };
 }
 
-// Function จัดการ calculate shift name สำหรับ helper กลาง — ตัดสินจาก timeIn เท่านั้น (เวลาเริ่มกะ
-// ตั้งแต่ NIGHT_SHIFT_START_MINUTES ขึ้นไปถือเป็นกะดึก) ไม่รับ timeOut เพราะไม่มีผลต่อผลลัพธ์เลย และ
-// ทุก caller จริงมี time_out ที่ผ่านการ validate จาก schema มาก่อนหน้าแล้วเสมอ
-export function calculateShiftName(timeIn: string): string {
-  const startMinutes = parseTimeToMinutes(timeIn);
-
-  if (startMinutes === null) {
-    throw new ApiError(
-      400,
-      "INVALID_TIME_FORMAT",
-      "TimeIn must use HH:mm format."
-    );
-  }
-
-  if (startMinutes >= NIGHT_SHIFT_START_MINUTES) {
-    return NIGHT_SHIFT;
-  }
-
-  return MORNING_SHIFT;
-}
-
-// Function ค้นหาหรือตัดสิน time_work จาก time_in สำหรับ helper กลาง
-export function resolveTimeWorkFromTimeIn(timeIn: string): "Morning" | "Evening" {
-  const startMinutes = parseTimeToMinutes(timeIn);
-
-  if (startMinutes === null) {
-    throw new ApiError(
-      400,
-      "INVALID_TIME_FORMAT",
-      "TimeIn must use HH:mm format."
-    );
-  }
-
-  return startMinutes >= NIGHT_SHIFT_START_MINUTES ? "Evening" : "Morning";
-}
-
-// Function ค้นหาหรือตัดสิน time_work preset สำหรับ helper กลาง
-export function resolveTimeWorkPreset(timeWork: string): {
-  time_work: "Morning" | "Evening";
-  time_in: string;
-  time_out: string;
-  shift_name: string;
-} {
-  if (timeWork !== "Morning" && timeWork !== "Evening") {
-    throw new ApiError(
-      400,
-      "INVALID_TIME_WORK",
-      "TimeWork must be Morning or Evening."
-    );
-  }
-
-  return TIME_WORK_PRESETS[timeWork];
-}
-
-// Function จัดรูปแบบ schedule พร้อม shift สำหรับ helper กลาง
-export function formatScheduleWithShift(
-  schedule: WorkScheduleDto | null
-): WorkScheduleWithShiftDto | null {
-  if (!schedule) {
-    return null;
-  }
-
-  return {
-    ...schedule,
-    shift_name: calculateShiftName(schedule.time_in),
-  };
-}
-
 // Function ตรวจว่า time ใน work schedule สำหรับ helper กลาง
 export function isTimeInWorkSchedule(
   schedule: WorkScheduleDto,
@@ -261,7 +170,7 @@ export function buildShiftWaitInfo(
 
   return {
     shift: {
-      name: calculateShiftName(schedule.time_in),
+      name: schedule.shift_name,
       start_time: schedule.time_in,
       end_time: schedule.time_out,
     },

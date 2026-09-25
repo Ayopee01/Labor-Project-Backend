@@ -1190,7 +1190,7 @@ test("GET /api/workers/me/status returns shift_active false when the worker alre
   // (เช่น กด "เลิกงาน" เอง หรือ shift-end job ปิดให้) — shift_active ต้องเป็น false ทันที ไม่ต้องรอให้
   // พ้นเวลากะก่อน
   const schedule = state.schedules.get(worker.id) as {
-    time_work: string;
+    shift_name: string;
     time_in: string;
     time_out: string;
   };
@@ -1204,7 +1204,7 @@ test("GET /api/workers/me/status returns shift_active false when the worker alre
     workerId: worker.id,
     workerCode: worker.labor_code,
     shiftInstanceKey,
-    timeWork: schedule.time_work,
+    shiftName: schedule.shift_name,
     timeIn: schedule.time_in,
     timeOut: schedule.time_out,
     firstOnlineAt: new Date().toISOString(),
@@ -1236,7 +1236,7 @@ test("GET /api/workers/me/status returns shift_active false with reason ACCEPT_T
   // Fixture ตั้งกะเป็น 00:00-23:59 (ทั้งวัน) ตอนนี้จึงยังอยู่ในกะแน่นอน แต่จำลองว่าระบบปิดกะให้อัตโนมัติ
   // เพราะไม่กดรับงานติดกันครบ worker_accept_timeout_limit ครั้ง (ดู handleAssignmentAcceptTimeout)
   const schedule = state.schedules.get(worker.id) as {
-    time_work: string;
+    shift_name: string;
     time_in: string;
     time_out: string;
   };
@@ -1250,7 +1250,7 @@ test("GET /api/workers/me/status returns shift_active false with reason ACCEPT_T
     workerId: worker.id,
     workerCode: worker.labor_code,
     shiftInstanceKey,
-    timeWork: schedule.time_work,
+    shiftName: schedule.shift_name,
     timeIn: schedule.time_in,
     timeOut: schedule.time_out,
     firstOnlineAt: new Date().toISOString(),
@@ -1286,7 +1286,7 @@ test("GET /api/workers/me/status returns shift_active true and no reason_code on
   // ได้ปกติแล้วจริงๆ (bug ที่เจอจาก production: worker ถูก force เป็น ready แต่ /me/status ยังโชว์
   // ACCEPT_TIMEOUT_LIMIT_REACHED ค้างอยู่)
   const schedule = state.schedules.get(worker.id) as {
-    time_work: string;
+    shift_name: string;
     time_in: string;
     time_out: string;
   };
@@ -1300,7 +1300,7 @@ test("GET /api/workers/me/status returns shift_active true and no reason_code on
     workerId: worker.id,
     workerCode: worker.labor_code,
     shiftInstanceKey,
-    timeWork: schedule.time_work,
+    shiftName: schedule.shift_name,
     timeIn: schedule.time_in,
     timeOut: schedule.time_out,
     firstOnlineAt: new Date().toISOString(),
@@ -1337,7 +1337,7 @@ test("GET /api/workers/me/status returns shift_active false with reason SHIFT_AL
   // SHIFT_ALREADY_CLOSED เหมือนปิดกะด้วยเหตุผลทั่วไปอื่นๆ (worker สลับเครื่องเอง/force login ไม่ใช่เคสนี้
   // เพราะไม่แตะ queue/checkin log เลย)
   const schedule = state.schedules.get(worker.id) as {
-    time_work: string;
+    shift_name: string;
     time_in: string;
     time_out: string;
   };
@@ -1351,7 +1351,7 @@ test("GET /api/workers/me/status returns shift_active false with reason SHIFT_AL
     workerId: worker.id,
     workerCode: worker.labor_code,
     shiftInstanceKey,
-    timeWork: schedule.time_work,
+    shiftName: schedule.shift_name,
     timeIn: schedule.time_in,
     timeOut: schedule.time_out,
     firstOnlineAt: new Date().toISOString(),
@@ -2594,7 +2594,7 @@ test("vehicle job completion does not requeue a worker whose shift was already c
     workerId: worker.id,
     workerCode: worker.labor_code,
     shiftInstanceKey: buildWorkScheduleShiftInstanceKey(schedule),
-    timeWork: schedule.time_work,
+    shiftName: schedule.shift_name,
     timeIn: schedule.time_in,
     timeOut: schedule.time_out,
     firstOnlineAt: now,

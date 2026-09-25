@@ -189,7 +189,7 @@ export const workerApplicationRepositoryMock = {
       worker_code: string;
       shift_instance_key: string;
       schedule: {
-        time_work: string;
+        shift_name: string;
         time_in: string;
         time_out: string;
       };
@@ -207,7 +207,7 @@ export const workerApplicationRepositoryMock = {
           workerId: input.worker_id,
           workerCode: input.worker_code,
           shiftInstanceKey: input.shift_instance_key,
-          timeWork: input.schedule.time_work,
+          shiftName: input.schedule.shift_name,
           timeIn: input.schedule.time_in,
           timeOut: input.schedule.time_out,
           firstOnlineAt: now,
@@ -238,7 +238,7 @@ export const workerApplicationRepositoryMock = {
       worker_code: string;
       shift_instance_key: string;
       schedule: {
-        time_work: string;
+        shift_name: string;
         time_in: string;
         time_out: string;
       };
@@ -256,7 +256,7 @@ export const workerApplicationRepositoryMock = {
           workerId: input.worker_id,
           workerCode: input.worker_code,
           shiftInstanceKey: input.shift_instance_key,
-          timeWork: input.schedule.time_work,
+          shiftName: input.schedule.shift_name,
           timeIn: input.schedule.time_in,
           timeOut: input.schedule.time_out,
           firstOnlineAt: now,
@@ -272,7 +272,7 @@ export const workerApplicationRepositoryMock = {
         state.checkinLogs.push(attendance);
       } else {
         attendance.workerCode = input.worker_code;
-        attendance.timeWork = input.schedule.time_work;
+        attendance.shiftName = input.schedule.shift_name;
         attendance.timeIn = input.schedule.time_in;
         attendance.timeOut = input.schedule.time_out;
         attendance.lastOnlineAt = now;
@@ -286,7 +286,7 @@ export const workerApplicationRepositoryMock = {
       worker_code: string;
       shift_instance_key: string;
       schedule: {
-        time_work: string;
+        shift_name: string;
         time_in: string;
         time_out: string;
       };
@@ -304,7 +304,7 @@ export const workerApplicationRepositoryMock = {
           workerId: input.worker_id,
           workerCode: input.worker_code,
           shiftInstanceKey: input.shift_instance_key,
-          timeWork: input.schedule.time_work,
+          shiftName: input.schedule.shift_name,
           timeIn: input.schedule.time_in,
           timeOut: input.schedule.time_out,
           firstOnlineAt: now,
@@ -323,7 +323,7 @@ export const workerApplicationRepositoryMock = {
       }
 
       attendance.workerCode = input.worker_code;
-      attendance.timeWork = input.schedule.time_work;
+      attendance.shiftName = input.schedule.shift_name;
       attendance.timeIn = input.schedule.time_in;
       attendance.timeOut = input.schedule.time_out;
       attendance.acceptTimeoutStreak += 1;
@@ -337,7 +337,7 @@ export const workerApplicationRepositoryMock = {
       worker_code: string;
       shift_instance_key: string;
       schedule: {
-        time_work: string;
+        shift_name: string;
         time_in: string;
         time_out: string;
       };
@@ -355,7 +355,7 @@ export const workerApplicationRepositoryMock = {
           workerId: input.worker_id,
           workerCode: input.worker_code,
           shiftInstanceKey: input.shift_instance_key,
-          timeWork: input.schedule.time_work,
+          shiftName: input.schedule.shift_name,
           timeIn: input.schedule.time_in,
           timeOut: input.schedule.time_out,
           firstOnlineAt: now,
@@ -374,7 +374,7 @@ export const workerApplicationRepositoryMock = {
       }
 
       attendance.workerCode = input.worker_code;
-      attendance.timeWork = input.schedule.time_work;
+      attendance.shiftName = input.schedule.shift_name;
       attendance.timeIn = input.schedule.time_in;
       attendance.timeOut = input.schedule.time_out;
       attendance.acceptTimeoutStreak = 0;
@@ -388,7 +388,7 @@ export const workerApplicationRepositoryMock = {
       worker_code: string;
       shift_instance_key: string;
       schedule: {
-        time_work: string;
+        shift_name: string;
         time_in: string;
         time_out: string;
       };
@@ -411,7 +411,7 @@ export const workerApplicationRepositoryMock = {
           workerId: input.worker_id,
           workerCode: input.worker_code,
           shiftInstanceKey: input.shift_instance_key,
-          timeWork: input.schedule.time_work,
+          shiftName: input.schedule.shift_name,
           timeIn: input.schedule.time_in,
           timeOut: input.schedule.time_out,
           firstOnlineAt: null,
@@ -430,7 +430,7 @@ export const workerApplicationRepositoryMock = {
       }
 
       attendance.workerCode = input.worker_code;
-      attendance.timeWork = input.schedule.time_work;
+      attendance.shiftName = input.schedule.shift_name;
       attendance.timeIn = input.schedule.time_in;
       attendance.timeOut = input.schedule.time_out;
       attendance.offlineAt = now;
@@ -858,6 +858,34 @@ export const workerApplicationRepositoryMock = {
 
     return assignmentIds.length;
   },
+  cancelAssignmentsClosedBeforeScan: async (
+    assignments: Array<{ id: number }>,
+    closedAt: Date,
+  ) => {
+    const closedAtIso = closedAt.toISOString();
+    const ids = assignments.map((assignment) => assignment.id);
+    let count = 0;
+
+    state.assignments
+      .filter(
+        (assignment) =>
+          ids.includes(assignment.id) &&
+          ["PENDING", "ACCEPTED"].includes(assignment.status),
+      )
+      .forEach((assignment) => {
+        assignment.status = "CANCELLED";
+        assignment.updated_at = closedAtIso;
+        recordWorkerAssignmentEventOnce(
+          assignment,
+          "CLOSED_BEFORE_SCAN",
+          { source: "vehicle_job_closed_before_scan" },
+          closedAtIso,
+        );
+        count += 1;
+      });
+
+    return count;
+  },
   listReleasableAssignmentsByTicketJob: async (ticketJobId: number) =>
     state.assignments
       .filter(
@@ -1170,6 +1198,10 @@ export const workerApplicationRepositoryMock = {
         ticket.vehicle_job_id === ticketJobId &&
         (ticket.status === "DELIVERED" || ticket.status === "REJECT"),
     ),
+  listExcludedTicketWorkerIdsForBooth: async (boothJobId: number) =>
+    state.boothJobWorkerExclusions
+      .filter((exclusion) => exclusion.gate_ticket_id === boothJobId)
+      .map((exclusion) => exclusion.ticket_worker_id),
   hasSubmittedOrCompletedBoothsForTicketJob: async (ticketJobId: number) =>
     state.boothJobs.some(
       (ticket) =>
@@ -2060,6 +2092,7 @@ const {
   accountRepository,
   acceptAssignment,
   completeAssignments,
+  cancelAssignmentsClosedBeforeScan,
   countActiveAssignments,
   countAcceptedAssignments,
   countScannedAssignments,
@@ -2081,6 +2114,7 @@ const {
   hasSubmittedActiveTicketsForTicketJob,
   hasSubmittedOrCompletedBoothsForTicketJob,
   listUnsubmittedOpenBoothIdsByTicketJobId,
+  listExcludedTicketWorkerIdsForBooth,
   findBoothJobWorkerExclusion,
   createBoothJobWorkerExclusion,
   countEligibleWorkersForBooth,
@@ -2455,6 +2489,7 @@ export const ticketJobAssignmentRepositoryMock = {
   scanAssignment,
   setVehicleAssignmentsStatus,
   completeAssignments,
+  cancelAssignmentsClosedBeforeScan,
   listReleasableAssignmentsByTicketJob,
   releaseAssignments,
   // Function ดึงรายการ active assignments ตาม vehicle job — ย้ายมาจาก adminJobsRepositoryMock ตาม Fix A
@@ -2594,6 +2629,7 @@ export const boothJobRepositoryMock = {
   hasSubmittedActiveTicketsForTicketJob,
   hasSubmittedOrCompletedBoothsForTicketJob,
   listUnsubmittedOpenBoothIdsByTicketJobId,
+  listExcludedTicketWorkerIdsForBooth,
   findBoothJobWorkerExclusion,
   createBoothJobWorkerExclusion,
   countEligibleWorkersForBooth,
@@ -3679,7 +3715,7 @@ function matchesWorkerStatusFilter(worker: MasterWorkerRecord, status?: string):
   return status === "active" ? worker.status === 1 : worker.status !== 1;
 }
 
-const USER_LIST_SHIFT_TO_TIME_WORK: Record<string, string> = {
+const USER_LIST_SHIFT_TO_SHIFT_NAME: Record<string, string> = {
   MORNING: "Morning",
   EVENING: "Evening",
 };
@@ -3731,7 +3767,7 @@ function matchesUserListFilters(
     return false;
   }
 
-  if (filters.shift && worker.time_work !== USER_LIST_SHIFT_TO_TIME_WORK[filters.shift]) {
+  if (filters.shift && worker.shift_name !== USER_LIST_SHIFT_TO_SHIFT_NAME[filters.shift]) {
     return false;
   }
 
@@ -3887,7 +3923,7 @@ export const adminWorkersRepositoryMock = {
       nationality: string;
       labor_color: string;
       work_start_date?: string | null;
-      time_work?: string | null;
+      shift_name?: string | null;
       time_in?: string | null;
       time_out?: string | null;
       status?: number;
@@ -3906,7 +3942,7 @@ export const adminWorkersRepositoryMock = {
         coat_no: null,
         image_url: null,
         work_start_date: input.work_start_date ?? null,
-        time_work: input.time_work ?? null,
+        shift_name: input.shift_name ?? null,
         time_in: input.time_in ?? null,
         time_out: input.time_out ?? null,
         lang: "TH",
@@ -3920,7 +3956,7 @@ export const adminWorkersRepositoryMock = {
       state.schedules.set(id, {
         id,
         worker_id: id,
-        time_work: worker.time_work,
+        shift_name: worker.shift_name,
         work_date: worker.work_start_date,
         time_in: worker.time_in,
         time_out: worker.time_out,
@@ -4005,9 +4041,9 @@ export const adminWorkersRepositoryMock = {
     updateShift: async (
       workerId: number | string,
       shift: {
-        time_work: string;
-        time_in: string;
-        time_out: string;
+        shift_name?: string;
+        time_in?: string;
+        time_out?: string;
         work_start_date?: string | null;
       },
     ) => {
@@ -4017,9 +4053,9 @@ export const adminWorkersRepositoryMock = {
         throw new Error("MasterWorker not found.");
       }
 
-      worker.time_work = shift.time_work;
-      worker.time_in = shift.time_in;
-      worker.time_out = shift.time_out;
+      if (shift.shift_name !== undefined) worker.shift_name = shift.shift_name;
+      if (shift.time_in !== undefined) worker.time_in = shift.time_in;
+      if (shift.time_out !== undefined) worker.time_out = shift.time_out;
       if (shift.work_start_date !== undefined) {
         worker.work_start_date = shift.work_start_date;
       }
@@ -4028,7 +4064,7 @@ export const adminWorkersRepositoryMock = {
       state.schedules.set(worker.id, {
         id: worker.id,
         worker_id: worker.id,
-        time_work: worker.time_work,
+        shift_name: worker.shift_name,
         work_date: worker.work_start_date,
         time_in: worker.time_in,
         time_out: worker.time_out,
@@ -4376,7 +4412,7 @@ function buildAdminTicketJobHistoryRecordForTest(ticketJobId: number) {
       laborColor: worker.labor_color ?? null,
       coatNo: worker.coat_no ?? null,
       picture: worker.picture ?? null,
-      timeWork: worker.time_work ?? null,
+      shiftName: worker.shift_name ?? null,
       timeIn: worker.time_in ?? null,
       timeOut: worker.time_out ?? null,
       workStartDate: worker.work_start_date ? new Date(worker.work_start_date) : null,
@@ -4713,7 +4749,7 @@ function buildDailyWorkerIncomeRecordForTest(ticketWorkerId: number) {
       fullName: worker.full_name,
       laborColor: worker.labor_color ?? null,
       coatNo: worker.coat_no ?? null,
-      timeWork: worker.time_work ?? null,
+      shiftName: worker.shift_name ?? null,
     },
 
     marketJob: {
@@ -5458,7 +5494,7 @@ export const adminJobsRepositoryMock = {
     const applyShift = (list: typeof base) =>
       filters.shift !== undefined
         ? list.filter(
-          (item) => resolveWorker(item)?.time_work === filters.shift,
+          (item) => resolveWorker(item)?.shift_name === filters.shift,
         )
         : list;
 
@@ -5474,8 +5510,8 @@ export const adminJobsRepositoryMock = {
     const availableShifts = Array.from(
       new Set(
         base
-          .map((item) => resolveWorker(item)?.time_work)
-          .filter((timeWork): timeWork is string => timeWork !== null && timeWork !== undefined),
+          .map((item) => resolveWorker(item)?.shift_name)
+          .filter((shiftName): shiftName is string => shiftName !== null && shiftName !== undefined),
       ),
     ).sort();
 

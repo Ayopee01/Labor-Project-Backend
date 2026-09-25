@@ -314,7 +314,7 @@ describe("Force Worker Status", () => {
       workerId: worker.id,
       workerCode: worker.labor_code,
       shiftInstanceKey: buildWorkScheduleShiftInstanceKey(schedule),
-      timeWork: schedule.time_work,
+      shiftName: schedule.shift_name,
       timeIn: schedule.time_in,
       timeOut: schedule.time_out,
       firstOnlineAt: now,
@@ -430,7 +430,7 @@ describe("Force Worker Status", () => {
     await workerQueue.recordWorkerHeartbeat(worker.id);
 
     // เลื่อนกะไปในอนาคต 2-3 ชั่วโมง (ตามเวลา Bangkok) เพื่อให้ "ตอนนี้" อยู่นอกกะแน่นอน — schedule ทั้งฝั่ง
-    // Admin (forceAdminWorkerStatus) และฝั่ง Worker เอง อ่านจาก time_work/time_in/time_out บน MasterWorker
+    // Admin (forceAdminWorkerStatus) และฝั่ง Worker เอง อ่านจาก shift_name/time_in/time_out บน MasterWorker
     // โดยตรงแล้ว (ไม่ใช่ entity แยกอีกต่อไป) แก้ที่ worker record เดียวพอ
     const bangkokFormatter = new Intl.DateTimeFormat("en-GB", {
       timeZone: "Asia/Bangkok",
@@ -448,7 +448,7 @@ describe("Force Worker Status", () => {
     state.schedules.set(worker.id, {
       id: worker.id,
       worker_id: worker.id,
-      time_work: worker.time_work,
+      shift_name: worker.shift_name,
       work_date: worker.work_start_date,
       time_in: worker.time_in,
       time_out: worker.time_out,
@@ -602,7 +602,7 @@ describe("Worker Status Board", () => {
     // clear closedAt/closeReason ใน WorkerCheckinLog เลย — regression test กัน reason_code ค้างแสดงใน admin
     // list ทั้งที่ worker กลับมาทำงานได้ปกติแล้วจริงๆ (bug ที่เจอจาก production)
     const schedule = state.schedules.get(worker.id) as {
-      time_work: string;
+      shift_name: string;
       time_in: string;
       time_out: string;
     };
@@ -616,7 +616,7 @@ describe("Worker Status Board", () => {
       workerId: worker.id,
       workerCode: worker.labor_code,
       shiftInstanceKey,
-      timeWork: schedule.time_work,
+      shiftName: schedule.shift_name,
       timeIn: schedule.time_in,
       timeOut: schedule.time_out,
       firstOnlineAt: new Date().toISOString(),
@@ -2465,7 +2465,7 @@ describe("Assignment Cancel", () => {
     state.schedules.set(worker.id, {
       id: worker.id,
       worker_id: worker.id,
-      time_work: worker.time_work,
+      shift_name: worker.shift_name,
       work_date: worker.work_start_date,
       time_in: worker.time_in,
       time_out: worker.time_out,
@@ -2524,6 +2524,20 @@ describe("Assignment Cancel", () => {
     const cancelledAssignment = addPendingAssignment(197141, job.id, cancelledWorker.id);
     cancelledAssignment.status = "WORKING";
     cancelledAssignment.scanned_at = scannedAt;
+
+    // roster ของทั้งสองคนในใบนี้ (คนที่ถูกถอดจะกลายเป็น CANCELLED) — ใช้พิสูจน์ว่าแจ้งเตือนของงานไม่ส่งหาคนที่ถูกถอดแล้ว
+    for (const workerId of [stayingWorker.id, cancelledWorker.id]) {
+      state.ticketWorkers.push({
+        id: state.nextTicketWorkerId++,
+        market_job_id: ticket.market_job_id,
+        worker_id: workerId,
+        status: "WORKING",
+        final_earning_amount: null,
+        joined_at: scannedAt,
+        cancelled_at: null,
+        completed_at: null,
+      });
+    }
 
     // มี Worker รออยู่ในคิว ใช้พิสูจน์ว่าระบบไม่ดึงใครมาแทนเอง
     await workerQueue.enqueueWorker(queuedWorker.id);
@@ -2633,6 +2647,67 @@ describe("Assignment Cancel", () => {
     );
 
     assert.equal(submitResponse.status, 200, JSON.stringify(submitResponse.body));
+
+    // แจ้งเตือนส่งยอดต้องไม่ไปหาคนที่ Admin ถอดออกไปแล้ว
+    const submittedEvent = state.realtimeEvents.find(
+      (item) => (item as { type?: string }).type === "TICKET_COMPLETION_SUBMITTED",
+    ) as { worker_ids?: number[] } | undefined;
+
+    assert.ok(submittedEvent);
+    assert.ok(submittedEvent.worker_ids?.includes(stayingWorker.id));
+    assert.equal(submittedEvent.worker_ids?.includes(cancelledWorker.id), false);
+
+    /* Vendor ยืนยันแผงสุดท้าย -> รถปิดงาน ทั้งที่คนที่ Admin เพิ่มเข้ามายังไม่ได้ Scan */
+    workerDispatch.startAssignmentTimeoutProcessing();
+
+    const processor = state.workerProcessors.get(
+      process.env.BULLMQ_ASSIGNMENT_TIMEOUT_QUEUE as string,
+    );
+    const submission = state.completionSubmissions.at(-1);
+
+    assert.ok(processor);
+    assert.ok(submission);
+
+    await processor({
+      data: { ticketId: ticket.id, submissionId: submission.id, kind: "vendor_confirm" },
+    });
+
+    assert.equal(job.status, "COMPLETED");
+    assert.equal(stayingAssignment.status, "COMPLETED");
+
+    // คนที่ Admin เพิ่มเข้ามาแต่ยังไม่ Scan ไม่ได้ทำงานจริง ต้องปิดเป็น CANCELLED ไม่ใช่ COMPLETED (ประวัติจะไม่ขึ้นเสร็จสิ้น)
+    const addedAssignment = state.assignments.find((item) => item.worker_id === queuedWorker.id);
+
+    assert.equal(addedAssignment?.status, "CANCELLED");
+    assert.ok(
+      state.workerAssignmentEvents.some(
+        (event) =>
+          event.assignment_id === addedAssignment?.id && event.event_type === "CLOSED_BEFORE_SCAN",
+      ),
+    );
+    assert.equal(
+      state.workerAssignmentEvents.some(
+        (event) => event.assignment_id === addedAssignment?.id && event.event_type === "COMPLETED",
+      ),
+      false,
+    );
+
+    const closedEvent = state.socketEvents.find(
+      (item) => item.workerId === queuedWorker.id && item.event === "ASSIGNMENT_CANCELLED",
+    );
+
+    assert.equal(
+      (closedEvent?.payload as Record<string, unknown> | undefined)?.reason,
+      "vehicle_job_closed_before_scan",
+    );
+
+    // ผลยืนยันจาก Vendor ต้องไม่ไปหาคนที่ถูกถอดออกไปแล้ว
+    const resultEvents = state.realtimeEvents.filter(
+      (item) => (item as { type?: string }).type === "TICKET_COMPLETION_RESULT",
+    ) as Array<{ worker_ids?: number[] }>;
+
+    assert.ok(resultEvents.length > 0);
+    assert.ok(resultEvents.every((event) => !event.worker_ids?.includes(cancelledWorker.id)));
   });
 
   test("POST /api/admin/vehicle-jobs/assignment/cancel (ticket_number + worker_code) removing the last scanned worker before any booth was submitted cancels the whole vehicle job instead of dispatching a replacement", async () => {
@@ -7004,11 +7079,17 @@ describe("Vehicle Job History", () => {
   test("POST .../assignment/cancel records exactly one ASSIGNMENT_CANCELLED AdminActionLog, and History cancellation/Timeline reflect the admin actor (not the worker)", async () => {
     const { token: adminToken } = await loginJobAdmin(9994);
     const worker = addWorker(99941);
-    const job = addDispatchableJob(9994, 1);
+    // รถ 2 คน ให้อีกคนทำงานต่อ การยกเลิกครั้งนี้จึงเป็นการยกเลิกรายคนเท่านั้น (ถ้าเป็นคนสุดท้ายจะยกเลิกทั้งคันด้วย)
+    const stayingWorker = addWorker(99942);
+    const job = addDispatchableJob(9994, 2);
     const assignment = addPendingAssignment(199941, job.id, worker.id);
     assignment.status = "SCANNED";
     assignment.accepted_at = new Date().toISOString();
     assignment.scanned_at = new Date().toISOString();
+    const stayingAssignment = addPendingAssignment(199942, job.id, stayingWorker.id);
+    stayingAssignment.status = "SCANNED";
+    stayingAssignment.accepted_at = new Date().toISOString();
+    stayingAssignment.scanned_at = new Date().toISOString();
 
     const cancelResponse = await server.request(
       "POST",
@@ -7053,13 +7134,18 @@ describe("Vehicle Job History", () => {
     assert.equal(workerEntry.cancellation.cancelled_by_type, "admin");
     assert.notEqual(workerEntry.cancellation.cancelled_by_name, worker.full_name);
 
-    const timelineCancelEntry = item.timeline.find(
+    // การยกเลิกครั้งเดียวต้องขึ้นใน Timeline รายการเดียว (event ADMIN_CANCELLED รวมกับ AdminActionLog แล้ว ไม่ใส่ log ซ้ำ)
+    const timelineCancelEntries = item.timeline.filter(
       (entry: { type: string }) => entry.type === "ADMIN_ACTION",
     );
 
-    assert.ok(timelineCancelEntry);
+    assert.equal(timelineCancelEntries.length, 1, JSON.stringify(item.timeline));
+
+    const [timelineCancelEntry] = timelineCancelEntries;
+
     assert.equal(timelineCancelEntry.actor_type, "admin");
     assert.notEqual(timelineCancelEntry.actor_name, worker.full_name);
+    assert.match(timelineCancelEntry.description, new RegExp(worker.labor_code));
   });
 
   test("GET /api/admin/vehicle-jobs/history job-level finance.workers shows distinct real per-worker totals, not an average", async () => {
@@ -7941,8 +8027,8 @@ describe("Daily Worker Income", () => {
     const workerA = addWorker(96602);
     const workerB = addWorker(96603);
 
-    workerA.time_work = "Morning";
-    workerB.time_work = "Evening";
+    workerA.shift_name = "Morning";
+    workerB.shift_name = "Evening";
 
     const jobA = addDispatchableJob(96604, 1);
     const ticketA = addTicketForTicketJob(jobA.id, 966050);

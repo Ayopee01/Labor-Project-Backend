@@ -13,9 +13,9 @@ import type { MasterWorkerCreateInput, MasterWorkerDto, MasterWorkerUpdateInput,
 
 const SEARCH_MODE = "insensitive" as const;
 
-// ค่า timeWork จริงบน MasterWorker ที่ query shift MORNING/EVENING ต้อง map ไปหา — ใช้ค่าเดียวกับ
-// TIME_WORK_PRESETS ใน utils/shift.ts เพื่อให้ filter ตรงกับ shift_name ที่ response แสดงผลจริงเสมอ
-const USER_LIST_SHIFT_TO_TIME_WORK: Record<UserListShift, "Morning" | "Evening"> = {
+// ค่า shiftName จริงบน MasterWorker (ตาม LaborMaster.TimeWork ของ master DB) ที่ query shift
+// MORNING/EVENING ต้อง map ไปหา — filter จึงตรงกับ shift_name ที่ response แสดงผลจริงเสมอ
+const USER_LIST_SHIFT_TO_SHIFT_NAME: Record<UserListShift, "Morning" | "Evening"> = {
   MORNING: "Morning",
   EVENING: "Evening",
 };
@@ -88,7 +88,7 @@ function buildWorkerWhere(filters: Partial<UserListFilters> = {}): Prisma.Master
   }
 
   if (filters.shift) {
-    where.timeWork = USER_LIST_SHIFT_TO_TIME_WORK[filters.shift];
+    where.shiftName = USER_LIST_SHIFT_TO_SHIFT_NAME[filters.shift];
   }
 
   return where;
@@ -135,7 +135,7 @@ export async function create(
       workStartDate: input.work_start_date ? new Date(input.work_start_date) : null,
       workCode: input.work_code ?? null,
       coatNo: input.coat_no ?? null,
-      timeWork: input.time_work ?? null,
+      shiftName: input.shift_name ?? null,
       timeIn: input.time_in ?? null,
       timeOut: input.time_out ?? null,
       status: input.status ?? 1,
@@ -242,9 +242,9 @@ export async function update(
 export async function updateShift(
   id: number | string,
   shift: {
-    time_work: string;
-    time_in: string;
-    time_out: string;
+    shift_name?: string;
+    time_in?: string;
+    time_out?: string;
     work_start_date?: string | null;
   },
   connection?: DbConnection,
@@ -255,7 +255,7 @@ export async function updateShift(
       id: toId(id),
     },
     data: {
-      timeWork: shift.time_work,
+      shiftName: shift.shift_name,
       timeIn: shift.time_in,
       timeOut: shift.time_out,
       ...(shift.work_start_date !== undefined

@@ -163,7 +163,6 @@ const requestKeyMap: Record<string, string> = {
   TicketNo: "ticket_no",
   TimeIn: "time_in",
   TimeOut: "time_out",
-  TimeWork: "time_work",
   TodayJobCount: "today_job_count",
   TokenType: "token_type",
   TotalPages: "total_pages",

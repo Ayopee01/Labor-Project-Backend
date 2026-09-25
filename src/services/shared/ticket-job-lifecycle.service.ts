@@ -1,5 +1,5 @@
 // Import Config
-import { ACTIVE_ASSIGNMENT_STATUSES, TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS } from "../../constants/status";
+import { ACTIVE_ASSIGNMENT_STATUSES, SCANNED_ASSIGNMENT_STATUSES, TERMINAL_JOB_STATUSES, TERMINAL_TICKET_STATUSES, TICKET_STATUS, VEHICLE_JOB_STATUS } from "../../constants/status";
 import { withTransaction } from "../../db/prisma";
 // Import Types
 import { WORKER_ASSIGNMENT_EVENT_TYPE } from "../../types/shared/worker-assignment-event.type";
@@ -252,12 +252,32 @@ export async function closeCompletedTicketJobIfReady(
   const activeAssignments = refreshedTicketJob.assignments.filter(
     (assignment) => ACTIVE_ASSIGNMENT_STATUSES.includes(assignment.status),
   );
-  const completedAssignmentIds = activeAssignments.map(
+  // ปิดเป็น COMPLETED เฉพาะคนที่ Scan เข้างานแล้วเท่านั้น คนที่ยังไม่ Scan (เช่น Admin เพิ่มเข้ามาแทนแต่ทีมเดิมส่งยอด
+  // จนจบก่อน) ไม่ได้ทำงานจริงและไม่ได้เงิน ต้องปิดเป็น CANCELLED ไม่งั้นประวัติจะขึ้นว่าเสร็จสิ้นทั้งที่ไม่ได้ทำ
+  const scannedAssignments = activeAssignments.filter(
+    (assignment) => SCANNED_ASSIGNMENT_STATUSES.includes(assignment.status),
+  );
+  const unscannedAssignments = activeAssignments.filter(
+    (assignment) => !SCANNED_ASSIGNMENT_STATUSES.includes(assignment.status),
+  );
+  const completedAssignmentIds = scannedAssignments.map(
     (assignment) => assignment.id,
   );
-  const completedWorkerAccountIds = activeAssignments.map(
+  const completedWorkerAccountIds = scannedAssignments.map(
     (assignment) => assignment.workerId,
   );
+
+  if (unscannedAssignments.length > 0) {
+    await assignmentRepository.cancelAssignmentsClosedBeforeScan(
+      unscannedAssignments.map((assignment) => ({
+        id: assignment.id,
+        worker_id: assignment.workerId,
+        vehicle_job_id: assignment.ticketJobId,
+      })),
+      new Date(),
+      connection,
+    );
+  }
 
   if (completedAssignmentIds.length > 0) {
     const completedAt = new Date();
@@ -268,7 +288,7 @@ export async function closeCompletedTicketJobIfReady(
       connection,
     );
     await workerAssignmentEventRepository.createManyOnce(
-      activeAssignments.map((assignment) => ({
+      scannedAssignments.map((assignment) => ({
         assignment_id: assignment.id,
         worker_id: assignment.workerId,
         vehicle_job_id: assignment.ticketJobId,
@@ -284,6 +304,8 @@ export async function closeCompletedTicketJobIfReady(
         vehicle_job: ticketJobDto,
         completed_assignment_ids: completedAssignmentIds,
         completed_worker_ids: completedWorkerAccountIds,
+        closed_before_scan_assignment_ids: unscannedAssignments.map((assignment) => assignment.id),
+        closed_before_scan_worker_ids: unscannedAssignments.map((assignment) => assignment.workerId),
       }
     : null;
 }

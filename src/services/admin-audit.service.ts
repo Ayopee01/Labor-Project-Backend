@@ -260,6 +260,7 @@ const WORKER_ASSIGNMENT_EVENT_TYPE_MAP: Record<string, string> = {
   [WORKER_ASSIGNMENT_EVENT_TYPE.SCAN_TIMEOUT]: "worker_scan_timeout",
   [WORKER_ASSIGNMENT_EVENT_TYPE.COMPLETED]: "worker_completed",
   [WORKER_ASSIGNMENT_EVENT_TYPE.ADMIN_CANCELLED]: "worker_assignment_cancelled",
+  [WORKER_ASSIGNMENT_EVENT_TYPE.CLOSED_BEFORE_SCAN]: "worker_closed_before_scan",
 };
 
 // Function map แถว WorkerAssignmentEvent ดิบเป็น event ตามชนิด พร้อม merge กับ AdminActionLog

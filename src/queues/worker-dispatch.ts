@@ -27,7 +27,7 @@ import { WORKER_ASSIGNMENT_EVENT_TYPE } from "../types/shared/worker-assignment-
 import { WORKER_WORK_STATUS } from "../types/shared/worker-status.type";
 // Import Utils
 import { isWorkerSocketConnected, registerBreakReturnRetryHandler, sendWorkerSocketEvent } from "../websockets/worker.socket";
-import { clearWorkerPendingBreakReturn, enqueueWorker, enqueueWorkersAtFront, getWorkerPendingBreakReturnScheduleId, getWorkerQueueStatus, markWorkerOpenApp, markWorkerPendingBreakReturn, popReadyWorkers, removeScanWarning, removeWorkerBreakRetryExpiry, scheduleAssignmentTimeout, scheduleScanTimeout, scheduleScanWarning, scheduleWorkerBreakRetryExpiry, scheduleWorkerShiftEnd, startAssignmentTimeoutWorker, startWorkerBreakReturnWorker } from "./worker-queue";
+import { clearWorkerPendingBreakReturn, enqueueWorker, enqueueWorkersAtFront, getWorkerPendingBreakReturnScheduleId, getWorkerQueueStatus, markWorkerOpenApp, markWorkerPendingBreakReturn, popReadyWorkers, removeAssignmentTimeout, removeScanTimeout, removeScanWarning, removeWorkerBreakRetryExpiry, scheduleAssignmentTimeout, scheduleScanTimeout, scheduleScanWarning, scheduleWorkerBreakRetryExpiry, scheduleWorkerShiftEnd, startAssignmentTimeoutWorker, startWorkerBreakReturnWorker } from "./worker-queue";
 import { buildWorkScheduleShiftInstanceKey, getWorkScheduleShiftEndDelayMs, isTimeInWorkSchedule } from "../utils/shift";
 import { buildTicketCompletionResultExtraFields, buildWorkerTicketPayload } from "../utils/ticket-payload";
 import { logger } from "../utils/logger";
@@ -535,16 +535,49 @@ async function handleAssignmentScanWarning(input: {
 export async function returnCompletedWorkersToQueue(
   input: CompletedWorkerQueueResult | null
 ): Promise<Array<string | null>> {
-  if (!input || input.completed_worker_ids.length === 0) {
+  const closedBeforeScanWorkerIds = new Set(input?.closed_before_scan_worker_ids ?? []);
+
+  if (!input || (input.completed_worker_ids.length === 0 && closedBeforeScanWorkerIds.size === 0)) {
     return [];
   }
 
-  const requeuedWorkerCodes: Array<string | null> = [];
-  const workerCodeMap = await profileRepository.findWorkerCodeMapByAccountIds(
-    input.completed_worker_ids
+  // assignment ที่ปิดก่อน Scan ยังมี accept/scan timeout ค้างอยู่ใน queue — เคลียร์ทิ้งกัน timeout ไปยุ่งกับสถานะ Worker ภายหลัง
+  await Promise.all(
+    (input.closed_before_scan_assignment_ids ?? []).flatMap((assignmentId) => [
+      removeAssignmentTimeout(assignmentId),
+      removeScanTimeout(assignmentId),
+      removeScanWarning(assignmentId),
+    ])
   );
 
-  for (const workerId of input.completed_worker_ids) {
+  const workerIds = [...input.completed_worker_ids, ...closedBeforeScanWorkerIds];
+  const requeuedWorkerCodes: Array<string | null> = [];
+  const workerCodeMap = await profileRepository.findWorkerCodeMapByAccountIds(workerIds);
+
+  // Worker ที่รถปิดงานก่อน Scan ต้องรู้ว่างานที่รับไว้ถูกยกเลิก (ASSIGNMENT_CANCELLED มี FCM) ไม่ใช่แค่สถานะคิวเปลี่ยน
+  const notifyWorkerQueueChanged = (
+    workerId: number,
+    workerCode: string | null,
+    queue: WorkerQueueEntryDto,
+  ): void => {
+    if (closedBeforeScanWorkerIds.has(workerId)) {
+      sendWorkerSocketEvent(workerId, "ASSIGNMENT_CANCELLED", {
+        ticketNumber: input.vehicle_job.ticket_number,
+        reason: "vehicle_job_closed_before_scan",
+        worker_status: queue.status,
+        queue: buildWorkerQueueSocketPayload(queue, workerCode),
+      });
+      return;
+    }
+
+    if (queue.status === WORKER_WORK_STATUS.READY || isWorkerSocketConnected(workerId)) {
+      sendWorkerSocketEvent(workerId, "WORKER_STATUS_CHANGED", {
+        queue: buildWorkerQueueSocketPayload(queue, workerCode),
+      });
+    }
+  };
+
+  for (const workerId of workerIds) {
     const workerCode = workerCodeMap.get(workerId) ?? null;
     const [currentSchedule, currentAssignment] = await Promise.all([
       workScheduleRepository.findCurrentByAccountId(workerId),
@@ -560,9 +593,7 @@ export async function returnCompletedWorkersToQueue(
     if (canReturnToQueue) {
       const queue = await enqueueWorker(workerId);
       requeuedWorkerCodes.push(workerCode);
-      sendWorkerSocketEvent(workerId, "WORKER_STATUS_CHANGED", {
-        queue: buildWorkerQueueSocketPayload(queue, workerCode),
-      });
+      notifyWorkerQueueChanged(workerId, workerCode, queue);
       publishAdminWorkerStatusChanged({
         title: "Worker returned to queue",
         message: `Worker ${workerCode ?? workerId} returned to queue after vehicle job completion.`,
@@ -577,11 +608,7 @@ export async function returnCompletedWorkersToQueue(
     }
 
     const queue = await markWorkerOpenApp(workerId);
-    if (isWorkerSocketConnected(workerId)) {
-      sendWorkerSocketEvent(workerId, "WORKER_STATUS_CHANGED", {
-        queue: buildWorkerQueueSocketPayload(queue, workerCode),
-      });
-    }
+    notifyWorkerQueueChanged(workerId, workerCode, queue);
     publishAdminWorkerStatusChanged({
       title: "Worker moved to open_app",
       message: `Worker ${workerCode ?? workerId} moved to open_app after vehicle job completion.`,

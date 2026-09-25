@@ -47,6 +47,9 @@ export type AssignmentAcceptTimeoutResult = {
 export type CompletedWorkerQueueResult = {
   vehicle_job: Pick<TicketJobDto, "ticket_number">;
   completed_worker_ids: number[];
+  // Worker ที่รถปิดงานก่อน Scan เข้างาน (assignment ถูกปิดเป็น CANCELLED) — คืนคิวเหมือนกันแต่แจ้งเป็น ASSIGNMENT_CANCELLED
+  closed_before_scan_worker_ids?: number[];
+  closed_before_scan_assignment_ids?: number[];
 };
 
 // Type ผลลัพธ์เมื่องานรถจบครบทั้งคัน
@@ -54,6 +57,9 @@ export type CompletedTicketJobResult = {
   vehicle_job: TicketJobDto;
   completed_assignment_ids: number[];
   completed_worker_ids: number[];
+  // Worker ที่ Admin เพิ่มเข้ามา/ถูกจ่ายงานแต่รถปิดงานก่อน Scan เข้างาน — ไม่นับเป็นคนที่ทำงานเสร็จ
+  closed_before_scan_assignment_ids: number[];
+  closed_before_scan_worker_ids: number[];
 };
 
 // Type WebSocket ของ worker พร้อมข้อมูล worker ที่ผูกไว้

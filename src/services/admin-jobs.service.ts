@@ -22,7 +22,7 @@ import * as workScheduleRepository from "../repositories/shared/work-schedule.re
 // Import Services
 import { publishAdminWorkerStatusChanged, publishNotification } from "./notifications.service";
 import { publishDriverJobUpdate } from "./driver-stream.service";
-import { publishRealtimeEvent } from "./shared/realtime-notification.service";
+import { publishRealtimeEvent, resolveTicketResultAudience } from "./shared/realtime-notification.service";
 import { getRuntimeSettings } from "./shared/runtime-settings.service";
 import * as ticketJobLifecycleService from "./shared/ticket-job-lifecycle.service";
 import * as ticketCompletionService from "./shared/ticket-completion.service";
@@ -74,6 +74,8 @@ function mapAssignmentEventToTimelineType(eventType: string): string {
       return "WORKER_COMPLETED";
     case WORKER_ASSIGNMENT_EVENT_TYPE.ADMIN_CANCELLED:
       return "ADMIN_ACTION";
+    case WORKER_ASSIGNMENT_EVENT_TYPE.CLOSED_BEFORE_SCAN:
+      return "WORKER_CLOSED_BEFORE_SCAN";
     default:
       return eventType;
   }
@@ -298,6 +300,9 @@ function formatAdminHistoryWorkers(
     const adminCancelledEvent = assignment.events.find(
       (event) => event.eventType === WORKER_ASSIGNMENT_EVENT_TYPE.ADMIN_CANCELLED,
     );
+    const closedBeforeScanEvent = assignment.events.find(
+      (event) => event.eventType === WORKER_ASSIGNMENT_EVENT_TYPE.CLOSED_BEFORE_SCAN,
+    );
 
     return {
       worker_id: assignment.workerId,
@@ -318,7 +323,16 @@ function formatAdminHistoryWorkers(
       released_at: assignment.releasedAt?.toISOString() ?? null,
       final_status: assignment.status,
       cancellation:
-        assignment.status === ASSIGNMENT_STATUS.CANCELLED
+        // รถปิดงานก่อน Worker คนนี้ Scan เข้างาน — ระบบปิดให้เอง ไม่ใช่ Admin ยกเลิก
+        assignment.status === ASSIGNMENT_STATUS.CANCELLED && closedBeforeScanEvent && !adminCancelledEvent
+          ? {
+            cancelled_at: closedBeforeScanEvent.occurredAt.toISOString(),
+            reason_code: "vehicle_job_closed_before_scan",
+            reason_text: null,
+            cancelled_by_type: "system",
+            cancelled_by_name: null,
+          }
+          : assignment.status === ASSIGNMENT_STATUS.CANCELLED
           ? (() => {
             const cancelLog = findAssignmentCancelLog(adminActionLogs, assignment.id);
 
@@ -356,22 +370,40 @@ function formatAdminHistoryTimeline(
     });
   }
 
+  // AdminActionLog ASSIGNMENT_CANCELLED ที่ถูกรวมเข้ากับ event ADMIN_CANCELLED ของ assignment แล้ว — ห้ามใส่ซ้ำเป็นรายการ
+  // ADMIN_ACTION แยกด้านล่าง ไม่งั้นการยกเลิกครั้งเดียวจะขึ้นใน Timeline สองรายการ (หลักเดียวกับ admin-audit.service)
+  const mergedCancelLogIds = new Set<number>();
+
   for (const assignment of record.assignments) {
     for (const event of assignment.events) {
       const isAdminCancelled = event.eventType === WORKER_ASSIGNMENT_EVENT_TYPE.ADMIN_CANCELLED;
+      // รถปิดงานก่อน Worker คนนี้ Scan เข้างาน — ระบบปิดให้เอง ไม่ใช่ทั้ง Worker และ Admin
+      const isClosedBeforeScan = event.eventType === WORKER_ASSIGNMENT_EVENT_TYPE.CLOSED_BEFORE_SCAN;
       const cancelLog = isAdminCancelled
         ? findAssignmentCancelLog(adminActionLogs, assignment.id)
         : null;
+      const isAssignmentCancelLog =
+        cancelLog?.action_type === ADMIN_ACTION_TYPE.ASSIGNMENT_CANCELLED;
+
+      if (cancelLog && isAssignmentCancelLog) {
+        mergedCancelLogIds.add(cancelLog.id);
+      }
 
       items.push({
         type: mapAssignmentEventToTimelineType(event.eventType),
         occurred_at: event.occurredAt.toISOString(),
-        actor_type: isAdminCancelled ? "admin" : "worker",
+        actor_type: isAdminCancelled ? "admin" : isClosedBeforeScan ? "system" : "worker",
         // Cancel Actor ต้องเป็นแอดมินที่กด Cancel (จาก AdminActionLog) ไม่ใช่ชื่อ Worker ที่ถูก Cancel
         actor_name: isAdminCancelled
           ? cancelLog?.actor_full_name ?? null
+          : isClosedBeforeScan
+          ? null
           : assignment.worker.fullName,
-        description: `${assignment.worker.laborCode}: ${event.eventType.toLowerCase()}.`,
+        description: isAdminCancelled && isAssignmentCancelLog
+          ? `${cancelLog?.actor_username ?? "Admin"} cancelled the assignment of ${assignment.worker.laborCode}.`
+          : isClosedBeforeScan
+          ? `${assignment.worker.laborCode}: vehicle job closed before the worker scanned in.`
+          : `${assignment.worker.laborCode}: ${event.eventType.toLowerCase()}.`,
       });
     }
 
@@ -434,6 +466,10 @@ function formatAdminHistoryTimeline(
   }
 
   for (const log of adminActionLogs) {
+    if (mergedCancelLogIds.has(log.id)) {
+      continue;
+    }
+
     items.push({
       type: "ADMIN_ACTION",
       occurred_at: log.created_at,
@@ -1225,9 +1261,8 @@ async function listStallJobWorkerIds(ticket: BoothJobDto): Promise<number[]> {
   );
 
   if (ticketWorkers.length > 0) {
-    return [
-      ...new Set(ticketWorkers.map((worker) => worker.worker_id)),
-    ];
+    // ตัดคนที่ถูกถอดออกไปแล้ว (roster CANCELLED หรือถูกถอดเฉพาะแผงนี้) — ใช้เกณฑ์เดียวกับแจ้งเตือนผลส่งยอด
+    return resolveTicketResultAudience(ticket);
   }
 
   return listTicketJobWorkerIds(ticket.vehicle_job_id);
@@ -2639,7 +2674,7 @@ async function handleTicketJobClosedByCascadeCancellation(
   }
 
   await Promise.all(
-    result.completed_assignment_ids.flatMap((assignmentId) => [
+    [...result.completed_assignment_ids, ...result.closed_before_scan_assignment_ids].flatMap((assignmentId) => [
       removeAssignmentTimeout(assignmentId),
       removeScanTimeout(assignmentId),
       removeScanWarning(assignmentId),
@@ -4224,7 +4259,7 @@ function formatDailyWorkerIncomeItem(
       shirt_number: record.worker.coatNo ?? null,
     },
     accepted_at: assignment?.acceptedAt?.toISOString() ?? null,
-    shift: record.worker.timeWork ?? null,
+    shift: record.worker.shiftName ?? null,
     ticket_no: marketJob.ticketNo,
     plate: ticketJob.licensePlate,
     payable: record.finalEarningAmount?.toFixed(2) ?? "0.00",
