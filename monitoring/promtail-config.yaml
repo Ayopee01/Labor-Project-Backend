@@ -1,0 +1,33 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+# Scrape ผ่าน Docker service discovery (Docker logging driver) — ไม่ mount app log file เพิ่ม
+# ตัวแอปเองยัง log ออก stdout เป็น JSON เหมือนเดิม (src/config/logger.ts) ไม่ต้องแก้อะไรฝั่งแอป
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        filters:
+          # Match both: "api" is the local-dev target (dev target, tsx watch), "api-prod" is what
+          # actually runs on a droplet (production target, gated by the "production" profile) — see
+          # docker-compose.yml. Only one of the two is ever running at a time in practice.
+          - name: label
+            values:
+              - "com.docker.compose.service=api"
+              - "com.docker.compose.service=api-prod"
+    relabel_configs:
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: "container"
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: "service"
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: "project"

@@ -1,0 +1,274 @@
+// Import Library
+import { Prisma, type MasterProduct, type MasterRate } from "@prisma/client";
+// Import Config
+import { MASTER_MARKET_ACTIVE_STATUS, MASTER_OWNER_STALL_ACTIVE_STATUS } from "../../constants/status";
+// Import Repositories
+import { client } from "./repository-utils";
+// Import Types
+import type { DbConnection } from "../../types/shared/common.type";
+
+/* -------------------------------------- Functions -------------------------------------- */
+
+// Function ค้นหา master_product ที่ยังใช้งานอยู่จาก productCode + packageCode
+export async function listActiveProductsByProductCodeAndPackageCode(
+  productCode: string,
+  packageCode: string,
+  connection?: DbConnection
+): Promise<MasterProduct[]> {
+  const db = client(connection);
+
+  return db.masterProduct.findMany({
+    where: {
+      productCode,
+      packageCode,
+      status: "ACTIVE",
+    },
+    orderBy: {
+      id: "asc",
+    },
+  });
+}
+
+// Function ค้นหา master_product จาก packageCode สำหรับ Package Fallback
+export async function listActiveProductsByPackageCode(
+  packageCode: string,
+  connection?: DbConnection
+): Promise<MasterProduct[]> {
+  const db = client(connection);
+
+  return db.masterProduct.findMany({
+    where: {
+      packageCode,
+      status: "ACTIVE",
+    },
+    orderBy: {
+      id: "asc",
+    },
+  });
+}
+
+// Function ค้นหา master_rate ที่ตรง market และช่วงน้ำหนักที่ยังใช้งานอยู่
+export async function listActiveRatesByMarketAndWeight(
+  marketCode: string,
+  packageWeight: Prisma.Decimal,
+  connection?: DbConnection
+): Promise<MasterRate[]> {
+  const db = client(connection);
+
+  return db.masterRate.findMany({
+    where: {
+      marketCode,
+      status: 1,
+      weightMin: {
+        lt: packageWeight,
+      },
+      weightMax: {
+        gte: packageWeight,
+      },
+    },
+    orderBy: {
+      id: "asc",
+    },
+  });
+}
+
+// Function ดึงแพ็กเกจที่ยังใช้งานอยู่ทั้งหมดของ productCode (ให้ Worker เลือกเปลี่ยน PackageCode)
+export async function listActiveMasterProductPackagesByProductCode(
+  productCode: string,
+  connection?: DbConnection
+) {
+  const db = client(connection);
+
+  return db.masterProduct.findMany({
+    where: {
+      productCode,
+      status: "ACTIVE",
+    },
+    select: {
+      productCode: true,
+      productName: true,
+      packageCode: true,
+      packageName: true,
+      packageWeight: true,
+    },
+    orderBy: {
+      packageCode: "asc",
+    },
+  });
+}
+
+// Function ประกอบชื่อเต็มจาก firstName + lastName สำหรับ Master Owner/Member Stall
+function buildOwnerFullName(
+  firstName: string | null,
+  lastName: string | null
+): string | null {
+  const fullName = [firstName, lastName].filter(Boolean).join(" ").trim();
+
+  return fullName.length > 0 ? fullName : null;
+}
+
+// Function ค้นหาเจ้าของแผง (MasterOwnerStall) แบบ batch ตาม marketCode + boothCode
+export async function findOwnerStallsByMarketAndBooth(
+  pairs: Array<{ marketCode: string; boothCode: string }>,
+  connection?: DbConnection
+): Promise<
+  Map<
+    string,
+    { full_name: string | null; card_id: string; line_user_id: string | null }
+  >
+> {
+  const map = new Map<
+    string,
+    { full_name: string | null; card_id: string; line_user_id: string | null }
+  >();
+
+  if (pairs.length === 0) {
+    return map;
+  }
+
+  const db = client(connection);
+  const ownerStalls = await db.masterOwnerStall.findMany({
+    where: {
+      OR: pairs.map((pair) => ({
+        marketCode: pair.marketCode,
+        boothCode: pair.boothCode,
+      })),
+    },
+  });
+
+  for (const ownerStall of ownerStalls) {
+    map.set(`${ownerStall.marketCode}::${ownerStall.boothCode}`, {
+      full_name: buildOwnerFullName(ownerStall.firstName, ownerStall.lastName),
+      card_id: ownerStall.cardId,
+      line_user_id: ownerStall.lineUserId,
+    });
+  }
+
+  return map;
+}
+
+// Function ค้นหาชื่อสมาชิกแผง (MasterMemberStall) แบบ batch ตาม owner + LINE user id
+export async function findMemberStallFullNamesByOwnerAndLineUserId(
+  requests: Array<{
+    marketCode: string;
+    ownerCardId: string;
+    ownerLineUserId: string;
+    memberLineUserId: string;
+  }>,
+  connection?: DbConnection
+): Promise<Map<string, string | null>> {
+  const map = new Map<string, string | null>();
+
+  if (requests.length === 0) {
+    return map;
+  }
+
+  const db = client(connection);
+  const members = await db.masterMemberStall.findMany({
+    where: {
+      OR: requests.map((request) => ({
+        marketCode: request.marketCode,
+        ownerIdCard: request.ownerCardId,
+        ownerLineUserId: request.ownerLineUserId,
+        memberStallLineUserId: request.memberLineUserId,
+      })),
+    },
+  });
+
+  for (const member of members) {
+    map.set(
+      `${member.marketCode}::${member.ownerIdCard}::${member.ownerLineUserId}::${member.memberStallLineUserId}`,
+      buildOwnerFullName(member.memberStallFirstName, member.memberStallLastName)
+    );
+  }
+
+  return map;
+}
+
+// Function เพิ่ม test member stall ให้ผูกกับทุกเจ้าของแผงที่ active (ใช้กับหน้า LINE dev tester)
+export async function upsertTestMemberStallAcrossActiveOwners(
+  member: {
+    memberStallLineUserId: string;
+    memberStallFirstName?: string | null;
+    memberStallLastName?: string | null;
+    memberStallIdCard?: string | null;
+    memberStallTelephone?: string | null;
+    memberStallUserGroup?: string | null;
+  },
+  connection?: DbConnection
+): Promise<{ ownerStallCount: number }> {
+  const db = client(connection);
+  const ownerStalls = await db.masterOwnerStall.findMany({
+    where: {
+      status: MASTER_OWNER_STALL_ACTIVE_STATUS,
+      ownerStatus: MASTER_MARKET_ACTIVE_STATUS,
+      lineUserId: { not: null },
+    },
+    select: {
+      marketCode: true,
+      cardId: true,
+      lineUserId: true,
+    },
+  });
+
+  const owners = new Map<
+    string,
+    { marketCode: string; cardId: string; lineUserId: string }
+  >();
+
+  for (const ownerStall of ownerStalls) {
+    if (!ownerStall.lineUserId) {
+      continue;
+    }
+
+    owners.set(
+      `${ownerStall.marketCode}::${ownerStall.cardId}::${ownerStall.lineUserId}`,
+      {
+        marketCode: ownerStall.marketCode,
+        cardId: ownerStall.cardId,
+        lineUserId: ownerStall.lineUserId,
+      }
+    );
+  }
+
+  await Promise.all(
+    Array.from(owners.values()).map((owner) =>
+      db.masterMemberStall.upsert({
+        where: {
+          marketCode_ownerIdCard_ownerLineUserId_memberStallLineUserId: {
+            marketCode: owner.marketCode,
+            ownerIdCard: owner.cardId,
+            ownerLineUserId: owner.lineUserId,
+            memberStallLineUserId: member.memberStallLineUserId,
+          },
+        },
+        create: {
+          marketCode: owner.marketCode,
+          ownerIdCard: owner.cardId,
+          ownerLineUserId: owner.lineUserId,
+          memberStallLineUserId: member.memberStallLineUserId,
+          memberStallFirstName: member.memberStallFirstName ?? null,
+          memberStallLastName: member.memberStallLastName ?? null,
+          memberStallIdCard: member.memberStallIdCard ?? null,
+          memberStallTelephone: member.memberStallTelephone ?? null,
+          memberStallUserGroup: member.memberStallUserGroup ?? null,
+          memberStallStatusOnStall: "1",
+          status: MASTER_OWNER_STALL_ACTIVE_STATUS,
+          syncedAt: new Date(),
+        },
+        update: {
+          memberStallFirstName: member.memberStallFirstName ?? null,
+          memberStallLastName: member.memberStallLastName ?? null,
+          memberStallIdCard: member.memberStallIdCard ?? null,
+          memberStallTelephone: member.memberStallTelephone ?? null,
+          memberStallUserGroup: member.memberStallUserGroup ?? null,
+          memberStallStatusOnStall: "1",
+          status: MASTER_OWNER_STALL_ACTIVE_STATUS,
+          syncedAt: new Date(),
+        },
+      })
+    )
+  );
+
+  return { ownerStallCount: owners.size };
+}

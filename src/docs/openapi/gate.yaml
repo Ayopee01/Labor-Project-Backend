@@ -1,0 +1,90 @@
+﻿paths:
+  /api/gate/options:
+    get:
+      tags:
+        - Gate
+      summary: ดึงข้อมูลตัวเลือกสำหรับทดสอบ Gate
+      description: >
+        ใช้ Gate Basic Auth เพื่อดึง master data สำหรับสร้าง request ทดสอบ ถ้าไม่ส่ง MarketCode จะคืน Markets และ Products พร้อม Packages
+        ถ้าส่ง MarketCode จะคืน Booths ของตลาดนั้น โดยไม่คืน rate หรือยอดเงินคำนวณ
+      operationId: getGateOptions
+      security:
+        - gateBasicAuth: []
+      parameters:
+        - in: query
+          name: MarketCode
+          required: false
+          schema:
+            type: string
+          example: "1123"
+      responses:
+        "200":
+          description: ตัวเลือกสำหรับใช้สร้าง request ทดสอบ Gate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateOptionsResponse"
+        "401":
+          description: ไม่มี หรือ Gate client credentials ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/gate/tickets:
+    post:
+      tags:
+        - Gate
+      summary: สร้างหรือเพิ่มข้อมูล Ticket จาก Gate
+      description: >
+        Gate ส่ง Business Ticket เข้าระบบด้วย Gate Basic Auth โดย TicketNumber คือรถ และ TicketNo คือ ticket ของตลาด
+        payload เดิมซ้ำจะคืน REPLAYED ส่วน TicketNo เดิมในตลาดเดิมสามารถเพิ่ม Booth ใหม่ได้ถ้ายังไม่ถูก lock
+        ระบบใช้ข้อมูลนี้สร้างงานรถ คำนวณจำนวน Worker ที่ต้องใช้ และ dispatch ตามค่า Dispatch โดยยังไม่คำนวณยอดเงิน
+      operationId: createGateTicket
+      security:
+        - gateBasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GateTicketRequest"
+      responses:
+        "200":
+          description: ส่ง gate_transaction_ref ซ้ำกับ request เดิม ระบบคืน response เดิมที่เคยตอบไปแล้ว (REPLAYED) โดยไม่สร้างข้อมูลซ้ำ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateTicketResponse"
+        "201":
+          description: รับ Gate ticket เข้าระบบสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateTicketResponse"
+        "400":
+          description: Payload ที่ Gate ส่งมาไม่ถูกต้องตามรูปแบบที่กำหนด
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ Gate client credentials ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            ส่ง gate_transaction_ref ซ้ำแต่ payload ไม่ตรงกับครั้งก่อน (GATE_TRANSACTION_REF_PAYLOAD_MISMATCH)
+            หรือ master data ที่อ้างอิงไม่ครบ/ไม่ถูกต้อง เช่น ไม่พบ MarketCode+BoothCode ที่ active
+            (MARKET_BOOTH_NOT_FOUND), ไม่ได้ตั้งชื่อตลาดไว้ (MARKET_NAME_NOT_CONFIGURED), คำนวณจำนวน
+            Worker ที่ต้องใช้ไม่ได้ (WORKER_REQUIREMENT_NOT_FOUND), หรือไม่ได้ตั้งค่า LINE ของ Vendor
+            ประจำแผงค้า (BOOTH_VENDOR_LINE_NOT_CONFIGURED) หรือ TicketNo ซ้ำข้ามตลาดขณะที่ Ticket เดิม
+            ยังไม่ถูกยกเลิก (GATE_TICKET_ALREADY_EXISTS) หรือ TicketNo+ตลาดเดิมมี BoothCode ที่ซ้ำกับที่มีอยู่แล้ว
+            (GATE_BOOTH_ALREADY_EXISTS_IN_TICKET) หรือ TicketNo+ตลาดเดิมที่ worker roster ถูก lock ไปแล้ว
+            (GATE_TICKET_ROSTER_LOCKED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
