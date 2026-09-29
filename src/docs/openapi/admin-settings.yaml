@@ -1,0 +1,557 @@
+paths:
+  /api/admin/settings:
+    get:
+      tags:
+        - Admin Settings
+      summary: ดูค่า runtime settings
+      description: >
+        คืนค่าตั้งค่าระบบที่ backend ใช้กับ queue, timeout, break และการคำนวณต่าง ๆ
+      operationId: getAdminSettings
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ค่า runtime settings ที่ backend ใช้คำนวณ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeSettings"
+        "403":
+          description: ไม่มี permission settings:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags:
+        - Admin Settings
+      summary: แก้ไขค่า runtime settings
+      description: >
+        Admin แก้ค่าตั้งค่าระบบและบันทึก audit log เพื่อให้ flow ที่อ่าน runtime settings ใช้ค่าล่าสุด
+      operationId: updateAdminSettings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRuntimeSettingsRequest"
+      responses:
+        "200":
+          description: ค่า runtime settings หลังแก้ไข
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeSettings"
+        "400":
+          description: Payload settings ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ไม่มี permission settings:update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/mobile-app-versions:
+    get:
+      tags:
+        - Admin Settings
+      summary: ดู version ของ Worker Mobile
+      description: >
+        คืน Current, Scheduled และ History ของ Worker Mobile โดยคำนวณจาก BuildNumber, ForceUpdateAt และเวลา server สถานะไม่ได้ถูกเก็บตรง ๆ แต่ derive ใหม่ทุกครั้งที่เรียก API
+      operationId: listAdminMobileAppVersions
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: เวอร์ชัน Current, Scheduled และ History ของ Worker Mobile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMobileAppVersionOverviewResponse"
+        "403":
+          description: ไม่มี permission mobile_app_versions:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags:
+        - Admin Settings
+      summary: สร้าง version ใหม่ของ Worker Mobile
+      description: >
+        Admin เพิ่ม version/build ใหม่พร้อม download URL และเวลาประกาศได้ ถ้ามี ForceUpdateAt ระบบจะให้ app version นี้มีผลตามเวลา server และจัดการ FCM notification ตามเวลาที่ตั้งไว้
+      operationId: createAdminMobileAppVersion
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMobileAppVersionRequest"
+      responses:
+        "201":
+          description: สร้าง mobile app version สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMobileAppVersionSummary"
+        "400":
+          description: Payload ไม่ถูกต้อง หรือ ReleaseNotificationAt อยู่หลัง ForceUpdateAt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ไม่มี permission mobile_app_versions:create
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: BuildNumber นี้ถูกใช้ไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/mobile-app-versions/{id}:
+    patch:
+      tags:
+        - Admin Settings
+      summary: แก้ไข version ของ Worker Mobile
+      description: >
+        Admin แก้ข้อมูล version, URL, release message และเวลาบังคับอัปเดตได้ Version และ BuildNumber แก้ได้เฉพาะรายการที่ยังเป็น Scheduled ส่วน notification จะถูก sync ใหม่ถ้ายังไม่เคยส่ง
+      operationId: updateAdminMobileAppVersion
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Id ของ mobile app version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMobileAppVersionRequest"
+      responses:
+        "200":
+          description: แก้ไข mobile app version สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMobileAppVersionSummary"
+        "400":
+          description: Payload ไม่ถูกต้อง หรือ ReleaseNotificationAt อยู่หลัง ForceUpdateAt (เทียบกับสถานะที่รวมค่าเดิม + ค่าที่แก้แล้ว)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ไม่มี permission mobile_app_versions:update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบ mobile app version นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: BuildNumber นี้ถูกใช้ไปแล้ว หรือมีการแก้ Version/BuildNumber หลังจากเวอร์ชันนี้ไม่ได้อยู่สถานะ Scheduled แล้ว (MOBILE_APP_VERSION_LOCKED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/roles:
+    get:
+      tags:
+        - Admin Settings
+      summary: ดู role และ permission level ของ Admin
+      description: >
+        คืนรายการ permission level พร้อมบัญชี Admin ที่อยู่ในแต่ละระดับสำหรับหน้าจัดการสิทธิ์
+      operationId: listAdminRoles
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ระดับ permission ของ Admin พร้อมบัญชีที่อยู่ในแต่ละระดับ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminRoleListResponse"
+        "403":
+          description: ไม่มี permission roles:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/gate-clients:
+    get:
+      tags:
+        - Admin Settings
+      summary: ดูรายการ Gate client
+      description: >
+        คืน metadata ของ Gate client สำหรับเชื่อมต่อ Gate โดยไม่คืน client secret
+      operationId: listAdminGateClients
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ข้อมูล Gate client (ไม่ส่ง secret กลับมา)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateClientListResponse"
+        "403":
+          description: ไม่มี permission gate_clients:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      tags:
+        - Admin Settings
+      summary: สร้าง Gate client ใหม่
+      description: >
+        Admin สร้าง client_id/client_name สำหรับ Gate และระบบคืน client_secret ให้ดูได้ครั้งเดียว
+      operationId: createAdminGateClient
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGateClientRequest"
+      responses:
+        "201":
+          description: สร้าง Gate client สำเร็จ (แสดง client_secret ให้เห็นเฉพาะ response นี้ครั้งเดียว)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateClientSecretResponse"
+        "400":
+          description: Payload ของ Gate client ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ไม่มี permission gate_clients:create
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: client_id นี้ถูกใช้ไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/gate-clients/{clientId}:
+    patch:
+      tags:
+        - Admin Settings
+      summary: แก้ไข Gate client
+      description: >
+        Admin แก้ชื่อหรือสถานะ active/inactive ของ Gate client โดยไม่แตะ client secret
+      operationId: updateAdminGateClient
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: clientId
+          required: true
+          schema:
+            type: string
+            example: gate-north
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateGateClientRequest"
+      responses:
+        "200":
+          description: แก้ไข Gate client สำเร็จ (ไม่ส่ง secret กลับมา)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateClientMutationResponse"
+        "400":
+          description: Payload ของ Gate client ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ไม่มี permission gate_clients:update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบ Gate client นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/gate-clients/{clientId}/secret/rotate:
+    post:
+      tags:
+        - Admin Settings
+      summary: เปลี่ยน secret ของ Gate client
+      description: >
+        สร้าง client_secret ชุดใหม่ให้ Gate client และยกเลิก secret เดิมทันที
+      operationId: rotateAdminGateClientSecret
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: clientId
+          required: true
+          schema:
+            type: string
+            example: gate-north
+      responses:
+        "200":
+          description: เปลี่ยน secret สำเร็จ (แสดง client_secret ให้เห็นเฉพาะ response นี้ครั้งเดียว)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateClientSecretResponse"
+        "403":
+          description: ไม่มี permission gate_clients:rotate_secret
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบ Gate client นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/admins:
+    post:
+      tags:
+        - Admin Settings
+      summary: สร้างบัญชี Admin
+      description: >
+        Admin ระดับสูงสร้างบัญชี Admin ใหม่ พร้อมกำหนด permission level และสิทธิ์เริ่มต้น
+      operationId: createAdminAccount
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAdminAccountRequest"
+      responses:
+        "201":
+          description: สร้างบัญชี Admin สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAdminAccountResponse"
+        "400":
+          description: Payload ของ Admin ไม่ถูกต้อง หรือ permission ที่ขอมี mobile_app_versions:create/update โดยไม่มี mobile_app_versions:read (PERMISSION_DEPENDENCY_NOT_SATISFIED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: ไม่มี permission admins:create หรือ permission level ใหม่เท่ากับหรือสูงกว่าผู้เรียก หรือขอ permission ที่ผู้เรียกเองไม่มี (PERMISSIONS_NOT_GRANTABLE) หรือให้ permission กลุ่ม mobile_app_versions:* โดยผู้เรียกไม่ใช่ owner (OWNER_ONLY_PERMISSIONS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Username นี้ถูกใช้ไปแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/admins/{id}:
+    patch:
+      tags:
+        - Admin Settings
+      summary: แก้ไขข้อมูลพื้นฐานของ Admin อื่น
+      description: >
+        Admin แก้ full_name, position, email และ phone ของบัญชี Admin ที่มีระดับต่ำกว่าตัวเอง
+      operationId: updateAdminAccount
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Id ของบัญชี Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAdminAccountRequest"
+      responses:
+        "200":
+          description: แก้ไขบัญชี Admin สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateAdminAccountResponse"
+        "403":
+          description: ไม่มี permission admins:update หรือเป้าหมายคือบัญชีของผู้เรียกเอง หรือเป้าหมายมี permission level เท่ากับหรือสูงกว่าผู้เรียก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบบัญชี Admin นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/admins/{id}/password:
+    patch:
+      tags:
+        - Admin Settings
+      summary: รีเซ็ตรหัสผ่าน Admin อื่น
+      description: >
+        ตั้งรหัสผ่านใหม่ให้ Admin เป้าหมาย และยกเลิก session ทั้งหมดของบัญชีนั้น
+      operationId: resetAdminPassword
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Id ของบัญชี Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          description: รีเซ็ตรหัสผ่านสำเร็จ session ที่ active ของเป้าหมายทั้งหมดถูกยกเลิก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionMessageResponse"
+        "403":
+          description: ไม่มี permission admins:reset_password หรือเป้าหมายคือบัญชีของผู้เรียกเอง หรือเป้าหมายมี permission level เท่ากับหรือสูงกว่าผู้เรียก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบบัญชี Admin นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/users/{id}/permissions:
+    get:
+      tags:
+        - Admin Settings
+      summary: ดูสิทธิ์ของ Admin หนึ่งคน
+      description: >
+        ดึง permission, status และ permission level ของ Admin ที่มีระดับต่ำกว่าผู้เรียก
+      operationId: getAdminUserPermissions
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Id ของบัญชี Admin
+      responses:
+        "200":
+          description: สิทธิ์ของบัญชี Admin เป้าหมาย ต้องมี permission level ต่ำกว่าผู้เรียกเท่านั้นถึงจะดูได้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminUserPermissionsResponse"
+        "403":
+          description: ไม่มี permission permissions:read หรือดูสิทธิ์ของตัวเอง หรือเป้าหมายมี permission level เท่ากับหรือสูงกว่าผู้เรียก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบบัญชี Admin นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    patch:
+      tags:
+        - Admin Settings
+      summary: แก้ไขสิทธิ์ของ Admin หนึ่งคน
+      description: >
+        อัปเดต permission, status และ permission level ของ Admin เป้าหมาย แล้ว revoke session เพื่อให้สิทธิ์ใหม่มีผล
+      operationId: updateAdminUserPermissions
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+          description: Id ของบัญชี Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAdminUserPermissionsRequest"
+      responses:
+        "200":
+          description: อัปเดตสิทธิ์/สถานะของ Admin สำเร็จ session ที่ active ของเป้าหมายถูกยกเลิกทั้งหมด
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpdateAdminUserPermissionsResponse"
+        "400":
+          description: Payload สิทธิ์ไม่ถูกต้อง หรือ permission ที่ขอมี mobile_app_versions:create/update โดยไม่มี mobile_app_versions:read (PERMISSION_DEPENDENCY_NOT_SATISFIED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: >-
+            ไม่มี permission permissions:update หรือ permission level ของเป้าหมาย/ระดับใหม่เท่ากับหรือสูงกว่าผู้เรียก
+            หรือขอ permission ที่ผู้เรียกเองไม่มี (PERMISSIONS_NOT_GRANTABLE) หรือ request นี้จะเปลี่ยน
+            permission กลุ่ม mobile_app_versions:* ของเป้าหมายโดยผู้เรียกไม่ใช่ owner (OWNER_ONLY_PERMISSIONS)
+            — ถ้าส่งชุด mobile_app_versions:* เดิมของเป้าหมายซ้ำโดยไม่เปลี่ยนแปลง ผู้เรียกระดับใดก็ทำได้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบบัญชี Admin นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

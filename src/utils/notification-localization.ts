@@ -1,0 +1,651 @@
+// Import Config
+import { TICKET_STATUS } from "../constants/status";
+
+/* -------------------------------------- Types -------------------------------------- */
+
+// Type ภาษาที่แจ้งเตือน worker รองรับ
+export type NotificationLang = "TH" | "MN" | "CN" | "EN";
+
+// Type ผลแจ้งเตือนที่แปลภาษาแล้ว
+export type LocalizedNotification = {
+  key: string;
+  lang: NotificationLang;
+  title: string;
+  message: string;
+};
+
+// Type ข้อความ title/message ของ template
+type NotificationTemplate = {
+  title: string;
+  message: string;
+};
+
+// Type function สร้างข้อความ template จาก params
+type TemplateRenderer = (params: Record<string, unknown>) => NotificationTemplate;
+
+/* -------------------------------------- Config -------------------------------------- */
+
+// Config ภาษา default เมื่อไม่รู้ภาษาของ worker
+const DEFAULT_LANG: NotificationLang = "TH";
+
+// Config แปลง event type เป็น notification key
+const WORKER_NOTIFICATION_KEYS: Record<string, string> = {
+  WORKER_ASSIGNED: "worker.assigned",
+  ASSIGNMENT_TIMEOUT: "assignment.timeout",
+  ASSIGNMENT_CANCELLED: "assignment.cancelled",
+  TEAM_READY: "assignment.team_ready",
+  ASSIGNMENT_SCAN_DEADLINE_EXTENDED: "assignment.scan_deadline_extended",
+  ASSIGNMENT_SCAN_DEADLINE_SHORTENED: "assignment.scan_deadline_shortened",
+  ASSIGNMENT_SCAN_DEADLINE_WARNING: "assignment.scan_deadline_warning",
+  TICKET_COMPLETION_SUBMITTED: "ticket.completion_submitted",
+  TICKET_COMPLETION_RESULT: "ticket.completion_result",
+  STALL_JOB_CANCELLED: "job.stall_cancelled",
+  MARKET_JOB_CANCELLED: "job.market_cancelled",
+  VEHICLE_JOB_CANCELLED: "job.vehicle_cancelled",
+  TICKET_WORKER_CANCELLED: "ticket_worker.cancelled",
+  TICKET_WORKER_CANCELLED_FROM_BOOTH: "ticket_worker.cancelled_from_booth",
+  SESSION_REVOKED: "auth.session_revoked",
+  WORKER_BREAK_RETURN_ACTION_REQUIRED: "worker.break_return_action_required",
+  WORKER_BREAK_RETRY_EXPIRED: "worker.break_retry_expired",
+  APP_VERSION_UPDATE: "app.version_update",
+  APP_VERSION_FORCE_UPDATE: "app.version_force_update",
+};
+
+/* -------------------------------------- Helpers -------------------------------------- */
+
+// Function แปลงค่าเป็นข้อความที่ trim แล้ว ถ้าว่างใช้ fallback
+function text(value: unknown, fallback = "-"): string {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+// Function แปลงตัวเลขหรือข้อความตัวเลขเป็นข้อความ ถ้าไม่มีใช้ fallback
+function numberText(value: unknown, fallback = "-"): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  return fallback;
+}
+
+// Function เลือก key แจ้งผลส่งยอดตาม submission status (ยืนยัน/ตีกลับ)
+function resolveTicketResultKey(params: Record<string, unknown>): string {
+  const submissionStatus = String(params.submission_status ?? params.status ?? "").toUpperCase();
+
+  if (submissionStatus === TICKET_STATUS.COMPLETED) {
+    return params.reason === "vendor_confirm_timeout"
+      ? "ticket.completion_auto_confirmed"
+      : "ticket.completion_confirmed";
+  }
+
+  if (submissionStatus === TICKET_STATUS.REJECT) {
+    return "ticket.completion_rejected";
+  }
+
+  return "ticket.completion_result";
+}
+
+// Function เลือก key แจ้งเตือนเมื่อ Admin บังคับเปลี่ยนสถานะ worker
+function resolveForcedStatusKey(params: Record<string, unknown>): string {
+  const status = String(params.status ?? "").toLowerCase();
+
+  if (status === "ready") {
+    return "worker.status_forced_ready";
+  }
+
+  if (status === "break") {
+    return "worker.status_forced_break";
+  }
+
+  return "worker.status_forced_open_app";
+}
+
+// Function แปลงค่าภาษาเป็น NotificationLang (รองรับ MY/KM เดิม) ถ้าไม่รู้จักใช้ TH
+export function normalizeNotificationLang(value?: string | null): NotificationLang {
+  const lang = String(value ?? "").trim().toUpperCase();
+
+  if (lang === "TH" || lang === "MN" || lang === "CN" || lang === "EN") {
+    return lang;
+  }
+
+  if (lang === "MY") {
+    return "MN";
+  }
+
+  if (lang === "KM") {
+    return "CN";
+  }
+
+  return DEFAULT_LANG;
+}
+
+// Function หา notification key จาก key ที่ส่งมา หรือจาก event type
+function resolveWorkerNotificationKey(
+  type: string,
+  params: Record<string, unknown> = {},
+  explicitKey?: string | null,
+): string {
+  if (explicitKey) {
+    return explicitKey;
+  }
+
+  if (type === "TICKET_COMPLETION_RESULT") {
+    return resolveTicketResultKey(params);
+  }
+
+  if (type === "WORKER_STATUS_FORCED_BY_ADMIN") {
+    return resolveForcedStatusKey(params);
+  }
+
+  return WORKER_NOTIFICATION_KEYS[type] ?? "worker.notification";
+}
+
+/* -------------------------------------- Templates -------------------------------------- */
+
+// Config template ข้อความแจ้งเตือนแยกตามภาษาและ key
+const TEMPLATES: Record<NotificationLang, Record<string, TemplateRenderer>> = {
+  TH: {
+    "worker.assigned": () => ({
+      title: "มีงานใหม่",
+      message: "คุณได้รับงานใหม่ กรุณากดรับงาน",
+    }),
+    "assignment.timeout": () => ({
+      title: "หมดเวลางาน",
+      message: "หมดเวลารับงานหรือสแกน QR",
+    }),
+    "assignment.cancelled": () => ({
+      title: "งานถูกยกเลิก",
+      message: "งานถูกยกเลิก",
+    }),
+    "assignment.team_ready": () => ({
+      title: "ทีมพร้อมทำงาน",
+      message: "ทีมงานเช็คอินครบแล้ว เริ่มทำงานได้เลย",
+    }),
+    "assignment.scan_deadline_extended": () => ({
+      title: "ต่อเวลาสแกน QR",
+      message: "ต่อเวลาสแกน QR แล้ว",
+    }),
+    "assignment.scan_deadline_shortened": (params) => ({
+      title: "เวลา Scan QR ถูกปรับ",
+      message: `กรุณาสแกน QR ภายใน ${numberText(params.remaining_minutes)} นาที`,
+    }),
+    "assignment.scan_deadline_warning": (params) => ({
+      title: "ใกล้หมดเวลาสแกน QR",
+      message: `คุณเหลือเวลา ${numberText(params.remaining_minutes)} นาทีในการสแกน QR`,
+    }),
+    "ticket.completion_submitted": (params) => ({
+      title: "ส่งยอดงานแล้ว",
+      message: `แผง ${text(params.boothCode)} ถูกส่งยอดแล้ว รอแผงค้ายืนยัน`,
+    }),
+    "ticket.completion_confirmed": (params) => ({
+      title: "แผงค้ายืนยันยอดแล้ว",
+      message: `แผง ${text(params.boothCode)} ยืนยันยอดเรียบร้อยแล้ว`,
+    }),
+    "ticket.completion_auto_confirmed": (params) => ({
+      title: "ระบบยืนยันยอดอัตโนมัติ",
+      message: `แผง ${text(params.boothCode)} ถูกยืนยันยอดอัตโนมัติเนื่องจากแผงค้าไม่ยืนยันภายในเวลาที่กำหนด`,
+    }),
+    "ticket.completion_rejected": (params) => ({
+      title: "แผงค้าตีกลับยอด",
+      message: `แผง ${text(params.boothCode)} ตีกลับยอดงาน กรุณาตรวจสอบ`,
+    }),
+    "ticket.completion_result": (params) => ({
+      title: "ผลยืนยันยอดอัปเดตแล้ว",
+      message: `ผลยืนยันยอดของแผง ${text(params.boothCode)} อัปเดตแล้ว`,
+    }),
+    "job.stall_cancelled": (params) => ({
+      title: "งานแผงถูกยกเลิก",
+      message: `งานแผง ${text(params.boothCode)} ถูกยกเลิก`,
+    }),
+    "job.market_cancelled": (params) => ({
+      title: "งานตลาดถูกยกเลิก",
+      message: `งานตลาด ${text(params.marketCode)} ถูกยกเลิก`,
+    }),
+    "job.vehicle_cancelled": () => ({
+      title: "งานรถถูกยกเลิก",
+      message: "งานรถถูกยกเลิก",
+    }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "คุณถูกถอดออกจากงาน",
+      message: params.reason_text
+        ? `แอดมินถอดคุณออกจากใบงาน ${text(params.ticketNo)} เหตุผล: ${text(params.reason_text)}`
+        : `แอดมินถอดคุณออกจากใบงาน ${text(params.ticketNo)}`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "คุณถูกถอดออกจากแผง",
+      message: params.reason_text
+        ? `แอดมินถอดคุณออกจากแผง ${text(params.boothCode)} เหตุผล: ${text(params.reason_text)}`
+        : `แอดมินถอดคุณออกจากแผง ${text(params.boothCode)}`,
+    }),
+    "auth.session_revoked": (params) => ({
+      title: "บัญชีถูกเข้าสู่ระบบจากอุปกรณ์อื่น",
+      message: `Session นี้ถูกออกจากระบบ เนื่องจากมีการยืนยันเข้าสู่ระบบจาก ${text(params.new_device_name, "อุปกรณ์อื่น")}`,
+    }),
+    "worker.break_return_action_required": () => ({
+      title: "หมดเวลาพัก",
+      message: "หมดเวลาพักแล้ว กรุณาเปิดแอปเพื่อกลับเข้าคิวงาน",
+    }),
+    "worker.break_retry_expired": () => ({
+      title: "เลยเวลาที่กำหนด",
+      message: "คุณไม่ได้กลับเข้าคิวภายในเวลาที่กำหนด กรุณาติดต่อ Admin",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "แอดมินเปลี่ยนสถานะของคุณ",
+      message: params.reason_text
+        ? `แอดมินเพิ่มคุณเข้าคิวงานแล้ว เหตุผล: ${text(params.reason_text)}`
+        : "แอดมินเพิ่มคุณเข้าคิวงานแล้ว",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "แอดมินเปลี่ยนสถานะของคุณ",
+      message: params.reason_text
+        ? `แอดมินเปลี่ยนสถานะของคุณเป็นไม่อยู่ในคิวงาน เหตุผล: ${text(params.reason_text)}`
+        : "แอดมินเปลี่ยนสถานะของคุณเป็นไม่อยู่ในคิวงาน",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "แอดมินเปลี่ยนสถานะของคุณ",
+      message: params.reason_text
+        ? `แอดมินให้คุณพักงาน เหตุผล: ${text(params.reason_text)}`
+        : "แอดมินให้คุณพักงาน",
+    }),
+    "app.version_update": (params) => ({
+      title: "มีแอปพลิเคชันเวอร์ชันใหม่",
+      message: params.force_update_date
+        ? `เวอร์ชัน ${text(params.version)} พร้อมให้อัปเดต และจะเริ่มบังคับอัปเดตวันที่ ${text(params.force_update_date)} เวลา ${text(params.force_update_time)} น.`
+        : `เวอร์ชัน ${text(params.version)} พร้อมให้อัปเดตแล้ว`,
+    }),
+    "app.version_force_update": (params) => ({
+      title: "ถึงเวลาบังคับอัปเดตแล้ว",
+      message: `ขณะนี้แอปพลิเคชันมีเวอร์ชันใหม่ ${text(params.version)} กรุณาอัปเดตแอปเพื่อใช้งานต่อ`,
+    }),
+    "worker.notification": () => ({
+      title: "แจ้งเตือนงาน",
+      message: "มีแจ้งเตือนงานใหม่",
+    }),
+  },
+  MN: {
+    "worker.assigned": () => ({
+      title: "အလုပ်အသစ် ရရှိပါသည်",
+      message: "အလုပ်အသစ် ရရှိပါသည်။ လက်ခံပါ။",
+    }),
+    "assignment.timeout": () => ({
+      title: "အချိန်ကျော်လွန်သွားပါသည်",
+      message: "အလုပ်လက်ခံရန် သို့မဟုတ် QR စကန်ရန် အချိန်ကျော်လွန်သွားပါသည်။",
+    }),
+    "assignment.cancelled": () => ({
+      title: "အလုပ်ကို ပယ်ဖျက်ပြီးပါပြီ",
+      message: "အလုပ်ကို ပယ်ဖျက်ပြီးပါပြီ။",
+    }),
+    "assignment.team_ready": () => ({
+      title: "အသင်း အသင့်ဖြစ်ပါပြီ",
+      message: "အဖွဲ့ဝင်အားလုံး check-in ပြုလုပ်ပြီးပါပြီ။ အလုပ်စတင်နိုင်ပါပြီ။",
+    }),
+    "assignment.scan_deadline_extended": () => ({
+      title: "QR စကန်ချိန် တိုးပြီးပါပြီ",
+      message: "QR စကန်ချိန် တိုးပြီးပါပြီ။",
+    }),
+    "assignment.scan_deadline_shortened": (params) => ({
+      title: "QR စကန်ချိန် ပြောင်းလဲပါသည်",
+      message: `${numberText(params.remaining_minutes)} မိနစ်အတွင်း QR စကန်ပါ။`,
+    }),
+    "assignment.scan_deadline_warning": (params) => ({
+      title: "QR စကန်ချိန် သတိပေးချက်",
+      message: `သင့်တွင် QR စကန်ရန် ${numberText(params.remaining_minutes)} မိနစ် ကျန်ရှိပါသည်။`,
+    }),
+    "ticket.completion_submitted": (params) => ({
+      title: "အလုပ်ပမာဏ ပို့ပြီးပါပြီ",
+      message: `ဆိုင်ခန်း ${text(params.boothCode)} ၏ အလုပ်ပမာဏ ပို့ပြီးပါပြီ။ အတည်ပြုချက် စောင့်နေပါသည်။`,
+    }),
+    "ticket.completion_confirmed": (params) => ({
+      title: "ဆိုင်ခန်းမှ အတည်ပြုပြီးပါပြီ",
+      message: `ဆိုင်ခန်း ${text(params.boothCode)} မှ အလုပ်ပမာဏကို အတည်ပြုပြီးပါပြီ။`,
+    }),
+    "ticket.completion_auto_confirmed": (params) => ({
+      title: "စနစ်မှ အလိုအလျောက် အတည်ပြုပြီးပါပြီ",
+      message: `ဆိုင်ခန်း ${text(params.boothCode)} မှ သတ်မှတ်ချိန်အတွင်း အတည်မပြုသဖြင့် စနစ်မှ အလုပ်ပမာဏကို အလိုအလျောက် အတည်ပြုပြီးပါပြီ။`,
+    }),
+    "ticket.completion_rejected": (params) => ({
+      title: "ဆိုင်ခန်းမှ ပြန်ပို့ထားပါသည်",
+      message: `ဆိုင်ခန်း ${text(params.boothCode)} မှ အလုပ်ပမာဏကို ပြန်ပို့ထားပါသည်။ စစ်ဆေးပါ။`,
+    }),
+    "ticket.completion_result": (params) => ({
+      title: "အတည်ပြုရလဒ် ပြောင်းလဲပါသည်",
+      message: `ဆိုင်ခန်း ${text(params.boothCode)} ၏ အတည်ပြုရလဒ် ပြောင်းလဲပါသည်။`,
+    }),
+    "job.stall_cancelled": (params) => ({
+      title: "ဆိုင်ခန်းအလုပ် ပယ်ဖျက်ပြီးပါပြီ",
+      message: `ဆိုင်ခန်း ${text(params.boothCode)} ၏ အလုပ်ကို ပယ်ဖျက်ပြီးပါပြီ။`,
+    }),
+    "job.market_cancelled": (params) => ({
+      title: "ဈေးအလုပ် ပယ်ဖျက်ပြီးပါပြီ",
+      message: `ဈေး ${text(params.marketCode)} ၏ အလုပ်ကို ပယ်ဖျက်ပြီးပါပြီ။`,
+    }),
+    "job.vehicle_cancelled": () => ({
+      title: "ယာဉ်အလုပ် ပယ်ဖျက်ပြီးပါပြီ",
+      message: "ယာဉ်အလုပ်ကို ပယ်ဖျက်ပြီးပါပြီ။",
+    }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "လုပ်ငန်းမှ ဖယ်ရှားခံရပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို လက်မှတ် ${text(params.ticketNo)} မှ ဖယ်ရှားလိုက်ပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : `Admin မှ သင့်ကို လက်မှတ် ${text(params.ticketNo)} မှ ဖယ်ရှားလိုက်ပါသည်။`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "ဆိုင်ခန်းမှ ဖယ်ရှားခံရပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို ဆိုင်ခန်း ${text(params.boothCode)} မှ ဖယ်ရှားလိုက်ပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : `Admin မှ သင့်ကို ဆိုင်ခန်း ${text(params.boothCode)} မှ ဖယ်ရှားလိုက်ပါသည်။`,
+    }),
+    "auth.session_revoked": (params) => ({
+      title: "အကောင့်ကို အခြားစက်မှ ဝင်ရောက်ထားပါသည်",
+      message: `${text(params.new_device_name, "အခြားစက်")} မှ ဝင်ရောက်မှုကို အတည်ပြုထားသောကြောင့် ဤ session မှ ထွက်ထားပါသည်။`,
+    }),
+    "worker.break_return_action_required": () => ({
+      title: "နားနေချိန် ကုန်ဆုံးပါပြီ",
+      message: "နားနေချိန် ကုန်ဆုံးပါပြီ။ အလုပ်တန်းစီစဉ်သို့ ပြန်ဝင်ရောက်ရန် အက်ပ်ကို ဖွင့်ပါ။",
+    }),
+    "worker.break_retry_expired": () => ({
+      title: "သတ်မှတ်ချိန် ကျော်လွန်သွားပါပြီ",
+      message: "အချိန်ကုန်ဆုံးချိန်အတွင်း သင် အလုပ်တန်းစီစဉ်သို့ ပြန်မရောက်ရှိခဲ့ပါ။ ကျေးဇူးပြု၍ Admin ကို ဆက်သွယ်ပါ။",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "Admin မှ သင့်အခြေအနေကို ပြောင်းလဲထားပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို အလုပ်တန်းစီစဉ်သို့ ပြန်ထည့်ပေးလိုက်ပါပြီ။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : "Admin မှ သင့်ကို အလုပ်တန်းစီစဉ်သို့ ပြန်ထည့်ပေးလိုက်ပါပြီ။",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "Admin မှ သင့်အခြေအနေကို ပြောင်းလဲထားပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်အခြေအနေကို အလုပ်တန်းစီစဉ်တွင် မပါဝင်တော့ဟု ပြောင်းလဲထားပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : "Admin မှ သင့်အခြေအနေကို အလုပ်တန်းစီစဉ်တွင် မပါဝင်တော့ဟု ပြောင်းလဲထားပါသည်။",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "Admin မှ သင့်အခြေအနေကို ပြောင်းလဲထားပါသည်",
+      message: params.reason_text
+        ? `Admin မှ သင့်ကို နားနေခွင့် ပေးလိုက်ပါသည်။ အကြောင်းပြချက်- ${text(params.reason_text)}`
+        : "Admin မှ သင့်ကို နားနေခွင့် ပေးလိုက်ပါသည်။",
+    }),
+    "app.version_update": (params) => ({
+      title: "အက်ပလီကေးရှင်း ဗားရှင်းအသစ် ရရှိနိုင်ပါပြီ",
+      message: params.force_update_date
+        ? `ဗားရှင်း ${text(params.version)} ကို update လုပ်နိုင်ပါပြီ။ ${text(params.force_update_date)} ရက် ${text(params.force_update_time)} မှစပြီး မဖြစ်မနေ update လုပ်ရပါမည်။`
+        : `ဗားရှင်း ${text(params.version)} ကို update လုပ်နိုင်ပါပြီ။`,
+    }),
+    "app.version_force_update": (params) => ({
+      title: "မဖြစ်မနေ update လုပ်ရမည့်အချိန် ရောက်ရှိပါပြီ",
+      message: `ယခု အက်ပလီကေးရှင်း ဗားရှင်းအသစ် ${text(params.version)} ရှိပါပြီ။ ဆက်လက်အသုံးပြုရန် update လုပ်ပါ။`,
+    }),
+    "worker.notification": () => ({
+      title: "အလုပ်အသိပေးချက်",
+      message: "အလုပ်အသိပေးချက် အသစ်ရှိပါသည်။",
+    }),
+  },
+  CN: {
+    "worker.assigned": () => ({
+      title: "មានការងារថ្មី",
+      message: "អ្នកទទួលបានការងារថ្មី សូមចុចទទួលការងារ",
+    }),
+    "assignment.timeout": () => ({
+      title: "ផុតពេលការងារ",
+      message: "ផុតពេលទទួលការងារ ឬ scan QR",
+    }),
+    "assignment.cancelled": () => ({
+      title: "ការងារត្រូវបានលុបចោល",
+      message: "ការងារត្រូវបានលុបចោល",
+    }),
+    "assignment.team_ready": () => ({
+      title: "ក្រុមរួចរាល់ហើយ",
+      message: "សមាជិកក្រុមទាំងអស់បាន check-in រួចរាល់ហើយ។ អាចចាប់ផ្តើមធ្វើការបានហើយ។",
+    }),
+    "assignment.scan_deadline_extended": () => ({
+      title: "បានបន្ថែមពេល scan QR",
+      message: "បានបន្ថែមពេល scan QR ហើយ",
+    }),
+    "assignment.scan_deadline_shortened": (params) => ({
+      title: "ពេល Scan QR ត្រូវបានកែប្រែ",
+      message: `សូម scan QR ក្នុងរយៈពេល ${numberText(params.remaining_minutes)} នាទី`,
+    }),
+    "assignment.scan_deadline_warning": (params) => ({
+      title: "ការរំលឹកម៉ោង Scan QR",
+      message: `អ្នកនៅសល់ពេល ${numberText(params.remaining_minutes)} នាទីដើម្បី scan QR`,
+    }),
+    "ticket.completion_submitted": (params) => ({
+      title: "បានផ្ញើចំនួនការងារ",
+      message: `តូប ${text(params.boothCode)} បានផ្ញើចំនួនការងារ ហើយកំពុងរង់ចាំការបញ្ជាក់`,
+    }),
+    "ticket.completion_confirmed": (params) => ({
+      title: "តូបបានបញ្ជាក់ចំនួនហើយ",
+      message: `តូប ${text(params.boothCode)} បានបញ្ជាក់ចំនួនការងាររួចរាល់`,
+    }),
+    "ticket.completion_auto_confirmed": (params) => ({
+      title: "ប្រព័ន្ធបានបញ្ជាក់ចំនួនដោយស្វ័យប្រវត្តិ",
+      message: `តូប ${text(params.boothCode)} មិនបានបញ្ជាក់ក្នុងពេលកំណត់ ប្រព័ន្ធបានបញ្ជាក់ចំនួនការងារដោយស្វ័យប្រវត្តិ`,
+    }),
+    "ticket.completion_rejected": (params) => ({
+      title: "តូបបានបដិសេធចំនួន",
+      message: `តូប ${text(params.boothCode)} បានបដិសេធចំនួនការងារ សូមពិនិត្យមើល`,
+    }),
+    "ticket.completion_result": (params) => ({
+      title: "លទ្ធផលបញ្ជាក់បានធ្វើបច្ចុប្បន្នភាព",
+      message: `លទ្ធផលបញ្ជាក់របស់តូប ${text(params.boothCode)} បានធ្វើបច្ចុប្បន្នភាព`,
+    }),
+    "job.stall_cancelled": (params) => ({
+      title: "ការងារតូបត្រូវបានលុបចោល",
+      message: `ការងារតូប ${text(params.boothCode)} ត្រូវបានលុបចោល`,
+    }),
+    "job.market_cancelled": (params) => ({
+      title: "ការងារផ្សារត្រូវបានលុបចោល",
+      message: `ការងារផ្សារ ${text(params.marketCode)} ត្រូវបានលុបចោល`,
+    }),
+    "job.vehicle_cancelled": () => ({
+      title: "ការងាររថយន្តត្រូវបានលុបចោល",
+      message: "ការងាររថយន្តត្រូវបានលុបចោល",
+    }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "អ្នកត្រូវបានដកចេញពីការងារ",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីសំបុត្រ ${text(params.ticketNo)}។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីសំបុត្រ ${text(params.ticketNo)}`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "អ្នកត្រូវបានដកចេញពីតូប",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីតូប ${text(params.boothCode)}។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : `អ្នកគ្រប់គ្រងបានដកអ្នកចេញពីតូប ${text(params.boothCode)}`,
+    }),
+    "auth.session_revoked": (params) => ({
+      title: "គណនីបានចូលពីឧបករណ៍ផ្សេង",
+      message: `Session នេះត្រូវបានចេញ ព្រោះបានបញ្ជាក់ការចូលពី ${text(params.new_device_name, "ឧបករណ៍ផ្សេង")}`,
+    }),
+    "worker.break_return_action_required": () => ({
+      title: "ការសម្រាកបានផុតកំណត់ហើយ",
+      message: "ការសម្រាករបស់អ្នកបានផុតកំណត់ហើយ សូមបើកកម្មវិធីដើម្បីត្រឡប់ទៅជួរការងារវិញ",
+    }),
+    "worker.break_retry_expired": () => ({
+      title: "លើសពេលកំណត់ហើយ",
+      message: "អ្នកមិនបានត្រឡប់ទៅជួរការងារវិញក្នុងពេលកំណត់ទេ សូមទាក់ទង Admin",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នក",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានបញ្ចូលអ្នកទៅក្នុងជួរការងារវិញ។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : "អ្នកគ្រប់គ្រងបានបញ្ចូលអ្នកទៅក្នុងជួរការងារវិញ",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នក",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នកទៅជាមិននៅក្នុងជួរការងារ។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នកទៅជាមិននៅក្នុងជួរការងារ",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "អ្នកគ្រប់គ្រងបានផ្លាស់ប្តូរស្ថានភាពរបស់អ្នក",
+      message: params.reason_text
+        ? `អ្នកគ្រប់គ្រងបានផ្តល់ការសម្រាកដល់អ្នក។ មូលហេតុ៖ ${text(params.reason_text)}`
+        : "អ្នកគ្រប់គ្រងបានផ្តល់ការសម្រាកដល់អ្នក",
+    }),
+    "app.version_update": (params) => ({
+      title: "កម្មវិធីមានកំណែថ្មី",
+      message: params.force_update_date
+        ? `កំណែ ${text(params.version)} អាចធ្វើបច្ចុប្បន្នភាពបានហើយ ហើយនឹងចាប់ផ្តើមតម្រូវឱ្យធ្វើបច្ចុប្បន្នភាពនៅថ្ងៃទី ${text(params.force_update_date)} ម៉ោង ${text(params.force_update_time)} ។`
+        : `កំណែ ${text(params.version)} អាចធ្វើបច្ចុប្បន្នភាពបានហើយ។`,
+    }),
+    "app.version_force_update": (params) => ({
+      title: "ដល់ពេលត្រូវធ្វើបច្ចុប្បន្នភាពជាចាំបាច់ហើយ",
+      message: `ឥឡូវនេះកម្មវិធីមានកំណែថ្មី ${text(params.version)} សូមធ្វើបច្ចុប្បន្នភាពដើម្បីបន្តប្រើប្រាស់`,
+    }),
+    "worker.notification": () => ({
+      title: "ការជូនដំណឹងការងារ",
+      message: "មានការជូនដំណឹងការងារថ្មី",
+    }),
+  },
+  EN: {
+    "worker.assigned": () => ({
+      title: "New assignment",
+      message: "You have a new assignment. Please accept it.",
+    }),
+    "assignment.timeout": () => ({
+      title: "Assignment timed out",
+      message: "The acceptance or QR scan deadline expired.",
+    }),
+    "assignment.cancelled": () => ({
+      title: "Assignment cancelled",
+      message: "Your assignment was cancelled.",
+    }),
+    "assignment.team_ready": () => ({
+      title: "Team ready",
+      message: "Your whole team has checked in. You can start working now.",
+    }),
+    "assignment.scan_deadline_extended": () => ({
+      title: "Scan deadline extended",
+      message: "The QR scan deadline was extended.",
+    }),
+    "assignment.scan_deadline_shortened": (params) => ({
+      title: "Scan deadline updated",
+      message: `Please scan QR within ${numberText(params.remaining_minutes)} minutes.`,
+    }),
+    "assignment.scan_deadline_warning": (params) => ({
+      title: "Scan deadline reminder",
+      message: `You have ${numberText(params.remaining_minutes)} minutes left to scan the QR code.`,
+    }),
+    "ticket.completion_submitted": (params) => ({
+      title: "Ticket submitted",
+      message: `Booth ${text(params.boothCode)} was submitted and is waiting for vendor confirmation.`,
+    }),
+    "ticket.completion_confirmed": (params) => ({
+      title: "Vendor confirmed",
+      message: `Booth ${text(params.boothCode)} has been confirmed.`,
+    }),
+    "ticket.completion_auto_confirmed": (params) => ({
+      title: "Auto-confirmed by system",
+      message: `Booth ${text(params.boothCode)} was auto-confirmed because the vendor did not respond in time.`,
+    }),
+    "ticket.completion_rejected": (params) => ({
+      title: "Vendor rejected",
+      message: `Booth ${text(params.boothCode)} was rejected. Please review it.`,
+    }),
+    "ticket.completion_result": (params) => ({
+      title: "Ticket result updated",
+      message: `The confirmation result for booth ${text(params.boothCode)} was updated.`,
+    }),
+    "job.stall_cancelled": (params) => ({
+      title: "Stall job cancelled",
+      message: `Stall job ${text(params.boothCode)} was cancelled.`,
+    }),
+    "job.market_cancelled": (params) => ({
+      title: "Market job cancelled",
+      message: `Market job ${text(params.marketCode)} was cancelled.`,
+    }),
+    "job.vehicle_cancelled": () => ({
+      title: "Vehicle job cancelled",
+      message: "Your vehicle job was cancelled.",
+    }),
+    "ticket_worker.cancelled": (params) => ({
+      title: "Removed from business ticket",
+      message: params.reason_text
+        ? `Admin removed you from ticket ${text(params.ticketNo)}. Reason: ${text(params.reason_text)}`
+        : `Admin removed you from ticket ${text(params.ticketNo)}.`,
+    }),
+    "ticket_worker.cancelled_from_booth": (params) => ({
+      title: "Removed from booth",
+      message: params.reason_text
+        ? `Admin removed you from booth ${text(params.boothCode)}. Reason: ${text(params.reason_text)}`
+        : `Admin removed you from booth ${text(params.boothCode)}.`,
+    }),
+    "auth.session_revoked": (params) => ({
+      title: "Signed in on another device",
+      message: `This session was signed out because login was confirmed on ${text(params.new_device_name, "another device")}.`,
+    }),
+    "worker.break_return_action_required": () => ({
+      title: "Break ended",
+      message: "Your break has ended. Open the app to return to the queue.",
+    }),
+    "worker.break_retry_expired": () => ({
+      title: "Retry window expired",
+      message: "You did not return to the queue in time. Please contact Admin.",
+    }),
+    "worker.status_forced_ready": (params) => ({
+      title: "Your status was changed by admin",
+      message: params.reason_text
+        ? `Admin added you back to the job queue. Reason: ${text(params.reason_text)}`
+        : "Admin added you back to the job queue.",
+    }),
+    "worker.status_forced_open_app": (params) => ({
+      title: "Your status was changed by admin",
+      message: params.reason_text
+        ? `Admin changed your status to not in queue. Reason: ${text(params.reason_text)}`
+        : "Admin changed your status to not in queue.",
+    }),
+    "worker.status_forced_break": (params) => ({
+      title: "Your status was changed by admin",
+      message: params.reason_text
+        ? `Admin put you on break. Reason: ${text(params.reason_text)}`
+        : "Admin put you on break.",
+    }),
+    "app.version_update": (params) => ({
+      title: "New app version available",
+      message: params.force_update_date
+        ? `Version ${text(params.version)} is ready to update, and will be required starting ${text(params.force_update_date)} at ${text(params.force_update_time)}.`
+        : `Version ${text(params.version)} is ready to update.`,
+    }),
+    "app.version_force_update": (params) => ({
+      title: "Update is now required",
+      message: `A new app version ${text(params.version)} is now available. Please update to continue.`,
+    }),
+    "worker.notification": () => ({
+      title: "Worker notification",
+      message: "A worker notification is available.",
+    }),
+  },
+};
+
+/* -------------------------------------- Functions -------------------------------------- */
+
+// Function เช็คว่า notification key ที่บันทึกไว้ยังมี template ของภาษานั้นอยู่หรือไม่
+export function hasNotificationTemplate(lang: string | null | undefined, key: string): boolean {
+  return Boolean(TEMPLATES[normalizeNotificationLang(lang)][key]);
+}
+
+// Function สร้างแจ้งเตือนที่แปลภาษาแล้วตาม key/type (ถ้าไม่มี template ใช้ fallback)
+export function buildLocalizedNotification(input: {
+  type: string;
+  lang?: string | null;
+  key?: string | null;
+  params?: Record<string, unknown>;
+  fallbackTitle?: string;
+  fallbackMessage?: string;
+}): LocalizedNotification {
+  const lang = normalizeNotificationLang(input.lang);
+  const key = resolveWorkerNotificationKey(input.type, input.params, input.key);
+  const renderer = TEMPLATES[lang][key] ?? TEMPLATES[lang]["worker.notification"];
+  const rendered = renderer(input.params ?? {});
+
+  return {
+    key,
+    lang,
+    title: rendered.title || input.fallbackTitle || TEMPLATES[lang]["worker.notification"]({}).title,
+    message: rendered.message || input.fallbackMessage || TEMPLATES[lang]["worker.notification"]({}).message,
+  };
+}
