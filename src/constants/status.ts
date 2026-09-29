@@ -1,0 +1,176 @@
+/* -------------------------------------- Config -------------------------------------- */
+
+// Config Status ของ Assignment (Worker-Job)
+export const ASSIGNMENT_STATUS = {
+  PENDING: "PENDING",
+  ACCEPTED: "ACCEPTED",
+  SCANNED: "SCANNED",
+  WORKING: "WORKING",
+  DELIVERED: "DELIVERED",
+  REJECT: "REJECT",
+  COMPLETED: "COMPLETED",
+  RELEASED: "RELEASED",
+  CANCELLED: "CANCELLED",
+  TIMEOUT: "TIMEOUT",
+} as const;
+
+// Config Status ของ Vehicle Job (Ticket) 
+export const VEHICLE_JOB_STATUS = {
+  WAIT: "WAIT",
+  WORKING: "WORKING",
+  COMPLETED: "COMPLETED",
+  CANCELLED: "CANCELLED",
+  RELEASED: "RELEASED",
+} as const;
+
+// Config Status ของ Vehicle Operation (Ticket + Booth)
+export const VEHICLE_OPERATION_STATUS = {
+  CANCELLED: "cancelled",
+  COMPLETED: "completed",
+  REJECT: "reject",
+  WAIT_UNLOAD: "wait_unload",
+  WAIT_WORKER: "wait_worker",
+  READY_NOW: "ready_now",
+  WORKING: "working",
+} as const;
+
+// Config Status ของ Daily Worker Income Payment (Ticket + Booth + Worker)
+export const DAILY_WORKER_INCOME_PAYMENT_STATUS = {
+  SUCCESS: "success",
+  PARTIALLY_PAID: "partially_paid",
+  CANCEL: "cancel",
+  ADMIN_REJECT: "admin_reject",
+  WORKER_REJECT: "worker_reject",
+} as const;
+
+// Config Snapshot สีเสื้อที่มีอยู่ใน DB MasterWorker.laborColor 
+export const SHIRT_COLOR_SNAPSHOT = {
+  MIXED: "MIXED",
+  UNKNOWN: "UNKNOWN",
+} as const;
+
+// Config Status ของ ticket/booth สำหรับ flow ส่งยอดและ vendor ยืนยัน
+export const TICKET_STATUS = {
+  WAIT: "WAIT",
+  WORKING: "WORKING",
+  DELIVERED: "DELIVERED",
+  REJECT: "REJECT",
+  COMPLETED: "COMPLETED",
+  CANCELLED: "CANCELLED",
+} as const;
+
+// Config Role ใน Ticket/Booth สำหรับ flow ส่งยอดและ vendor ยืนยัน
+export const TICKET_SUBMITTER_ROLE = {
+  WORKER: "worker",
+  ADMIN: "admin",
+} as const;
+
+// Config เหตุผลที่ shift_active เป็น false ใน GET /api/workers/me/status
+export const SHIFT_INACTIVE_REASON = {
+  OUTSIDE_SHIFT: "OUTSIDE_SHIFT", // ไม่มีกะวันนี้ หรือนาฬิกายังไม่ถึง/เลยเวลากะจริงๆ (ไม่เกี่ยวกับ attendance ปิดหรือไม่)
+  SHIFT_ALREADY_CLOSED: "SHIFT_ALREADY_CLOSED", // เคยเข้ากะ (Go Online) แล้ว แต่ออกจากกะไปแล้ว (เลิกงาน/logout เอง, หมดเวลากะ, หรือ Admin ปิดให้) แม้นาฬิกายังอยู่ในเวลากะ ก็กลับเข้าคิวเองไม่ได้ ต้องรอ Admin force
+  ACCEPT_TIMEOUT_LIMIT_REACHED: "ACCEPT_TIMEOUT_LIMIT_REACHED", // ไม่กดรับงานติดกันครบ worker_accept_timeout_limit ครั้ง ระบบปิดกะให้
+  SCAN_TIMEOUT: "SCAN_TIMEOUT", // สแกน QR/บาร์โค้ดไม่ทันเวลาที่กำหนด
+  ADMIN_CANCELLED_ASSIGNMENT: "ADMIN_CANCELLED_ASSIGNMENT", // Admin ยกเลิกงาน/assignment ที่กำลังทำอยู่
+  ADMIN_FORCED_STATUS: "ADMIN_FORCED_STATUS", // Admin สั่งเปลี่ยนสถานะเป็น open_app โดยตรงผ่าน force-status endpoint
+  BREAK_RETRY_EXPIRED: "BREAK_RETRY_EXPIRED", // พักเบรกจบแล้วไม่เปิดแอปกลับเข้าคิวภายในเวลาที่กำหนด
+} as const;
+
+// Config reason ที่บันทึกใน Redis ตอน worker ถูกย้ายไป open_app (ใช้แปลงเป็น SHIFT_INACTIVE_REASON)
+export const WORKER_OPEN_APP_REASON = {
+  SCAN_TIMEOUT: "scan_timeout",
+  ADMIN_CANCEL_ASSIGNMENT: "admin_cancel_assignment",
+  ADMIN_FORCED_STATUS: "admin_forced_status",
+  BREAK_ENDED_AWAITING_RECONNECT: "break_ended_awaiting_reconnect",
+  BREAK_RETRY_EXPIRED: "break_retry_expired",
+} as const;
+
+// Config Status ของ membership ของ Worker ภายใน Ticket/Booth
+export const TICKET_WORKER_STATUS = {
+  WORKING: "WORKING", // Worker คนนี้ยังเป็นสมาชิกของ Booth และมีสิทธิ์ถูกนำไปคิดค่าแรง
+  CANCELLED: "CANCELLED", // ถูกถอดออกแล้ว (ยังได้เงินแผงที่อยู่ใน snapshot ของรอบส่งยอดที่ถูกยืนยัน)
+  COMPLETED: "COMPLETED", // เป็นสมาชิกที่ทำ Booth นี้เสร็จแล้ว และจะถูกใช้เป็นประวัติการจ่ายเงิน
+} as const;
+
+// Config Status ของ assignment ที่ยังล็อก worker ไว้กับงานรถ
+export const ACTIVE_ASSIGNMENT_STATUSES: string[] = [
+  ASSIGNMENT_STATUS.PENDING,
+  ASSIGNMENT_STATUS.ACCEPTED,
+  ASSIGNMENT_STATUS.SCANNED,
+  ASSIGNMENT_STATUS.WORKING,
+  ASSIGNMENT_STATUS.DELIVERED,
+  ASSIGNMENT_STATUS.REJECT,
+];
+
+// Config Status ของ assignment ที่หมายถึง worker กำลังทำงานหรือรอผลส่งยอด
+export const WORKING_ASSIGNMENT_STATUSES: string[] = [
+  ASSIGNMENT_STATUS.SCANNED,
+  ASSIGNMENT_STATUS.WORKING,
+  ASSIGNMENT_STATUS.DELIVERED,
+  ASSIGNMENT_STATUS.REJECT,
+];
+
+// Config Status ของ assignment ที่นับว่า scan QR แล้วสำหรับเช็คความพร้อมของรถ — ต้องรวม RELEASED เสมอ
+export const SCANNED_ASSIGNMENT_STATUSES: string[] = [
+  ASSIGNMENT_STATUS.SCANNED,
+  ASSIGNMENT_STATUS.WORKING,
+  ASSIGNMENT_STATUS.DELIVERED,
+  ASSIGNMENT_STATUS.REJECT,
+  ASSIGNMENT_STATUS.COMPLETED,
+  ASSIGNMENT_STATUS.RELEASED,
+];
+
+// Config Status ของ assignment ที่นับว่า worker กด Accept แล้ว 
+export const ACCEPTED_ASSIGNMENT_STATUSES: string[] = [
+  ASSIGNMENT_STATUS.ACCEPTED,
+  ASSIGNMENT_STATUS.SCANNED,
+  ASSIGNMENT_STATUS.WORKING,
+  ASSIGNMENT_STATUS.DELIVERED,
+  ASSIGNMENT_STATUS.REJECT,
+  ASSIGNMENT_STATUS.COMPLETED,
+  ASSIGNMENT_STATUS.RELEASED,
+];
+
+// Config Status ของ assignment ที่ยังเก็บไว้ในหน้าจบงานและประวัติหลัง dispatch สิ้นสุด
+export const FINISHED_ASSIGNMENT_STATUSES: string[] = [
+  ASSIGNMENT_STATUS.PENDING,
+  ASSIGNMENT_STATUS.ACCEPTED,
+  ASSIGNMENT_STATUS.SCANNED,
+  ASSIGNMENT_STATUS.WORKING,
+  ASSIGNMENT_STATUS.DELIVERED,
+  ASSIGNMENT_STATUS.REJECT,
+  ASSIGNMENT_STATUS.COMPLETED,
+  ASSIGNMENT_STATUS.RELEASED,
+];
+
+// Config Status ของ assignment ที่ Admin release worker
+export const RELEASABLE_ASSIGNMENT_STATUSES: string[] = [
+  ASSIGNMENT_STATUS.SCANNED,
+  ASSIGNMENT_STATUS.WORKING,
+  ASSIGNMENT_STATUS.DELIVERED,
+];
+
+// Config Status ของ ticket ที่ทำให้ booth ไม่ถูกเลือกเป็นงานเปิดอยู่
+export const TERMINAL_TICKET_STATUSES: string[] = [
+  TICKET_STATUS.COMPLETED,
+  TICKET_STATUS.CANCELLED,
+];
+
+// Config Status ของ ticket ที่ส่งยอดให้ vendor แล้ว 
+export const SUBMITTED_TICKET_STATUSES: string[] = [
+  TICKET_STATUS.DELIVERED,
+  TICKET_STATUS.COMPLETED,
+  TICKET_STATUS.CANCELLED,
+];
+
+// Config Status ของ Vehicle Job (Ticket) สำหรับ Check ว่ารถคันนี้งานเสร็จแล้วหรือยัง
+export const TERMINAL_JOB_STATUSES: string[] = [
+  VEHICLE_JOB_STATUS.COMPLETED,
+  VEHICLE_JOB_STATUS.CANCELLED,
+];
+
+// Config Status ของ Vehicle Operation (Ticket + Booth)
+export const MASTER_MARKET_ACTIVE_STATUS = "Normal";
+
+// Config Status ของ Booth
+export const MASTER_OWNER_STALL_ACTIVE_STATUS = "active";
