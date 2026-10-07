@@ -41,7 +41,7 @@
     "@aws-sdk/client-s3": "^3.1142.0",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
-    "@sentry/node": "^10.75.3",
+    "@sentry/node": "^11.4.0",
     "argon2": "^0.45.1",
     "bullmq": "^6.3.9",
     "cors": "^2.8.6",
