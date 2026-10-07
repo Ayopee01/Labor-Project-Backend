@@ -1,0 +1,1109 @@
+﻿paths:
+  /api/admin/jobs/workers/status:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูสถานะ Worker สำหรับ Admin board
+      description: >
+        คืนสถานะ Worker ในกะปัจจุบันพร้อมตำแหน่งคิวและสถานะ WebSocket เพื่อจัดเรียงหน้าควบคุมงานของ Admin
+      operationId: listAdminJobWorkerStatuses
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            example: 1
+          description: ไม่บังคับ ถ้าไม่ส่งมาจะคืนรายการทั้งหมดโดยไม่แบ่งหน้าเหมือนเดิม ถ้าส่งมา API จะคืนเฉพาะหน้านั้นพร้อม pagination metadata หลัง filter/sort แล้ว
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            example: 20
+          description: จำนวนรายการต่อหน้า (ไม่บังคับ) ใช้เฉพาะตอนส่ง page มา
+      responses:
+        "200":
+          description: >-
+            รายการสถานะ Worker ของกะปัจจุบันสำหรับหน้าปฏิบัติการของ Admin Worker ที่มี queue/assignment
+            active อยู่จะยังแสดงอยู่แม้ WebSocket จะหลุดไปแล้ว — ใช้ SocketConnected เพื่อดูสถานะการเชื่อมต่อ
+            ข้อมูลเรียงตามคอลัมน์ status และ status_entered_at โดย Worker ที่ ready จะเรียงตาม Redis
+            queue_position
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminWorkerStatusListResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/jobs/workers/{workerCode}/status/force:
+    post:
+      tags:
+        - Admin Jobs
+      summary: บังคับเปลี่ยนสถานะ Worker
+      description: >
+        Admin ใช้แก้สถานะ Worker เมื่อหน้างานผิดปกติ ระบบตรวจเงื่อนไขงานที่ค้างและบันทึกเหตุผลลง audit log
+        การ force ไปเป็น open_app ทำได้เสมอไม่ว่า Worker จะเปิด WebSocket อยู่หรือไม่ (เช่น worker ติดอยู่ในคิว
+        เพราะ socket หลุด แต่ยังไม่ครบจำนวนครั้งที่ระบบจะดีดออกจากคิวเองอัตโนมัติ) ส่วนการ force ไปเป็น ready
+        หรือ break ยังคงต้องการให้ Worker เปิด WebSocket อยู่เสมอ
+      operationId: forceAdminJobWorkerStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: workerCode
+          required: true
+          schema:
+            type: string
+          description: WorkerCode เช่น MN000115
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminForceWorkerStatusRequest"
+      responses:
+        "200":
+          description: บังคับเปลี่ยนสถานะ Worker สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminForceWorkerStatusResponse"
+        "400":
+          description: ไม่ได้ส่ง reason_code มา
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: >-
+            Worker ถูกปิดใช้งาน ไม่มีตารางกะสำหรับการบังคับพัก อยู่นอกเวลากะที่กำหนด (WORKER_OUTSIDE_WORK_SHIFT
+            — Admin ต้องแก้เวลากะของ Worker ก่อนถึงจะบังคับสถานะเป้าหมายใดๆ ได้) หรือผู้เรียกไม่มี
+            permission workers:force_status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            Worker ไม่ได้ online อยู่ (WORKER_NOT_ONLINE — เกิดเฉพาะตอน force ไปเป็น ready หรือ break เท่านั้น
+            ไม่เกิดตอน force ไปเป็น open_app), มี assignment ที่ active อยู่แล้ว (WORKER_HAS_ACTIVE_ASSIGNMENT ทุกสถานะรวม
+            DELIVERED ที่รอ Vendor ยืนยัน ต้องปล่อยด้วย release-workers ก่อน) หรือพักครบจำนวนครั้งที่กำหนดแล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/operations:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูรายการงานรถสำหรับหน้าปฏิบัติการ
+      description: >
+        คืน vehicle jobs ที่ยังใช้ติดตามหน้างาน พร้อม worker, market, booth, product และ summary สำหรับ Admin operation board
+      operationId: listAdminVehicleJobOperations
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: date_from
+          schema:
+            type: string
+            format: date
+            example: "2026-07-01"
+          description: วันเริ่มต้นของช่วงวันที่สร้าง (ไม่บังคับ) รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok
+        - in: query
+          name: date_to
+          schema:
+            type: string
+            format: date
+            example: "2026-07-07"
+          description: วันสิ้นสุดของช่วงวันที่สร้าง (ไม่บังคับ, รวมวันนี้) รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok
+        - in: query
+          name: time_from
+          schema:
+            type: string
+            example: "08:00"
+          description: เวลา HH:mm สำหรับจำกัดจุดเริ่มต้นของช่วงให้แคบกว่าค่า default 00:00 ของ date_from (ไม่บังคับ) ต้องส่ง date_from มาด้วย ตามเวลา Asia/Bangkok
+        - in: query
+          name: time_to
+          schema:
+            type: string
+            example: "18:00"
+          description: เวลา HH:mm สำหรับจำกัดจุดสิ้นสุดของช่วงให้แคบกว่าค่า default สิ้นวันของ date_to (ไม่บังคับ) ต้องส่ง date_to มาด้วย รวมนาทีที่ระบุ ตามเวลา Asia/Bangkok
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            example: 1
+          description: ไม่บังคับ ถ้าส่งมา API จะคืนเฉพาะหน้านั้นพร้อม pagination metadata หลังกรองด้วย operation_status แล้ว
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            example: 20
+          description: จำนวนรายการต่อหน้า (ไม่บังคับ) ใช้เฉพาะตอนส่ง page มา ค่าเริ่มต้นคือ 20
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: ค้นหาจาก ticketNo, ทะเบียนรถ, gate transaction ref, marketCode/marketName, boothCode/boothName, productCode/productName/packageCode/packageName
+        - in: query
+          name: operation_status
+          schema:
+            type: string
+            enum:
+              - cancelled
+              - completed
+              - reject
+              - wait_unload
+              - wait_worker
+              - ready_now
+              - working
+          description: >-
+            สถานะระดับงานรถที่มีได้ค่าเดียว (ไม่ซ้อนกัน) — ดู AdminVehicleOperationStatus สำหรับลำดับ
+            ความสำคัญเต็มที่ใช้ตัดสิน reject หมายถึงมีแผงค้าอย่างน้อยหนึ่งแผงอยู่สถานะ REJECT ที่ยังไม่แก้ไข
+            (ขอบเขตเทียบเท่ากับ has_issue=true แต่เป็นค่า status แทนที่จะเป็น boolean แยก) working ยังรวมถึง
+            งานรถที่ถูก release ก่อนกำหนดผ่าน release-workers ด้วย (VehicleJob.status=RELEASED ทุกแผงค้าส่ง
+            ยอดแล้ว รอแค่ Vendor ยืนยัน/timeout) เพราะงานยังไม่เสร็จจริง — filter หรือเช็ค vehicle_job.status
+            โดยตรงถ้าต้องการแยกงานที่ release แล้วออกมาเฉพาะ
+        - in: query
+          name: status
+          schema:
+            type: string
+          description: กรองตาม vehicle_job.status โดยตรง (เช่น WORKING) แยกจาก operation_status ที่แยกแยะค่านี้ไม่ได้ (ไม่บังคับ)
+        - in: query
+          name: has_issue
+          schema:
+            type: boolean
+          description: >-
+            ไม่บังคับ ถ้าเป็น true จะคืนเฉพาะงานรถที่มีแผงค้าอย่างน้อยหนึ่งแผงอยู่สถานะ REJECT ในปัจจุบัน
+            (market_summary.rejected > 0) — เป็นรถชุดเดียวกับที่ operation_status=reject จะคืนให้ เก็บไว้
+            เป็น boolean filter แยกต่างหากเพื่อความสะดวก
+        - in: query
+          name: dropoff_point
+          schema:
+            type: string
+          description: >-
+            ไม่บังคับ กรองเฉพาะงานรถที่มี MarketJob อย่างน้อยหนึ่งรายการที่ dropoff_point ตรงกับค่านี้เป๊ะ
+            (ไม่สนตัวพิมพ์เล็ก/ใหญ่) กรองที่ระดับ database query พร้อมกับ search และช่วงวันที่ เพราะฉะนั้น
+            summary และ pagination จะคำนวณหลัง filter นี้แล้ว — ต่างจาก operation_status/status/has_issue
+            ที่กรองจาก list ที่สร้างเสร็จแล้ว
+      responses:
+        "200":
+          description: รายการงานรถสำหรับหน้าปฏิบัติการ พร้อม summary, worker, market, stall job และสินค้า
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminVehicleJobOperationListResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/history:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูประวัติงานรถ
+      description: >
+        คืนประวัติงานรถตามช่วงวันที่และตัวกรอง พร้อม market, booth, worker, timeline และข้อมูลการเงินที่ persist ไว้
+      operationId: listAdminVehicleJobHistory
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: date_from
+          schema:
+            type: string
+            format: date
+            example: "2026-07-01"
+          description: วันเริ่มต้นของช่วงวันที่สร้าง (ไม่บังคับ) รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok
+        - in: query
+          name: date_to
+          schema:
+            type: string
+            format: date
+            example: "2026-07-07"
+          description: วันสิ้นสุดของช่วงวันที่สร้าง (ไม่บังคับ, รวมวันนี้) รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            example: 1
+          description: ไม่บังคับ ถ้าส่งมา API จะคืนเฉพาะหน้านั้นพร้อม pagination metadata ถ้าไม่ส่งจะคืนทุกแถวที่ตรงเงื่อนไข
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            example: 20
+          description: จำนวนรายการต่อหน้า (ไม่บังคับ) ใช้เฉพาะตอนส่ง page มา ค่าเริ่มต้นคือ 20
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: ค้นหาจาก ticketNo, ทะเบียนรถ, gate transaction ref, marketCode/marketName, boothCode/boothName, productCode/productName/packageCode/packageName
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum:
+              - WAIT
+              - WORKING
+              - RELEASED
+              - DELIVERED
+              - REJECT
+              - COMPLETED
+              - CANCELLED
+              - PENDING
+              - ACCEPTED
+              - SCANNED
+              - TIMEOUT
+          description: กรองตามสถานะระดับ vehicle, market, stall, stall confirmation หรือ worker assignment
+        - in: query
+          name: history_status
+          schema:
+            type: string
+            enum:
+              - ALL
+              - COMPLETED
+              - CANCELLED
+              - REJECT_PENDING
+          description: >-
+            ไม่บังคับ กลุ่มธุรกิจของ Work History แยกต่างหากจาก status ด้านบน — ALL หมายถึง OR ของ
+            COMPLETED, CANCELLED และ REJECT_PENDING เท่านั้น ไม่ใช่ทุกสถานะใน database REJECT_PENDING คือ
+            งานรถที่ยังไม่จบ (status ไม่อยู่ใน COMPLETED/CANCELLED) และมีแผงค้า (BoothJob) อย่างน้อยหนึ่ง
+            แผงอยู่สถานะ REJECT อยู่ในปัจจุบัน ลำดับความสำคัญของกลุ่มคือ CANCELLED > COMPLETED >
+            REJECT_PENDING กรองที่ระดับ database query เพื่อให้ pagination.total และ
+            available_dropoff_points สะท้อนชุดที่กรองแล้ว ถ้าส่งมาพร้อมกับ status ด้านบน ทั้งคู่จะเป็นเงื่อนไข AND
+        - in: query
+          name: dropoff_point
+          schema:
+            type: string
+          description: >-
+            ไม่บังคับ กรองเฉพาะงานรถที่มี MarketJob อย่างน้อยหนึ่งรายการที่ dropoff_point ตรงกับค่านี้เป๊ะ
+            (ไม่สนตัวพิมพ์เล็ก/ใหญ่) กรองที่ระดับ database query เพื่อให้ pagination.total สะท้อนชุดที่กรองแล้ว
+      responses:
+        "200":
+          description: >-
+            รายการประวัติงานรถ พร้อม market, stall job และสินค้า แต่ละรายการยังมี workers (Worker ที่กดรับ
+            dispatch จริง ตัดซ้ำเหลือหนึ่งแถวต่อ worker_id — ดู AdminHistoryWorker), timeline
+            (รวมเหตุการณ์ตามลำดับเวลาของ worker lifecycle, การส่งยอด/ปฏิเสธ/ยืนยันของแผงค้า และ action ของ
+            admin), finance (ยอดรวมระดับงานที่ใช้ข้อมูลการเงินที่บันทึกไว้ชุดเดียวกับ /financials รวมถึง
+            รายได้จริงแยกตาม Worker — ดู AdminHistoryFinance) และ timestamp ระดับงานที่คำนวณแล้ว
+            (ticket_created_at, work_started_at, submitted_complete_at, completed_at,
+            duration_seconds) รวมถึง history_status (กลุ่มธุรกิจของ Work History ที่งานรถนี้สังกัด หรือ
+            null ถ้าไม่เข้ากลุ่มไหน — ดู query parameter history_status ด้านบน) ทุกอย่างในนี้ไม่มีการคำนวณใหม่
+            จากสูตรใดๆ อ่านจากข้อมูลที่บันทึกไว้อยู่แล้วทั้งหมด
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminVehicleJobListResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/history/daily-worker-income:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูรายได้รายวันของ Worker
+      description: >
+        คืนรายได้ของ Worker แบบหนึ่งแถวต่อ Worker ต่อ Business Ticket พร้อมสถานะงานและ riskText สำหรับรายงานรายวัน
+        ทุก filter และการเรียงทำกับผลทั้งหมดก่อนแบ่งหน้าที่ฐานข้อมูล pagination.total และ summary เป็นยอดหลังกรอง
+        ช่วงวันที่เทียบกับเวลาเสร็จงานของ Worker ถ้ายังไม่เสร็จใช้เวลาเข้าร่วม ticket_no
+      operationId: listAdminDailyWorkerIncome
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: date
+          schema:
+            type: string
+            format: date
+            example: "2026-07-01"
+          description: วันเดียว รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok ห้ามส่งคู่กับ date_from/date_to
+        - in: query
+          name: date_from
+          schema:
+            type: string
+            format: date
+            example: "2026-07-01"
+          description: วันเริ่มต้นของช่วงวันที่สร้าง รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok
+        - in: query
+          name: date_to
+          schema:
+            type: string
+            format: date
+            example: "2026-07-07"
+          description: วันสิ้นสุดของช่วงวันที่สร้าง (รวมวันนี้) รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok
+        - in: query
+          name: worker_code
+          schema:
+            type: string
+          description: กรองเฉพาะแถวของ Worker คนนี้ (ไม่สนตัวพิมพ์เล็ก/ใหญ่)
+        - in: query
+          name: payment_status
+          schema:
+            $ref: "#/components/schemas/DailyWorkerIncomePaymentStatus"
+          description: กรองตาม payment_status ที่แสดงในรายงาน
+        - in: query
+          name: cancelled_by_type
+          schema:
+            type: string
+            example: admin
+          description: กรองแถว cancel ตาม cancellation.cancelled_by_type (เช่น admin หรือ gate) ส่ง unknown เพื่อดูแถว cancel ที่ไม่พบ log ยกเลิกจริง
+        - in: query
+          name: sort_order
+          schema:
+            type: string
+            enum:
+              - newest
+              - oldest
+            default: newest
+          description: เรียงตาม accepted_at ของผลทั้งหมดก่อนแบ่งหน้า (accepted_at ที่เป็น null อยู่ท้ายเสมอ) ใช้ลำดับแถวเป็นตัวตัดสินเมื่อเวลาเท่ากัน
+        - in: query
+          name: shift
+          schema:
+            type: string
+            enum:
+              - Morning
+              - Evening
+          description: กรองตามกะของ Worker
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: ค้นหาแบบมีคำนี้อยู่ (ไม่สนตัวพิมพ์เล็ก/ใหญ่) จาก ticket_no, ทะเบียนรถ, รหัส/ชื่อ Worker หรือเบอร์เสื้อ
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: หนึ่งแถวต่อ Worker หนึ่งคนต่อ Business Ticket หนึ่งใบ พร้อมยอดที่ล็อกไว้แล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminDailyWorkerIncomeListResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/history/daily-stall-fees:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูรายงานค่าลงสินค้าแผงค้ารายวัน
+      description: >
+        คืนรายงานค่าลงสินค้าแผงค้าแบบหนึ่งแถวต่อ TicketProductFinancial ที่ finalize แล้ว (join
+        TicketProductFinancial -> TicketProduct -> BoothJob -> MarketJob -> TicketJob) พร้อม
+        summary ของทั้ง filtered set (ไม่ใช่แค่หน้าปัจจุบัน) — Data/summary ใช้ทั้ง product_code และ
+        package_code พร้อมกันตามที่ส่งมา ส่วน available_products/available_packages เป็น faceted
+        dropdown คนละทิศทางกัน: available_products แคบลงตาม package_code ที่เลือกไว้เท่านั้น (ไม่แคบ
+        ตาม product_code ของตัวเอง) และ available_packages แคบลงตาม product_code ที่เลือกไว้เท่านั้น
+        (ไม่แคบตาม package_code ของตัวเอง) — ทั้งคู่ไม่เปลี่ยนตาม page/limit และคู่ product_code +
+        package_code ที่ไม่เคยอยู่ในแถวเดียวกันจะคืน 200 พร้อม data ว่างและ summary เป็นศูนย์
+      operationId: listAdminDailyStallFees
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: date_from
+          required: true
+          schema:
+            type: string
+            format: date
+            example: "2026-08-01"
+          description: วันเริ่มต้นของช่วงรายงาน รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok ต้องส่งมา
+        - in: query
+          name: date_to
+          required: true
+          schema:
+            type: string
+            format: date
+            example: "2026-08-31"
+          description: >-
+            วันสิ้นสุดของช่วงรายงาน (รวมวันนี้) รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok ต้องส่งมา
+            ช่วงห้ามเกิน 31 วันปฏิทิน
+        - in: query
+          name: search
+          schema:
+            type: string
+          description: >-
+            ค้นหาแบบหลาย token (แยกด้วยช่องว่าง/comma แต่ละ token ต้องตรงกับอย่างน้อยหนึ่ง field ไม่สนตัว
+            พิมพ์เล็ก/ใหญ่) ค้นจากรหัสแผงค้า ทะเบียนรถ ticket_no รหัส/ชื่อสินค้า และรหัส/ชื่อ Package
+        - in: query
+          name: product_code
+          schema:
+            type: string
+          description: >-
+            ตรงกับ TicketProduct.productCode เป๊ะ — มีผลกับ Data/summary/pagination และทำให้
+            available_packages แคบลง (ไม่ทำให้ available_products แคบลง เพราะไม่แคบตามมิติของตัวเอง)
+        - in: query
+          name: package_code
+          schema:
+            type: string
+          description: >-
+            ตรงกับ TicketProduct.packageCode เป๊ะ — มีผลกับ Data/summary/pagination และทำให้
+            available_products แคบลง (ไม่ทำให้ available_packages แคบลง เพราะไม่แคบตามมิติของตัวเอง)
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: หนึ่งแถวต่อ TicketProductFinancial ที่ finalize แล้วภายในช่วงวันที่เลือก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminDailyStallFeeListResponse"
+        "400":
+          description: ไม่ได้ส่งช่วงวันที่มาหรือส่งมาไม่ถูกต้อง หรือ query ไม่ผ่านการตรวจสอบ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/history/monthly-stall-fees:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูรายงานค่าลงสินค้าแผงค้ารายเดือน
+      description: >
+        คืนรายงานค่าลงสินค้าแผงค้าแบบ group ต่อ market_code + booth_code + shirt_color (ต่างจาก
+        daily-stall-fees ที่ list ทีละแถว TicketProductFinancial ตรงๆ) — SUM(stall_fee_rounded) และ
+        COUNT ของ TicketProductFinancial ที่ finalize แล้วในช่วงวันที่เลือก ยอดต้อง reconcile กับผลรวม
+        ของ daily-stall-fees ในช่วงวันเดียวกันได้เสมอ เพราะใช้แหล่งข้อมูลเดียวกัน แค่ group ต่างกัน
+        shirt_color เป็น immutable snapshot ที่บันทึกไว้ตอน finalize (TicketProductFinancial.shirtColorSnapshot)
+        ไม่ใช่สีปัจจุบันของ MasterWorker: เป็นสีจริงจาก master data ตรงๆ เมื่อ worker ทุกคนในแผงนั้นสีตรงกันเป๊ะ
+        (ไม่ผูกกับ whitelist คงที่ รองรับสีใหม่ที่ master data เพิ่มมาในอนาคตได้ทันที), MIXED เมื่อมีมากกว่าหนึ่ง
+        สีปนกัน, UNKNOWN เมื่อ Worker ไม่มีค่าสี รองรับช่วงวันที่ข้ามเดือน/ปีได้ตามปกติ (ไม่บังคับเดือนเดียวเหมือน
+        daily-stall-fees) แค่ห้ามเกิน 6 เดือนปฏิทินนับจาก date_from — summary และ available_markets/
+        available_stalls/available_shirt_colors มาจาก filtered set ทั้งหมด ไม่เปลี่ยนตาม page/limit
+        เหมือน daily-stall-fees, available_stalls แต่ละแถวผูกกับ market_code ของมันเสมอ
+      operationId: listAdminMonthlyStallFees
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: date_from
+          required: true
+          schema:
+            type: string
+            format: date
+            example: "2026-12-01"
+          description: วันเริ่มต้นของช่วงรายงาน รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok ต้องส่งมา
+        - in: query
+          name: date_to
+          required: true
+          schema:
+            type: string
+            format: date
+            example: "2027-01-31"
+          description: >-
+            วันสิ้นสุดของช่วงรายงาน (รวมวันนี้) รูปแบบ YYYY-MM-DD ตามเวลา Asia/Bangkok ต้องส่งมา ข้ามเดือน/
+            ปีได้อย่างอิสระ แต่ช่วงห้ามเกิน 6 เดือนปฏิทินนับจาก date_from
+        - in: query
+          name: market_search
+          schema:
+            type: string
+          description: >-
+            ตรงบางส่วนกับ MarketJob.marketCode หรือ marketName (ไม่สนตัวพิมพ์เล็ก/ใหญ่) — มีผลกับ
+            Data/summary/pagination และทำให้ available_stalls แคบลง (ไม่ทำให้ available_markets แคบลง
+            เพราะไม่แคบตามมิติของตัวเอง)
+        - in: query
+          name: booth_search
+          schema:
+            type: string
+          description: >-
+            ตรงบางส่วนกับ BoothJob.boothCode (ไม่สนตัวพิมพ์เล็ก/ใหญ่) — มีผลกับ Data/summary/pagination
+            และทำให้ available_markets แคบลง (ไม่ทำให้ available_stalls แคบลง เพราะไม่แคบตามมิติของตัวเอง)
+        - in: query
+          name: shirt_color
+          schema:
+            type: string
+          description: >-
+            ตรงกับสีเสื้อที่บันทึก snapshot ไว้เป๊ะ — ไม่ใช่ enum ตายตัว รับสีใดก็ได้ที่มีใน master data
+            รวมถึง MIXED/UNKNOWN มีผลกับ Data/summary/pagination และทำให้ available_markets/
+            available_stalls แคบลง (ไม่ทำให้ available_shirt_colors แคบลง เพราะไม่แคบตามมิติของตัวเอง)
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: หนึ่งแถวต่อกลุ่ม market_code + booth_code + shirt_color หนึ่งกลุ่มภายในช่วงวันที่เลือก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminMonthlyStallFeeListResponse"
+        "400":
+          description: ไม่ได้ส่งช่วงวันที่มาหรือส่งมาไม่ถูกต้อง (รวมถึงเกิน 6 เดือน) หรือ query ไม่ผ่านการตรวจสอบ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/financials:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูรายละเอียดการเงินของงานรถ
+      description: >
+        คืนยอดเงินที่ finalize แล้วของ vehicle job แยกตาม booth, product และ worker โดยอ่านจากข้อมูลที่ persist ไว้ ไม่คำนวณใหม่จาก master rate
+      operationId: getAdminVehicleJobFinancials
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+          description: TicketNumber ของงานรถ
+      responses:
+        "200":
+          description: รายละเอียดการเงินของงานรถที่บันทึกไว้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminVehicleJobFinancialResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถนี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/workers/{workerCode}/payout-preview:
+    get:
+      tags:
+        - Admin Jobs
+      summary: ดูสิทธิ์เงินรายแผงของ Worker ก่อนถอดออก
+      description: >
+        ใช้แสดงหน้า "กำหนดสิทธิ์รับเงินก่อนยกเลิกงาน" คืนเฉพาะแผงที่มีชื่อ Worker ในรายชื่อส่งยอด (DELIVERED/REJECT/COMPLETED)
+        พร้อมเงินของ Worker ในแผงที่ยืนยันแล้ว (ปิดยอดแล้วใช้ยอดจริง ยังไม่ปิดคิดจากสูตรเดียวกัน แผงที่ยังไม่ยืนยันเป็น null),
+        จำนวนคนได้เงิน, จำนวนที่เหลือถ้าไม่ให้เงิน, เลือกไม่ให้เงินได้หรือไม่ (CanSetUnpaid) และแผงจะถูกยกเลิกหรือไม่
+        (CancelsBoothIfUnpaid) ใส่ ticketNo เพื่อดูเฉพาะ Business Ticket นั้น
+      operationId: getAdminWorkerPayoutPreview
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: ticketNumber
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: workerCode
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: ticketNo
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: สิทธิ์เงินรายแผงของ Worker
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminWorkerPayoutPreviewResponse"
+        "404":
+          description: VEHICLE_JOB_NOT_FOUND, WORKER_NOT_FOUND, ASSIGNMENT_NOT_FOUND หรือ MARKET_JOB_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/workers/{workerCode}/booths:
+    post:
+      tags:
+        - Admin Jobs
+      summary: นำ Worker เข้าแผงที่เลือก (นำคนที่ถูกถอดกลับ หรือเลือกเข้าแผงที่ถูกตีกลับ)
+      description: >
+        ใช้แก้กรณีถอดผิดคน หรือเลือกคนบนรถเข้าแผงที่ Vendor ตีกลับ ทุกแผงต้องผ่านเงื่อนไขทั้งคำขอ
+        แผง DELIVERED/COMPLETED: นำกลับได้เฉพาะคนที่อยู่ในรายชื่อส่งยอดแล้วถูกถอดออก ได้เงินคืนทันที (แผงที่ปิดยอดแล้วคิดเงินใหม่)
+        ไม่ต้องกดรับงานหรือ Scan ไม่นับใน WorkersRequired
+        แผง WAIT/WORKING/REJECT: Worker ต้องมีงานบนรถ ถ้าไม่มีจะสร้าง assignment ใหม่ (ต้อง ready ในคิว อยู่ในกะ ไม่มีงานอื่น
+        และรถยังมีช่องตาม WorkersRequired) ต้องกดรับงานและ Scan ก่อนทำแผงนั้น แผงที่ถูกตีกลับต้องไม่เกิน WorkersRequired
+        แผงที่ยังไม่ส่งยอดใน Business Ticket เดียวกันที่ไม่ได้เลือกจะไม่นับ Worker คนนี้ แผงที่ถูกยกเลิกแล้วนำกลับไม่ได้
+        รถปิดแล้วทำได้เฉพาะภายในกะของ Worker บันทึก BOOTH_MEMBERS_ADDED ลง admin_action_logs
+      operationId: addAdminWorkerToBooths
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: ticketNumber
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: workerCode
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminAddWorkerToBoothsRequest"
+      responses:
+        "200":
+          description: นำ Worker เข้าแผงสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAddWorkerToBoothsResponse"
+        "403":
+          description: WORKER_NOT_ACTIVE, WORKER_OUTSIDE_WORK_SHIFT หรือไม่มี permission jobs:cancel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: VEHICLE_JOB_NOT_FOUND หรือ WORKER_NOT_FOUND
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            BOOTH_NOT_AVAILABLE, WORKER_ALREADY_IN_BOOTH, BOOTH_MEMBER_NOT_RESTORABLE, BOOTH_MEMBER_LIMIT_EXCEEDED,
+            WORKERS_REQUIRED_EXCEEDED, WORKER_NOT_READY, WORKER_HAS_ACTIVE_ASSIGNMENT, REMOVAL_WINDOW_CLOSED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/assignment/cancel:
+    post:
+      tags:
+        - Admin Jobs
+      summary: ยกเลิกงานหรือ assignment ตาม scope
+      description: >
+        Admin ส่ง TicketNumber และตัวเลือก ticketNo, boothCode หรือ workerCode เพื่อยกเลิกทั้งรถ ทั้ง Business Ticket เฉพาะ Booth หรือ Worker รายคนใน endpoint เดียว
+        ถอด Worker ออกจากรถ (TicketNumber + workerCode) หรือ Business Ticket (+ ticketNo) ได้ทุกเวลา รวมคนที่ release แล้วหรือรถปิดแล้ว
+        (รถปิดแล้วต้องยังอยู่ในกะของ Worker คนนั้น) ส่ง BoothPayouts เลือกให้เงิน (Paid = true ค่าเริ่มต้น) หรือไม่ให้เงิน
+        รายแผงที่มีชื่อ Worker ในรายชื่อส่งยอด (DELIVERED/REJECT/COMPLETED) แผงที่ยังไม่ส่งยอดไม่ได้เงินเสมอ ดูรายการแผงได้จาก
+        GET payout-preview แผงที่ไม่ให้เงินจะไม่นับ Worker คนนั้นเป็นตัวหาร แผงที่ปิดยอดแล้วคิดเงินใหม่ทันที
+        (ยอดที่เก็บจากแผงไม่เปลี่ยน) แผง DELIVERED/COMPLETED ต้องเหลือคนได้เงินอย่างน้อย 1 คน ส่วนแผงที่ยังไม่จบแล้วไม่เหลือคน
+        ถูกยกเลิกอัตโนมัติ ถ้า Worker ยังไม่ Scan ระบบหาคนแทนจากคิว ถ้า Scan แล้วไม่หาคนแทนและต้องไม่ใช่คนสุดท้ายบนรถ
+        คนที่ release แล้วหรือรถปิดแล้ว assignment เปลี่ยนเป็น CANCELLED (รถปิดแล้วและยังได้เงินบางแผงคง COMPLETED)
+        โดยไม่แตะสถานะคิวปัจจุบัน ถอด Worker ออกจากแผงเดียว (+ ticketNo + boothCode) ทำได้ทุกสถานะแผงที่ยังไม่ถูกยกเลิก
+        ด้วยกฎเดียวกัน ถ้าใบ/แผงนั้นเป็นงานสุดท้ายของ Worker บนรถ ระบบยกเลิก assignment ตามไปด้วย
+      operationId: cancelAdminVehicleJobAssignment
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminVehicleJobAssignmentCancelRequest"
+      responses:
+        "200":
+          description: ยกเลิกสำเร็จ — รูปแบบ response ขึ้นอยู่กับขอบเขตที่ resolve ได้ ดู AdminVehicleJobAssignmentCancelResponse
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminVehicleJobAssignmentCancelResponse"
+        "400":
+          description: >-
+            INVALID_CANCEL_SCOPE — ส่ง boothCode มาโดยไม่มี ticket_no หรือส่ง BoothPayouts ในขอบเขตที่ไม่ใช่การถอด Worker
+            ออกจากรถหรือ Business Ticket
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบเป้าหมายของขอบเขตที่ resolve ได้ (เช่น MARKET_JOB_NOT_FOUND, STALL_JOB_NOT_FOUND, ASSIGNMENT_NOT_FOUND, TICKET_WORKER_NOT_FOUND, WORKER_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:cancel
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            เป้าหมายของขอบเขตที่ resolve ได้ปิดไปแล้วหรือยกเลิกไม่ได้ เช่น VEHICLE_JOB_CLOSED (ขอบเขตทั้งคัน —
+            รถเป็น COMPLETED/CANCELLED แล้ว), VEHICLE_JOB_RELEASED (ขอบเขตทั้งคัน — Admin ปล่อยทีมไปแล้ว),
+            VEHICLE_JOB_ALREADY_SUBMITTED (ขอบเขตทั้งคัน — มีแผงใต้รถที่ DELIVERED หรือ COMPLETED พร้อม boothCodes),
+            MARKET_JOB_ALREADY_CLOSED, MARKET_JOB_ALREADY_SUBMITTED (ขอบเขตทั้ง Business Ticket — มีแผงที่ DELIVERED
+            หรือ COMPLETED พร้อม boothCodes), LAST_WORKER_ON_VEHICLE (ถอดคนที่ Scan แล้วคนสุดท้าย หรือถอดแล้วรถจะถูกยกเลิก),
+            BOOTH_MIN_ONE_WORKER (แผง DELIVERED/COMPLETED จะไม่เหลือคนได้เงิน), BOOTH_PAYOUT_NOT_ELIGIBLE (BoothPayouts อ้างแผงที่ไม่มีชื่อ
+            Worker), REMOVAL_WINDOW_CLOSED (รถปิดแล้วและพ้นกะของ Worker),
+            STALL_JOB_ALREADY_CLOSED (แผง COMPLETED/CANCELLED แล้ว), STALL_JOB_ALREADY_SUBMITTED (ยกเลิกแผงที่รอ Vendor ยืนยัน),
+            ASSIGNMENT_NOT_ACTIVE, WORKER_ALREADY_EXCLUDED_FROM_BOOTH (เฉพาะขอบเขต worker + booth)
+            แผงที่ Vendor ตีกลับ (REJECT) ยกเลิกได้ทุกขอบเขต และถ้ารถไม่เหลือแผง REJECT แล้ว assignment ที่ค้าง REJECT
+            กลับเป็น WORKING การยกเลิกคำนวณสถานะ Business Ticket/งานรถใหม่ผ่าน lifecycle กลางเสมอ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/assign-workers:
+    post:
+      tags:
+        - Admin Jobs
+      summary: assign งานรถให้ Worker เอง
+      description: >
+        Admin เลือก Worker ที่พร้อมใน queue ให้รับ vehicle job ด้วยกฎชุดเดียวกับ Auto Dispatch (active, ไม่มีงานอื่น,
+        อยู่ในกะ, ready ในคิว และรถยังไม่เกิน WorkersRequired) แต่ละครั้งสร้าง assignment รอบใหม่ ประวัติรอบก่อน
+        (TIMEOUT/REJECTED/CANCELLED) ยังอยู่ครบ บันทึก MANUAL_ASSIGNMENT ลง admin_action_logs (actor = admin ที่ authenticated,
+        metadata เก็บ assignment_ids/worker_ids/worker_codes/booth_memberships และ returning_workers = WorkerCode กับ
+        previous_assignment_ids ของคนที่เคยมี assignment บนรถนี้) เพิ่มได้เฉพาะเมื่อรถยังมีแผง WAIT/WORKING/REJECT
+        Worker เข้าทุกแผงที่ยังไม่ส่งยอดอัตโนมัติ ส่วนแผงที่ถูกตีกลับต้องเลือกใน booth_memberships (ไม่เกิน WorkersRequired ต่อแผง)
+        คนที่เคยทำงานบนรถนี้กลับเข้าแผงตอน Scan รอบใหม่: แผงที่ยังไม่ส่งยอดกลับอัตโนมัติ แผงที่ถูกตีกลับเฉพาะที่เลือก
+        แผงที่ส่งยอด/ยืนยันแล้วคงรายชื่อและยอดเดิม (คืนสิทธิ์เงินย้อนหลังใช้ POST workers/{workerCode}/booths)
+        ถ้าเพิ่มหลังทีมเริ่มงานแล้วมีช่องว่าง (ถอดคนที่ Scan แล้ว หรือ Gate เพิ่มคน) คนที่เพิ่มจะเติมช่องนั้น ทีมได้แจ้ง
+        TEAM_WAITING_REPLACEMENT แผงที่คนใหม่เป็นสมาชิกส่งยอดได้หลังเขา Scan ถ้าหมดเวลากดรับ/Scan ระบบไม่หาคนแทนและแจ้ง Admin
+        REPLACEMENT_WORKER_TIMEOUT
+      operationId: assignAdminVehicleJobWorkers
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminAssignWorkersRequest"
+      responses:
+        "201":
+          description: Assign Worker สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminAssignWorkersResponse"
+        "400":
+          description: ไม่ได้ส่ง reason_code มา
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: >-
+            มี Worker ในรายการอยู่นอกเวลากะของตัวเอง (WORKER_OUTSIDE_WORK_SHIFT) — เช็คแม้สถานะ queue ของ
+            Worker จะแสดงว่า ready แล้ว เพราะ ready อย่างเดียวไม่ได้การันตีว่า Worker อยู่ในช่วงเวลากะปัจจุบันจริง
+            Worker ไม่ active (WORKER_NOT_ACTIVE) หรือบัญชี Admin ที่ login อยู่ไม่มี permission jobs:assign
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            เพิ่ม Worker แล้วจะเกิน WorkersRequired ของรถ (WORKERS_REQUIRED_EXCEEDED — details มี workers_required,
+            active_assignment_count, available_slots) ทุกแผงส่งยอดแล้ว (NO_UNFINISHED_BOOTH)
+            เหลือแต่แผงที่ถูกตีกลับแล้วมีคนใหม่ที่ไม่ได้เลือกเข้าแผงใดเลย (WORKER_BOOTH_REQUIRED — WorkerCodes บอกคนที่ยังไม่มีแผง และ AvailableBooths[] บอก TicketNo, BoothCode, RemainingSeats ของแผงที่เลือกได้) Worker ยังเป็นสมาชิกแผงที่เลือก
+            (WORKER_ALREADY_IN_BOOTH) แผงที่เลือกไม่ได้ถูกตีกลับ (BOOTH_NOT_REJECTED) แผงที่เลือกเต็ม WorkersRequired
+            (BOOTH_MEMBER_LIMIT_EXCEEDED) แผงไม่พบหรือถูกยกเลิก (BOOTH_NOT_AVAILABLE) Worker มีงานอื่นอยู่แล้ว (WORKER_HAS_ACTIVE_ASSIGNMENT)
+            Worker ไม่ได้อยู่ในคิวพร้อมรับงาน (WORKER_NOT_READY) หรืองานรถปิดไปแล้ว (VEHICLE_JOB_CLOSED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/scan-deadline/extend:
+    post:
+      tags:
+        - Admin Jobs
+      summary: ขยายเวลา scan check-in
+      description: >
+        Admin ขยาย scan deadline ให้ Worker ที่รับงานแล้วและยังไม่หมดเวลา พร้อมบันทึก reason ลง admin_action_logs
+      operationId: extendAdminVehicleJobScanDeadline
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminExtendScanDeadlineRequest"
+      responses:
+        "200":
+          description: ขยายเวลา scan deadline สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminExtendScanDeadlineResponse"
+        "400":
+          description: ไม่ได้ส่ง reason_code มา
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:extend_deadline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถนี้ หรือไม่พบ assignment ที่รับงานแล้วและยัง active อยู่สำหรับขยายเวลา scan deadline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/tickets/{ticketNo}/stalls/{stallCode}/override-count:
+    post:
+      tags:
+        - Admin Jobs
+      summary: ส่งยอดสินค้าแทน Worker
+      description: >
+        Admin ส่งจำนวนสินค้าของ Booth ตาม ticketNumber, ticketNo และ stallCode เมื่อ Worker ส่งเองไม่ได้ ระบบส่งเข้า flow ยืนยันจาก Vendor เหมือนการส่งยอดปกติ
+        ส่งแทนได้เฉพาะ Booth ที่เคยมี Worker ส่งยอดมาแล้วอย่างน้อยหนึ่งครั้ง (ปกติคือแผงที่ Vendor ตีกลับ) และทีมต้อง Scan ครบตามเดิม
+        (รวมทีมที่ถูก release แล้ว) ค่าแรงของรอบที่ Admin ส่งแทนหารให้กลุ่ม Worker ของรอบล่าสุดที่ Worker เป็นคนส่ง ไม่ใช่ roster ปัจจุบัน
+        หลังส่งสำเร็จ ถ้าทุก Booth ของ VehicleJob นี้ถูกส่งยอด/ยืนยัน/ยกเลิกครบแล้ว และ Worker ทั้งทีมหมดกะไปแล้วทุกคน ระบบจะปล่อยทั้งทีมกลับคิว (เทียบเท่า release-workers) ให้อัตโนมัติโดยไม่ต้องรอ Admin กดแยก — ถ้ามีแค่บางคนในทีมหมดกะ ยังต้องให้ Admin กด release-workers เองเพื่อปล่อยทั้งทีม
+      operationId: overrideAdminTicketProductCounts
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+        - in: path
+          name: ticketNo
+          required: true
+          schema:
+            type: string
+            example: TKT-20260723-000125
+        - in: path
+          name: stallCode
+          required: true
+          schema:
+            type: string
+            example: OM3/40
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminOverrideCountRequest"
+      responses:
+        "200":
+          description: ส่งยอดของแผงค้าสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminOverrideCountResponse"
+        "400":
+          description: ข้อมูลไม่ผ่านการตรวจสอบ หรือส่งสินค้ามาไม่ครบ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:override_count
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถหรือแผงค้านี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            แผงค้านี้รับการส่งยอดใหม่ไม่ได้แล้ว หรือ ADMIN_SUBMIT_REQUIRES_WORKER_SUBMISSION (แผงนี้ยังไม่เคยมี Worker ส่งยอด)
+            หรือ WORKERS_NOT_CHECKED_IN (ทีมยัง Scan ไม่ครบ เช่น ถอด Worker ออกหมดแล้วยังไม่ได้เพิ่มคนใหม่)
+            หรือ WAITING_REPLACEMENT_SCAN (คนที่ Admin เลือกเข้าแผงยังไม่ Scan) หรือ BOOTH_HAS_NO_MEMBERS (แผงไม่เหลือสมาชิก)
+            รายชื่อคนได้เงินรอบนี้ = สมาชิกปัจจุบันของแผง (รายชื่อรอบก่อน ลบคนที่ถอดแบบไม่ให้เงิน บวกคนที่ Admin เลือกเข้าแผง)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/wait:
+    post:
+      tags:
+        - Admin Jobs
+      summary: เปลี่ยน Status Dispatch ของงานรถ
+      description: >-
+        Admin เปิด (Dispatch=true, ลงเลย) หรือปิด (Dispatch=false, รอลง) การเรียก Worker ของงานรถ และบันทึกเหตุผลลง
+        timeline ใช้กฎชุดเดียวกับ PATCH /api/driver/jobs/{ticketNumber}/dispatch — Dispatch=false เปลี่ยนงานรถ ตลาด
+        และแผงที่เปิดทำงานแล้วกลับเป็น WAIT ยกเลิก assignment ที่ยัง active ทั้งหมด (รวมคนที่ scan แล้ว) ถอดคนเหล่านั้น
+        ออกจาก roster ของตลาดที่ยังไม่จบ แล้วคืน Worker เข้าหน้าคิวตามลำดับเวลากดรับงาน (คนที่หมดกะแล้วไป open_app)
+        ส่วน Dispatch=true เปลี่ยนงานรถและตลาดที่ยังไม่จบเป็น WORKING แล้วเริ่ม dispatch ทำได้จนกว่าจะมีแผงแรกของรถ
+        ส่งยอด หลังมีแผงส่งยอด ปล่อยทีมแล้ว (RELEASED) หรืองานรถปิดแล้ว เปลี่ยนไม่ได้ทั้งสองทาง รวมถึงสั่งสถานะเดิมซ้ำ
+        ก่อนถึงจุดนั้นสั่งสถานะเดิมซ้ำได้ 200 พร้อม Message บอกว่าอยู่ในสถานะนั้นแล้ว โดยไม่บันทึก log และไม่แจ้ง Worker,
+        Vendor หรือ Admin ซ้ำ
+      operationId: setAdminVehicleJobToWait
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminVehicleWaitRequest"
+      responses:
+        "200":
+          description: เปลี่ยนสถานะ Dispatch ของงานรถสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminVehicleWaitResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:wait
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถนี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            VEHICLE_JOB_CLOSED (งานรถนี้เป็น COMPLETED/CANCELLED ไปแล้ว), VEHICLE_JOB_RELEASED (ปล่อยทีมกลับคิวไปแล้ว)
+            หรือ VEHICLE_JOB_ALREADY_SUBMITTED (มีแผงของรถคันนี้ส่งยอดไปแล้วอย่างน้อย 1 แผง) เปลี่ยน dispatch ไม่ได้อีกทั้งสองทาง
+            แม้สั่งสถานะเดิมซ้ำ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/admin/vehicle-jobs/{ticketNumber}/release-workers:
+    post:
+      tags:
+        - Admin Jobs
+      summary: ปล่อยทีม Worker กลับคิว
+      description: >
+        Admin ปล่อยทีม Worker กลับ FIFO queue หลังทุก Booth ถูกส่งยอดแล้ว แม้ยังรอ Vendor confirm อยู่ โดยไม่ปิดสถานะ booth/ticket ทันที
+        Assignment ของคนที่ถูกปล่อยเป็น RELEASED พร้อม ReleasedAt และงานรถเป็น RELEASED (dispatch ไม่ดึงกลับมาคันนี้)
+        Worker รับงานใหม่ได้ทันทีโดยงานใหม่เป็น assignment แถวใหม่ ระหว่างรอยังได้รับ TICKET_COMPLETION_RESULT
+        (Vendor ยืนยัน/ตีกลับ/ระบบตัดยืนยันเมื่อครบ vendor_confirm_timeout_minutes) พร้อม assignment_status=RELEASED
+        และถ้าถูกตีกลับยังส่งยอดใหม่ได้ เมื่องานรถปิดเป็น COMPLETED assignment ที่ RELEASED จะเปลี่ยนเป็น COMPLETED
+        พร้อม CompletedAt (คง ReleasedAt ไว้) และบันทึก event COMPLETED โดยไม่คืน Worker เข้าคิวซ้ำ
+        (ถ้างานรถปิดเป็น CANCELLED จะเป็น CANCELLED ตามรถ — ปัจจุบันเกิดไม่ได้เพราะห้ามยกเลิกหลังส่งยอด)
+      operationId: releaseAdminVehicleJobWorkers
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminReleaseWorkersRequest"
+      responses:
+        "200":
+          description: ปล่อย Worker กลับ FIFO queue สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminReleaseWorkersResponse"
+        "403":
+          description: บัญชี Admin ที่ login อยู่ไม่มี permission jobs:release_workers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถนี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            งานรถนี้ปิดไปแล้ว (VEHICLE_JOB_CLOSED) ยังไม่มีแผงค้าไหนส่งยอดเลย (NO_SUBMITTED_BOOTHS) มีแผงค้า
+            ที่ยังอยู่สถานะ WAIT/WORKING/REJECT (BOOTHS_NOT_SUBMITTED) หรือไม่มี Worker ที่ปล่อยได้เลย
+            (NO_RELEASABLE_WORKERS)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
