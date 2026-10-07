@@ -1,0 +1,201 @@
+﻿paths:
+  /api/gate/options:
+    get:
+      tags:
+        - Gate
+      summary: ดึงข้อมูลตัวเลือกสำหรับทดสอบ Gate
+      description: >
+        ใช้ Gate Basic Auth เพื่อดึง master data สำหรับสร้าง request ทดสอบ ถ้าไม่ส่ง MarketCode จะคืน Markets และ Products พร้อม Packages
+        ถ้าส่ง MarketCode จะคืน Booths ของตลาดนั้น โดยไม่คืน rate หรือยอดเงินคำนวณ
+      operationId: getGateOptions
+      security:
+        - gateBasicAuth: []
+      parameters:
+        - in: query
+          name: MarketCode
+          required: false
+          schema:
+            type: string
+          example: "1123"
+      responses:
+        "200":
+          description: ตัวเลือกสำหรับใช้สร้าง request ทดสอบ Gate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateOptionsResponse"
+        "401":
+          description: ไม่มี หรือ Gate client credentials ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/gate/tickets:
+    post:
+      tags:
+        - Gate
+      summary: สร้างตั๋วหลายตลาดของรถ 1 คันจาก Gate
+      description: >
+        Gate ส่งตั๋วเข้าระบบด้วย Gate Basic Auth โดย TicketNumber คือรถ และ Markets[].TicketNo คือตั๋วของแต่ละตลาด
+        ส่งได้หลายตลาดในครั้งเดียว (สร้างใน transaction เดียว) ต้องระบุ GateNo ระบบบันทึกคู่กับ Gate client และส่งกลับใน response เพื่อพิมพ์ตั๋ว
+        WorkerCount ของแต่ละตั๋ว = MAX ของสินค้าในตั๋วนั้น และ WorkerCount ของรถ = SUM ของทุกตั๋วที่ active
+        payload เดิมซ้ำจะคืน REPLAYED ส่วน TicketNo ที่ยัง active อยู่แล้วต้องแก้ไขผ่าน PUT /api/gate/tickets/{ticketNo}
+        ระบบใช้ข้อมูลนี้สร้างงานรถ คำนวณจำนวน Worker ที่ต้องใช้ และ dispatch ตามค่า Dispatch โดยยังไม่คำนวณยอดเงิน
+        Realtime: รถใหม่ Admin ได้ SSE VEHICLE_JOB_CREATED ส่วน TicketNumber ที่มีงานรถอยู่แล้ว (เพิ่มตั๋ว) Admin และ Worker ที่อยู่บนรถ
+        ได้ TICKET_JOB_UPDATED (ChangeType = TICKET_ADDED) ตั๋วละ 1 event แทน, request ที่ REPLAYED ไม่ส่ง event ซ้ำ
+      operationId: createGateTicket
+      security:
+        - gateBasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GateTicketRequest"
+      responses:
+        "200":
+          description: ส่ง gate_transaction_ref ซ้ำกับ request เดิม ระบบคืน response เดิมที่เคยตอบไปแล้ว (REPLAYED) โดยไม่สร้างข้อมูลซ้ำ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateTicketResponse"
+        "201":
+          description: รับ Gate ticket เข้าระบบสำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateTicketResponse"
+        "400":
+          description: Payload ที่ Gate ส่งมาไม่ถูกต้องตามรูปแบบที่กำหนด
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ Gate client credentials ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            ส่ง gate_transaction_ref ซ้ำแต่ payload ไม่ตรงกับครั้งก่อน (GATE_TRANSACTION_REF_PAYLOAD_MISMATCH)
+            หรือ master data ที่อ้างอิงไม่ครบ/ไม่ถูกต้อง เช่น ไม่พบ MarketCode+BoothCode ที่ active
+            (MARKET_BOOTH_NOT_FOUND), ไม่ได้ตั้งชื่อตลาดไว้ (MARKET_NAME_NOT_CONFIGURED), คำนวณจำนวน
+            Worker ที่ต้องใช้ไม่ได้ (WORKER_REQUIREMENT_NOT_FOUND), หรือไม่ได้ตั้งค่า LINE ของ Vendor
+            ประจำแผงค้า (BOOTH_VENDOR_LINE_NOT_CONFIGURED) หรือ TicketNo ยัง active อยู่ใต้ TicketNumber นี้แล้ว
+            (GATE_TICKET_ALREADY_EXISTS — ให้แก้ไขผ่าน PUT /api/gate/tickets/{ticketNo})
+            หรือ TicketNo เคยออกให้ตั๋วใบอื่นแล้ว รวมตั๋วที่ Admin ยกเลิกไปแล้ว (TICKET_NO_ALREADY_EXISTS — ExistingTicketNumber / ExistingMarketCode / ExistingStatus บอกว่าเป็นของรถ ตลาด และสถานะไหน ตั๋วที่ยกเลิกแล้วห้ามนำเลขกลับมาใช้ ต้องออกเลขใหม่)
+            หรือ TicketNo ตรงกับ TicketNumber ของรถคันใด (TICKET_NO_CONFLICTS_WITH_TICKET_NUMBER)
+            หรือ TicketNumber ของรถคันใหม่ตรงกับ TicketNo ที่เคยออกแล้ว (TICKET_NUMBER_CONFLICTS_WITH_TICKET_NO)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/gate/tickets/{ticketNo}:
+    parameters:
+      - in: path
+        name: ticketNo
+        required: true
+        schema:
+          type: string
+          pattern: "^\\d{14}$"
+        description: TicketNo ของตั๋ว (เลขเดียวกับบาร์โค้ดที่ Worker สแกน) ไม่ซ้ำทั้งระบบ ค้นได้ทุกสถานะรวมตั๋วที่ Admin ยกเลิกแล้ว
+        example: "20260804000002"
+    get:
+      tags:
+        - Gate
+      summary: ดูข้อมูลปัจจุบันของตั๋ว 1 ใบ เพื่อแสดงและแก้ไข
+      description: >
+        คืนข้อมูลตั๋วพร้อมแผง สินค้า สถานะแผง และ Editable/LockReason ของแต่ละแผง ให้ UI ปิดการแก้แผงที่ Worker ส่งยอดแล้ว
+        แผงที่ถูกยกเลิกไม่แสดงในรายการ
+      operationId: getGateTicket
+      security:
+        - gateBasicAuth: []
+      responses:
+        "200":
+          description: ข้อมูลปัจจุบันของตั๋ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateTicketDetailResponse"
+        "400":
+          description: TicketNo ไม่ใช่ตัวเลข 14 หลัก (INVALID_TICKET_NO)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ Gate client credentials ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบตั๋ว (GATE_TICKET_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      tags:
+        - Gate
+      summary: แก้ไขแผง สินค้า หรือตลาดของตั๋ว 1 ใบ
+      description: >
+        Gate ส่งสภาพสุดท้ายของตั๋วทั้งใบ ระบบเทียบกับข้อมูลเดิมเอง:
+        ระบบแก้ข้อมูลในแถวเดิมเสมอ (TicketNo, MarketJob, BoothJob id คงเดิม) และใช้ CANCELLED เฉพาะแผงที่ถูกนำออกจริง:
+        แผงที่สินค้าเหมือนเดิมคงไว้, แผงที่หายไปถูกยกเลิกและแจ้ง LINE ยกเลิก,
+        แผงที่สินค้าเปลี่ยนแก้ในแถวเดิม (สินค้าจับคู่ด้วย ProductCode + PackageCode) และแจ้ง LINE แก้ไขรายการสินค้า, แผงใหม่แจ้ง LINE ลงสินค้า,
+        เปลี่ยน MarketCode = แก้ตั๋วแถวเดิม แผงที่ BoothCode ยังอยู่แก้ในแถวเดิมตามตลาดใหม่ แผงที่ไม่ได้ส่งมาถูกยกเลิก
+        ทุกคำขอเก็บประวัติก่อน/หลังแก้ไขพร้อม Gate client, GateNo และเวลา (Audit: gate_ticket_updated)
+        แผงที่ Worker ส่งยอดแล้ว (DELIVERED/REJECT/COMPLETED) ต้องส่งมาเหมือนเดิม ไม่งั้นปฏิเสธทั้งคำขอ (กฎเดียวกับ Admin)
+        ระบบคิด WorkerCount ใหม่ (MAX ของตั๋ว, SUM ของรถ) ถ้าคนเกินจะยกเลิก assignment ที่ยังไม่สแกน (คนที่ได้งานล่าสุดก่อน)
+        และคืนเข้าหน้าคิว (Worker ได้ ASSIGNMENT_CANCELLED และ Admin ได้ WORKER_STATUS_CHANGED) ถ้าคนขาดจะเรียก Worker เพิ่ม Worker ทุกคนบนรถและ Admin ได้ event TICKET_JOB_UPDATED
+      operationId: updateGateTicket
+      security:
+        - gateBasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GateTicketUpdateRequest"
+      responses:
+        "200":
+          description: แก้ไขสำเร็จ (UPDATED) หรือไม่มีอะไรเปลี่ยน (NO_CHANGE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GateTicketUpdateResponse"
+        "400":
+          description: Payload ไม่ถูกต้อง หรือ TicketNo ไม่ใช่ตัวเลข 14 หลัก
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี หรือ Gate client credentials ไม่ถูกต้อง
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบตั๋ว (GATE_TICKET_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            ลบแผงหรือสินค้าจนตั๋วว่าง (GATE_TICKET_MINIMUM_BOOTH_REQUIRED — Booths ว่าง หรือแผงที่ Products ว่าง พร้อม BoothCodes;
+            Gate ยกเลิกตั๋วด้วยการลบทั้งหมดไม่ได้ ต้องเหลืออย่างน้อย 1 แผงที่มีสินค้า การยกเลิกตั๋วทำได้เฉพาะ Admin),
+            มีแผงในตั๋วใบนี้เคยส่งยอดแล้ว (TICKET_ALREADY_SUBMITTED — แก้ทั้งใบไม่ได้ ให้ Admin จัดการต่อ),
+            แผงที่ Admin ยกเลิกไปแล้วถูกส่งกลับมา (BOOTH_CANCELLED_BY_ADMIN — Booths[] บอก BoothCode, CancelledAt, CancelledByName, ReasonCode, ReasonText ให้นำแผงนั้นออกจาก request หรือติดต่อ Admin), ตั๋วหรือรถปิดงานแล้ว
+            (GATE_TICKET_CLOSED / VEHICLE_JOB_CLOSED), ตั๋วถูก Admin ยกเลิกแล้ว (GATE_TICKET_CANCELLED — ต้องออก TicketNo ใหม่)
+            หรือ master data ของแผงใหม่ไม่ถูกต้อง (MARKET_BOOTH_NOT_FOUND, BOOTH_VENDOR_LINE_NOT_CONFIGURED ฯลฯ)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
