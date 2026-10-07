@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+*.log
+
+# SSH deploy keys (see README > CI/CD auto-deploy) — never commit these
+deploy_key*
+*.pem
+id_rsa*
+id_ed25519*

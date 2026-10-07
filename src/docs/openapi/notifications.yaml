@@ -1,0 +1,64 @@
+﻿paths:
+  /api/admin/events:
+    get:
+      tags:
+        - Admin Realtime
+      summary: เปิด SSE สำหรับ realtime event ของ Admin
+      description: |
+        Admin dashboard เปิด connection นี้ค้างไว้เพื่อรับ `text/event-stream`
+        Backend ส่ง event เมื่อสถานะ Worker, queue, assignment หรือ vehicle job เปลี่ยน เพื่อให้หน้าจอ refresh ได้ทันที
+
+        Event ธุรกิจทุกตัวมี field `id:` แบบ opaque ที่เพิ่มขึ้นตามลำดับ (heartbeat, `connected`, `TOKEN_NEARING_EXPIRY`,
+        `SESSION_REVOKED` และ `STREAM_RESYNC_REQUIRED` ไม่มี id) เมื่อ reconnect ให้ส่ง header `Last-Event-ID` เป็น id ล่าสุดที่ได้รับ
+        Backend จะ replay event หลัง id นั้นตามลำดับ (กรอง audience ด้วยบัญชีของ token ปัจจุบัน) ก่อนส่ง live event ต่อ โดยไม่มีช่องว่างหรือ event ซ้ำ
+        Replay buffer เก็บในหน่วยความจำของ instance แบบมีขอบเขต (ค่าเริ่มต้น 1000 event หรือ 10 นาที ปรับได้ด้วย
+        env ADMIN_SSE_REPLAY_MAX_EVENTS / ADMIN_SSE_REPLAY_MAX_AGE_SECONDS) ถ้า id เก่าเกิน buffer, หาไม่พบ, ผิดรูปแบบ
+        หรือมาจากก่อน server restart จะได้ event `STREAM_RESYNC_REQUIRED` (Payload มี Reason และ LastEventId) แล้ว stream
+        ทำงานต่อตามปกติ — Client ควรโหลด REST snapshot ใหม่เมื่อได้รับ event นี้
+      operationId: subscribeAdminEvents
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: Last-Event-ID
+          required: false
+          schema:
+            type: string
+            example: mgk2x1a0-42
+          description: id ของ event ธุรกิจล่าสุดที่ client ได้รับ ใช้ขอ replay event ที่พลาดระหว่าง connection หลุด
+      responses:
+        "200":
+          description: >-
+            Stream แบบ Server-Sent Events ไม่ใช่ JSON list เดียวแบบ response ทั่วไป เมื่อเปิด connection
+            จะได้ event ชื่อ `connected` ก่อนทันที 1 ครั้ง จากนั้น backend จะส่ง event ตามชื่อ Type จริง
+            (เช่น WORKER_STATUS_CHANGED, GATE_ARRIVAL, TICKET_COMPLETION_RESULT, ASSIGNMENT_CREATED_BY_ADMIN,
+            ASSIGNMENT_CANCELLED, VEHICLE_JOB_CANCELLED_AND_REQUEUED, TICKET_WORKER_CANCELLED,
+            TICKET_WORKER_CANCELLED_FROM_BOOTH และอื่นๆ อีกหลายชนิดตามเหตุการณ์ที่เกิดขึ้นจริงในระบบ)
+            มี comment line `: heartbeat ...` แทรกมาทุก 25 วินาทีเพื่อกัน connection ถูกตัด ไม่ต้อง parse เป็น event
+            นอกจากนี้ยังส่ง event TOKEN_NEARING_EXPIRY ให้ก่อน AccessToken ของ connection นี้ใกล้หมดอายุ (threshold
+            เดียวกับ header X-Should-Refresh ของ REST และ event เดียวกันบน Worker WebSocket) ครอบคลุมเคส Admin เปิดหน้า
+            dashboard ค้างไว้โดยไม่มี REST call อื่นเกิดขึ้นเลย — Client ต้องเรียก POST /api/auth/refresh ทันทีที่ได้รับ
+            Event ASSIGNMENT_SCAN_DEADLINE_WARNING มี Payload เป็น snapshot ณ เวลาส่ง ได้แก่ TicketNumber, WorkerCode,
+            WorkerName, ShirtNumber, PlateNo, ScanDeadlineAt และ RemainingSeconds ของ assignment/รถคันเดียวกันเสมอ
+            จึงแสดง Toast ได้โดยไม่ต้องเรียก GET /api/admin/jobs/workers/status ซ้ำ
+            Event TICKET_JOB_UPDATED ส่งเมื่อ Gate แก้ตั๋ว (PUT, ChangeType = TICKET_UPDATED) หรือ Gate POST เพิ่มตั๋วให้รถที่มีอยู่แล้ว (ChangeType = TICKET_ADDED, ตั๋วละ 1 event และไม่ส่ง VEHICLE_JOB_CREATED) Payload มี ChangeType, TicketNumber, TicketNo, GateNo, MarketJobId, MarketCode, MarketName, PreviousMarketCode, DropoffPoint, AddedBoothCodes, UpdatedBoothCodes, RemovedBoothCodes, ReplacedBoothCodes (deprecated), MarketChanged, DropoffPointChanged, TicketWorkersRequired, WorkersRequired — Client ควรโหลดงานรถคันนั้นใหม่ (GET /api/admin/vehicle-jobs/operations) ส่วน VEHICLE_JOB_CREATED ส่งเฉพาะเมื่อ Gate สร้างงานรถใหม่ และเมื่อ Gate PUT ลดจำนวนคนจน Worker ถูกตัดกลับคิว Admin จะได้ WORKER_STATUS_CHANGED (Reason = gate_ticket_update_requeue หรือ gate_ticket_update_shift_ended พร้อม Queue ล่าสุด)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  id: mgk2x1a0-42
+                  event: TICKET_COMPLETION_RESULT
+                  data: {"Type":"TICKET_COMPLETION_RESULT","Title":"Ticket completion confirmed","Message":"Vendor confirmed ticket B-018.","Payload":{"TicketNo":"TKT-20260723-000125","BoothCode":"B-018","Status":"COMPLETED"},"OccurredAt":"2026-07-08T09:00:00.000Z"}
+        "401":
+          description: ไม่มี access token หรือ session ไม่ถูกต้อง/หมดอายุ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: บัญชีที่ login อยู่ไม่ใช่ Admin หรือไม่มี permission jobs:read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
