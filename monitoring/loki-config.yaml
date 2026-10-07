@@ -1,0 +1,45 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# Retention ตั้งแบบ conservative ไว้ก่อน (14 วัน) เพราะยังไม่รู้ disk size จริงของ droplet — ถ้ายืนยันแล้วว่า
+# disk มีพอ (ดูจากการใช้งานจริงสัก 1-2 สัปดาห์แรกผ่าน `docker exec loki du -sh /loki`) ค่อยขยับ
+# retention_period เป็น 720h (30 วัน) ทีหลังได้ ไม่ต้อง migrate ข้อมูลอะไร แค่แก้เลขแล้ว restart loki
+limits_config:
+  retention_period: 336h
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
