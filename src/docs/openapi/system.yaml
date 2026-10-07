@@ -1,0 +1,20 @@
+paths:
+  /ready:
+    get:
+      tags:
+        - System
+      summary: ตรวจความพร้อมของ dependency
+      description: ใช้ตรวจ readiness ของ backend และ dependency หลัก เช่น database เพื่อบอกว่า service พร้อมรับ traffic หรือยัง
+      responses:
+        "200":
+          description: Service พร้อมรับ traffic (database และ redis เชื่อมต่อได้ทั้งคู่)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: Service ยังไม่พร้อม (database หรือ redis เชื่อมต่อไม่ได้อย่างน้อย 1 อย่าง หรืออยู่ระหว่าง graceful shutdown)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"

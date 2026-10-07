@@ -1,0 +1,196 @@
+// Import Repositories
+import { client, createRandomToken, requireDto } from "./shared/repository-utils";
+// Import Mappers
+import { mapDriverSession, mapTicketJob } from "./shared/mappers";
+// Import Types
+import type { DbConnection } from "../types/shared/common.type";
+import type { ActiveDriverSessionSlotDto, DriverSessionContext, DriverSessionDto } from "../types/driver.type";
+import type { TicketJobDto } from "../types/worker.type";
+// Import Utils
+import { hashRefreshToken } from "../utils/refresh-token-hash";
+
+/* -------------------------------------- Functions -------------------------------------- */
+
+// Function ค้นหางานรถจาก driver QR token
+export async function findTicketJobByDriverQrToken(
+  qrToken: string,
+  connection?: DbConnection,
+): Promise<TicketJobDto | null> {
+  const db = client(connection);
+  const ticketJob = await db.ticketJob.findUnique({
+    where: {
+      driverQrToken: qrToken,
+    },
+  });
+
+  return mapTicketJob(ticketJob);
+}
+
+// Function lock แถวงานรถแล้วอ่านสถานะล่าสุด (เรียกใน transaction เท่านั้น กันนับ active device ทะลุ limit)
+export async function lockTicketJobForDriverSession(
+  ticketJobId: number,
+  connection: DbConnection,
+): Promise<TicketJobDto | null> {
+  await connection.$queryRaw`SELECT id FROM ticket_jobs WHERE id = ${ticketJobId} FOR UPDATE`;
+
+  const ticketJob = await connection.ticketJob.findUnique({
+    where: {
+      id: ticketJobId,
+    },
+  });
+
+  return mapTicketJob(ticketJob);
+}
+
+// Function ดึง driver session ที่ยัง active ของงานรถ (คืนแค่ id/device_id สำหรับนับเครื่อง)
+export async function listActiveDriverSessionSlots(
+  ticketJobId: number,
+  connection?: DbConnection,
+): Promise<ActiveDriverSessionSlotDto[]> {
+  const db = client(connection);
+  const sessions = await db.driverSession.findMany({
+    where: {
+      ticketJobId,
+      revokedAt: null,
+      expiresAt: {
+        gt: new Date(),
+      },
+    },
+    select: {
+      id: true,
+      deviceId: true,
+    },
+  });
+
+  return sessions.map((session) => ({
+    id: session.id,
+    device_id: session.deviceId,
+  }));
+}
+
+// Function revoke driver session เดียวตอนเครื่องเดิมสแกน QR ซ้ำ (ไม่มี grace period แบบอ่านอย่างเดียว)
+export async function revokeDriverSessionById(
+  sessionId: number,
+  connection?: DbConnection,
+): Promise<void> {
+  const db = client(connection);
+
+  await db.driverSession.update({
+    where: {
+      id: sessionId,
+    },
+    data: {
+      revokedAt: new Date(),
+    },
+  });
+}
+
+// Function สร้าง driver session โดยเก็บแค่ hash ของ token และคืน token ดิบครั้งเดียว
+export async function createDriverSession(
+  ticketJobId: number,
+  deviceId: string,
+  expiresAt: Date,
+  connection?: DbConnection,
+): Promise<DriverSessionDto & { session_token: string }> {
+  const db = client(connection);
+  const rawToken = createRandomToken("driver_session");
+  const session = await db.driverSession.create({
+    data: {
+      ticketJobId,
+      deviceId,
+      sessionToken: hashRefreshToken(rawToken),
+      expiresAt,
+    },
+  });
+  const mapped = requireDto(mapDriverSession(session), "driver session create");
+
+  return {
+    ...mapped,
+    session_token: rawToken,
+  };
+}
+
+// Function ค้นหา driver session ที่ยังใช้ได้จาก token (รวม session อ่านอย่างเดียวช่วง grace period)
+export async function findUsableDriverSessionByToken(
+  sessionToken: string,
+  connection?: DbConnection,
+): Promise<DriverSessionContext | null> {
+  const db = client(connection);
+  const now = new Date();
+  const session = await db.driverSession.findFirst({
+    where: {
+      sessionToken: hashRefreshToken(sessionToken),
+      OR: [
+        {
+          revokedAt: null,
+          expiresAt: {
+            gt: now,
+          },
+        },
+        {
+          revokedAt: {
+            not: null,
+          },
+          readOnlyUntil: {
+            gt: now,
+          },
+        },
+      ],
+    },
+    include: {
+      ticketJob: { select: { ticketNumber: true } },
+    },
+  });
+
+  if (!session) {
+    return null;
+  }
+
+  const mapped = requireDto(mapDriverSession(session), "driver session lookup");
+
+  return {
+    ...mapped,
+    ticket_number: session.ticketJob.ticketNumber,
+    is_read_only: session.revokedAt !== null,
+  };
+}
+
+// Function ดึงข้อมูลงานรถสำหรับ Driver (ไม่ join ข้อมูล worker เพื่อกันข้อมูลส่วนตัวหลุด)
+export async function getDriverJobSnapshotRecord(
+  ticketJobId: number,
+  connection?: DbConnection,
+) {
+  const db = client(connection);
+
+  return db.ticketJob.findUnique({
+    where: {
+      id: ticketJobId,
+    },
+    include: {
+      marketJobs: {
+        orderBy: {
+          id: "asc",
+        },
+        include: {
+          tickets: {
+            orderBy: {
+              id: "asc",
+            },
+            include: {
+              products: {
+                orderBy: {
+                  id: "asc",
+                },
+              },
+            },
+          },
+        },
+      },
+      assignments: {
+        select: {
+          status: true,
+        },
+      },
+    },
+  });
+}
