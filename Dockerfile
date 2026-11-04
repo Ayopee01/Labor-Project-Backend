@@ -1,4 +1,4 @@
-FROM node:26.12.1-alpine AS base
+FROM node:26.13.0-alpine AS base
 
 ARG NPM_VERSION=12.2.1
 WORKDIR /app
@@ -20,7 +20,7 @@ FROM base AS build
 
 RUN npm run build
 
-FROM node:26.12.1-alpine AS production-deps
+FROM node:26.13.0-alpine AS production-deps
 
 ARG NPM_VERSION=12.2.1
 WORKDIR /app
@@ -32,7 +32,7 @@ COPY prisma.config.js ./
 COPY prisma ./prisma
 RUN npm run db:generate
 
-FROM node:26.12.1-alpine AS dev
+FROM node:26.13.0-alpine AS dev
 
 ARG NPM_VERSION=12.2.1
 WORKDIR /app
@@ -42,7 +42,7 @@ COPY --from=base /app ./
 EXPOSE 8080
 CMD ["npm", "run", "dev"]
 
-FROM node:26.12.1-alpine AS production
+FROM node:26.13.0-alpine AS production
 
 ARG NPM_VERSION=12.2.1
 ARG OCI_SOURCE=""
