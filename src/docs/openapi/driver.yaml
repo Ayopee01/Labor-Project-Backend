@@ -1,0 +1,208 @@
+paths:
+  /api/driver/qr-sessions:
+    post:
+      tags:
+        - Driver
+      summary: สร้าง session ชั่วคราวให้ Driver จาก QR
+      description: >-
+        ตรวจ driver QR token แล้วออก session token (อายุตาม runtime setting driver_session_ttl_hours)
+        สำหรับดูงานของรถคันนั้น จำกัด active session ไม่เกิน DRIVER_ACTIVE_DEVICE_LIMIT เครื่อง (default 2)
+        ต่อ vehicle job หนึ่งคัน นับตาม DeviceId ที่ไม่ซ้ำกัน — ถ้า DeviceId เดิมสแกนซ้ำจะ rotate session เดิม
+        ทิ้งแล้วออก token ใหม่โดยไม่กิน slot เพิ่ม ต้องส่ง DeviceId ทุกครั้ง ไม่ส่งมาจะได้ 400 VALIDATION_ERROR
+      operationId: createDriverQrSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - qr_token
+                - device_id
+              properties:
+                qr_token:
+                  type: string
+                device_id:
+                  type: string
+                  format: uuid
+                  description: UUID ของเครื่องที่ Driver Web สุ่มสร้างครั้งแรกและเก็บถาวรใน browser storage — ห้ามใช้ IP/User-Agent/fingerprint เป็นตัวระบุเครื่องหลัก ต้องใช้ค่าเดิมทุกครั้งที่สแกนจากเครื่องเดียวกัน และส่งค่าเดียวกันเป็น X-Driver-Device-Id ใน request ถัดไป
+      responses:
+        "201":
+          description: สร้าง driver session สำเร็จ
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverSessionResponse"
+        "404":
+          description: Driver QR token ไม่ถูกต้อง (INVALID_DRIVER_QR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            งานรถนี้ปิดไปแล้ว สถานะเป็น COMPLETED หรือ CANCELLED (VEHICLE_JOB_CLOSED) หรือมี active device
+            ครบ DRIVER_ACTIVE_DEVICE_LIMIT เครื่องแล้ว เครื่องใหม่สร้าง session เพิ่มไม่ได้ (DRIVER_SESSION_LIMIT_EXCEEDED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: เรียก endpoint นี้ถี่เกินกำหนด นับแยกทั้งต่อ IP และต่อลายนิ้วมือของ QR token เอง (DRIVER_QR_RATE_LIMITED ไม่มี header RateLimit-* และ Retry-After) หรือเกินเพดานของกลุ่ม /api/driver (RATE_LIMITED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/driver/jobs/current:
+    get:
+      tags:
+        - Driver
+      summary: ดูงานปัจจุบันของ Driver
+      description: >-
+        ใช้ driver session token เพื่อดึงข้อมูลงานรถที่ผูกกับ QR session ปัจจุบันแบบครบถ้วน (ไม่ต้องเรียก Admin
+        API เพิ่ม) รวมถึง operation_status ที่เป็น canonical จาก server — Frontend ห้าม derive จาก
+        vehicle_job.status เอง ระหว่าง terminal grace period (หลังรถ COMPLETED/CANCELLED) endpoint นี้ยังเรียก
+        ได้ปกติด้วย session เดิม
+      operationId: getDriverCurrentJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DriverDeviceIdHeader"
+      responses:
+        "200":
+          description: Snapshot งานรถปัจจุบัน
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverJobSnapshotResponse"
+        "401":
+          description: ไม่มี driver session token (MISSING_DRIVER_SESSION), token ไม่ถูกต้อง/หมดอายุ (INVALID_DRIVER_SESSION), ไม่ได้ส่ง X-Driver-Device-Id ทั้งที่ session นี้บังคับ (MISSING_DRIVER_DEVICE_ID) หรือ DeviceId ไม่ตรงกับ session (DRIVER_DEVICE_MISMATCH)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถที่ผูกกับ session นี้
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/driver/jobs/{ticketNumber}/dispatch:
+    patch:
+      tags:
+        - Driver
+      summary: เปิด/ปิดการเรียก Worker ของรถ (ลงเลย / รอลง)
+      description: >-
+        Driver สั่งเปิด (Dispatch=true, ลงเลย) หรือปิด (Dispatch=false, รอลง) การเรียก Worker ของรถตัวเอง
+        ใช้กฎชุดเดียวกับ POST /api/admin/vehicle-jobs/{ticketNumber}/wait — Dispatch=true เปลี่ยนงานรถ
+        และตลาดที่ยังไม่จบเป็น WORKING แล้วเริ่ม dispatch Worker จาก Redis FIFO queue ส่วน Dispatch=false
+        เปลี่ยนงานรถ ตลาด และแผงที่เปิดทำงานแล้วกลับเป็น WAIT ยกเลิก assignment ที่ยัง active ทั้งหมด
+        (รวมคนที่ scan แล้ว) ถอดคนเหล่านั้นออกจาก roster ของตลาดที่ยังไม่จบ แล้วคืน Worker เข้าหน้าคิว
+        ตามลำดับเวลากดรับงาน (คนที่หมดกะแล้วไป open_app แทน) ทำได้ทั้งระหว่าง Worker กำลังมา, scan ไปบางคน
+        หรือ scan ครบแล้ว จนกว่าจะมีแผงแรกของรถส่งยอด (หลังจากนั้น รวมถึงปล่อยทีมแล้วหรืองานรถปิดแล้ว ได้ 409 แม้สั่ง
+        สถานะเดิมซ้ำ) ก่อนถึงจุดนั้นสั่งสถานะเดิมซ้ำได้ผลสำเร็จโดยไม่บันทึก log และไม่แจ้งใครซ้ำ ทุกครั้งที่สถานะเปลี่ยนจริงจะบันทึก admin_action_logs (VEHICLE_WAIT) โดยผู้ทำรายการ
+        เป็น Driver พร้อม ReasonCode ที่ระบบใส่ให้ (DRIVER_REQUESTED_DISPATCH / DRIVER_REQUESTED_WAIT)
+        คืน snapshot รูปเดียวกับ GET /jobs/current เสมอ (operation_status คำนวณใหม่จริง หลังเปิดอาจเป็น
+        DISPATCH_NOW หรือ WAITING_FOR_WORKER ก็ได้)
+      operationId: changeDriverJobDispatch
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DriverDeviceIdHeader"
+        - in: path
+          name: ticketNumber
+          required: true
+          schema:
+            type: string
+            example: TRUCK-20260723-001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - dispatch
+              properties:
+                dispatch:
+                  type: boolean
+                  description: true = ลงเลย (เปิดเรียก Worker), false = รอลง (ปิดและคืนทีมเข้าหน้าคิว)
+                  example: false
+      responses:
+        "200":
+          description: เปลี่ยนสถานะสำเร็จ หรือรถอยู่ในสถานะที่ขออยู่แล้ว
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DriverJobSnapshotResponse"
+        "400":
+          description: ไม่ได้ส่ง Dispatch หรือไม่ใช่ boolean (VALIDATION_ERROR)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: ไม่มี driver session token (MISSING_DRIVER_SESSION), token ไม่ถูกต้อง/หมดอายุ (INVALID_DRIVER_SESSION), ไม่ได้ส่ง X-Driver-Device-Id ทั้งที่ session นี้บังคับ (MISSING_DRIVER_DEVICE_ID) หรือ DeviceId ไม่ตรงกับ session (DRIVER_DEVICE_MISMATCH)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Driver session นี้ไม่ได้ผูกกับงานรถนี้ (DRIVER_JOB_FORBIDDEN)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: ไม่พบงานรถนี้ (VEHICLE_JOB_NOT_FOUND)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            มีแผงของรถคันนี้ส่งยอดไปแล้วอย่างน้อย 1 แผง จึงเปลี่ยนไม่ได้ทั้งสองทาง (VEHICLE_JOB_ALREADY_SUBMITTED),
+            ปล่อยทีมกลับคิวไปแล้ว (VEHICLE_JOB_RELEASED) หรืองานรถปิดไปแล้ว รวมถึง session ที่อยู่ใน
+            terminal grace period แบบ read-only (VEHICLE_JOB_CLOSED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/driver/jobs/stream:
+    get:
+      tags:
+        - Driver
+      summary: Realtime stream ของงานรถปัจจุบัน (Server-Sent Events)
+      description: >-
+        ช่องทาง realtime หลักของ Driver Web แทนการ polling — ใช้ driver session token เดิมของ
+        GET /jobs/current (ผ่าน Authorization header ปกติ ไม่ต้องทำ handshake พิเศษ เพราะ SSE ส่ง header ได้
+        ตามปกติไม่เหมือน native WebSocket) หลังเชื่อมต่อสำเร็จ server ส่ง event DRIVER_JOB_SNAPSHOT ทันที
+        (รวมตอน reconnect) แล้วส่ง DRIVER_JOB_UPDATED ทุกครั้งที่ข้อมูลเปลี่ยน (coalesce เหตุการณ์ถี่ภายใน
+        100-250ms ต่อคัน) และส่ง DRIVER_JOB_TERMINAL ก่อนปิด stream เมื่อรถ COMPLETED/CANCELLED — ดู
+        DriverStreamEvent สำหรับรูปแบบ event เต็ม จำกัดจำนวน connection พร้อมกันต่อ session ที่
+        DRIVER_STREAM_CONNECTION_LIMIT (default 2) เพื่อรองรับ reload/เปิดซ้ำชั่วคราว mutation (เช่นเปิด/ปิด dispatch)
+        ยังต้องเรียกผ่าน REST เสมอ stream นี้เป็น notification/snapshot channel เท่านั้น
+      operationId: subscribeDriverJobStream
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/DriverDeviceIdHeader"
+      responses:
+        "200":
+          description: เชื่อมต่อ SSE สำเร็จ — response เป็น stream ต่อเนื่องแบบ text/event-stream ไม่ปิดเอง จนกว่า session จะหมดอายุ/ถูก revoke หรือ client ปิดการเชื่อมต่อ
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/DriverStreamEvent"
+        "401":
+          description: ไม่มี driver session token (MISSING_DRIVER_SESSION), token ไม่ถูกต้อง/หมดอายุ (INVALID_DRIVER_SESSION), ไม่ได้ส่ง X-Driver-Device-Id ทั้งที่ session นี้บังคับ (MISSING_DRIVER_DEVICE_ID) หรือ DeviceId ไม่ตรงกับ session (DRIVER_DEVICE_MISMATCH)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: session นี้เปิด connection พร้อมกันครบ DRIVER_STREAM_CONNECTION_LIMIT แล้ว (DRIVER_SOCKET_LIMIT_EXCEEDED)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
